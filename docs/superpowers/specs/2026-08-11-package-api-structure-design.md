@@ -59,9 +59,11 @@ from tuiloom import ContentSource, MessageRegistry, ScreenContext, TerminalApp
 
 ## User-facing documentation
 
-Every exported class and type alias receives a concise descriptive docstring.
-Every public constructor, property, and method on `TerminalApp`, `TerminalMenu`,
-and `MessageRegistry` receives a precise docstring covering:
+Every exported class receives a concise descriptive docstring. Exported type
+aliases are documented in their defining module and with an adjacent descriptive
+comment because Python aliases cannot carry runtime docstrings. Every public
+constructor, property, and method on `TerminalApp`, `TerminalMenu`, and
+`MessageRegistry` receives a precise docstring covering:
 
 - its purpose and observable behavior;
 - the meaning and constraints of each argument;
@@ -71,10 +73,10 @@ and `MessageRegistry` receives a precise docstring covering:
 - a short usage example when the call is not self-explanatory.
 
 Internal helpers beginning with `_` do not require user-facing documentation.
-Existing public-looking orchestration methods that users should not call
-directly, such as command dispatch internals, will be documented as internal
-lifecycle behavior or renamed with a leading underscore when doing so is local
-and does not change the supported API.
+`TerminalApp.handle_global_command` is orchestration used only by
+`TerminalMenu`; it will become `_handle_global_command`. All other methods that
+currently lack a leading underscore remain supported and receive user-facing
+documentation.
 
 Docstrings will use normal Python triple-quoted strings, not runtime f-strings.
 An f-string interpolates values while code executes and is not the appropriate

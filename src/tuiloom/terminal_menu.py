@@ -202,7 +202,7 @@ class TerminalMenu:
         )
 
         while self.running:
-            self.terminal_renderer.render()
+            self._render()
 
             event = self.app.input_handler.poll()
 
@@ -210,6 +210,11 @@ class TerminalMenu:
                 self._handle_event(event)
 
             sleep(0.01)
+
+    def _render(self) -> None:
+        """Render the menu with the current command input."""
+        if self.terminal_renderer is not None:
+            self.terminal_renderer.render(self._input_buffer)
 
     def _handle_no_content_source(self) -> None:
         """Display the no-content message when it is enabled."""

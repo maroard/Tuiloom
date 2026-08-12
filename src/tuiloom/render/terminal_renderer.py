@@ -117,6 +117,12 @@ class TerminalRenderer:
         self._previous_lines = None
         self._previous_terminal_size = None
 
+    def set_content_renderer(self, content_renderer: ContentRenderer) -> None:
+        """Replace active content and reset source-specific rendering state."""
+        self.content_renderer = content_renderer
+        self.viewport = None
+        self.invalidate()
+
     def scroll_up(self) -> None:
         """Move the viewport one row upward when it exists."""
         if self.viewport is not None:

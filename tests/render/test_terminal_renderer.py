@@ -7,7 +7,9 @@ import tuiloom.render.terminal_renderer as terminal_renderer_module
 from tuiloom.command import CommandContext
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
+from tuiloom.render.rendered_content import RenderedContent
 from tuiloom.render.terminal_renderer import TerminalRenderer
+from tuiloom.render.viewport import Viewport
 from tuiloom.screen_context.screen_context import ScreenContext
 
 
@@ -122,3 +124,23 @@ def test_invalidated_frame_forces_complete_redraw(
     renderer.render("1")
 
     assert output.getvalue().startswith("\033[?25l\033[H\033[J")
+
+
+def test_setting_content_renderer_resets_viewport_and_frame_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_renderer(monkeypatch, StringIO())
+    renderer.render()
+    renderer.viewport = Viewport(
+        RenderedContent(lines=["old"], width=3, height=1, finished=True),
+        width=3,
+        height=1,
+    )
+    new_content_renderer = ContentRenderer(iter(["new"]))
+
+    renderer.set_content_renderer(new_content_renderer)
+
+    assert renderer.content_renderer is new_content_renderer
+    assert renderer.viewport is None
+    assert renderer._previous_lines is None
+    assert renderer._previous_terminal_size is None

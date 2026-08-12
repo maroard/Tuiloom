@@ -126,13 +126,19 @@ class TerminalMenu:
         self,
         content_source: ContentSource,
     ) -> None:
-        """Replace the content source used on the next run.
+        """Replace the content source used by this menu.
 
         Args:
             content_source: Supported text, line-list, iterator, or callable
                 content source.
         """
         self._content_source = content_source
+
+        if self.terminal_renderer is None:
+            return
+
+        self.content_renderer = ContentRenderer(content_source)
+        self.terminal_renderer.set_content_renderer(self.content_renderer)
 
     def disable_message(self, key: str) -> None:
         """Suppress a registry message locally in this menu.

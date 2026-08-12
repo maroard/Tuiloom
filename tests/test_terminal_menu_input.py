@@ -1,4 +1,6 @@
 from tuiloom.input_handler.input_event import InputEvent
+from tuiloom.render.content_renderer import ContentRenderer
+from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
 from tuiloom.terminal_app import TerminalApp
 from tuiloom.terminal_menu import TerminalMenu
@@ -56,3 +58,32 @@ def test_menu_invalidates_cached_frame_after_command_execution() -> None:
     menu._handle_enter()
 
     assert renderer.invalidations == 1
+
+
+def test_menu_stores_content_source_before_rendering_starts() -> None:
+    menu = make_menu()
+    stream = iter(["chunk"])
+
+    menu.set_content_source(stream)
+
+    assert menu._content_source is stream
+    assert menu.content_renderer is None
+
+
+def test_menu_replaces_active_content_renderer_and_consumes_new_stream() -> None:
+    menu = make_menu()
+    old_content_renderer = ContentRenderer("old")
+    terminal_renderer = TerminalRenderer(
+        menu_renderer=MenuRenderer(menu.screen_context),
+        content_renderer=old_content_renderer,
+        spacing=1,
+    )
+    menu.content_renderer = old_content_renderer
+    menu.terminal_renderer = terminal_renderer
+    stream = iter(["chunk"])
+
+    menu.set_content_source(stream)
+
+    assert menu.content_renderer is terminal_renderer.content_renderer
+    assert menu.content_renderer is not old_content_renderer
+    assert menu.content_renderer.update().lines == ["chunk"]

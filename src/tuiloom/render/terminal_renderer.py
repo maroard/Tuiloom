@@ -112,6 +112,11 @@ class TerminalRenderer:
         row, column = self._get_cursor_position(lines)
         stdout.write(f"\033[{row};{column}H\033[?25h")
 
+    def invalidate(self) -> None:
+        """Force a complete redraw of the next terminal frame."""
+        self._previous_lines = None
+        self._previous_terminal_size = None
+
     def scroll_up(self) -> None:
         """Move the viewport one row upward when it exists."""
         if self.viewport is not None:

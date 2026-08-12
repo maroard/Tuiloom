@@ -262,6 +262,7 @@ class TerminalMenu:
         self._input_buffer = ""
 
         if self.app._handle_global_command(command, self):
+            self._invalidate_renderer()
             return
 
         command_data = self.commands.get(command)
@@ -272,6 +273,12 @@ class TerminalMenu:
 
         action = command_data[0]
         action(CommandContext(app=self.app, menu=self, command_key=command))
+        self._invalidate_renderer()
+
+    def _invalidate_renderer(self) -> None:
+        """Force a complete redraw after a command returns."""
+        if self.terminal_renderer is not None:
+            self.terminal_renderer.invalidate()
 
     def _handle_unknown_command(self, command: str) -> None:
         """Display the unknown-command message when it is enabled."""

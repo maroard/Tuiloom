@@ -107,3 +107,18 @@ def test_resize_forces_complete_redraw(
     renderer.render("1")
 
     assert output.getvalue().startswith("\033[?25l\033[H\033[J")
+
+
+def test_invalidated_frame_forces_complete_redraw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    renderer = make_renderer(monkeypatch, output)
+    renderer.render("1")
+    output.seek(0)
+    output.truncate()
+
+    renderer.invalidate()
+    renderer.render("1")
+
+    assert output.getvalue().startswith("\033[?25l\033[H\033[J")

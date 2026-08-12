@@ -9,9 +9,13 @@ class RecordingTerminalRenderer(TerminalRenderer):
 
     def __init__(self) -> None:
         self.input_buffers: list[str] = []
+        self.invalidations = 0
 
     def render(self, input_buffer: str = "") -> None:
         self.input_buffers.append(input_buffer)
+
+    def invalidate(self) -> None:
+        self.invalidations += 1
 
 
 def make_menu() -> TerminalMenu:
@@ -40,3 +44,15 @@ def test_menu_forwards_input_after_backspace_to_terminal_renderer() -> None:
     menu._render()
 
     assert renderer.input_buffers == ["a"]
+
+
+def test_menu_invalidates_cached_frame_after_command_execution() -> None:
+    menu = make_menu()
+    renderer = RecordingTerminalRenderer()
+    menu.terminal_renderer = renderer
+    menu.add_command("Open", lambda context: None, index=1)
+    menu._input_buffer = "1"
+
+    menu._handle_enter()
+
+    assert renderer.invalidations == 1

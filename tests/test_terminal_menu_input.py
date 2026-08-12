@@ -72,6 +72,7 @@ def test_menu_stores_content_source_before_rendering_starts() -> None:
 
 def test_menu_replaces_active_content_renderer_and_consumes_new_stream() -> None:
     menu = make_menu()
+    menu.running = True
     old_content_renderer = ContentRenderer("old")
     terminal_renderer = TerminalRenderer(
         menu_renderer=MenuRenderer(menu.screen_context),
@@ -87,3 +88,22 @@ def test_menu_replaces_active_content_renderer_and_consumes_new_stream() -> None
     assert menu.content_renderer is terminal_renderer.content_renderer
     assert menu.content_renderer is not old_content_renderer
     assert menu.content_renderer.update().lines == ["chunk"]
+
+
+def test_stopped_menu_stores_source_without_replacing_stale_renderer() -> None:
+    menu = make_menu()
+    old_content_renderer = ContentRenderer("old")
+    terminal_renderer = TerminalRenderer(
+        menu_renderer=MenuRenderer(menu.screen_context),
+        content_renderer=old_content_renderer,
+        spacing=1,
+    )
+    menu.content_renderer = old_content_renderer
+    menu.terminal_renderer = terminal_renderer
+    stream = iter(["chunk"])
+
+    menu.set_content_source(stream)
+
+    assert menu._content_source is stream
+    assert menu.content_renderer is old_content_renderer
+    assert terminal_renderer.content_renderer is old_content_renderer

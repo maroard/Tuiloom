@@ -134,7 +134,7 @@ class TerminalMenu:
         """
         self._content_source = content_source
 
-        if self.terminal_renderer is None:
+        if not self.running or self.terminal_renderer is None:
             return
 
         self.content_renderer = ContentRenderer(content_source)

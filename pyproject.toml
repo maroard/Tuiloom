@@ -33,7 +33,9 @@ classifiers = [
     "Topic :: Terminals",
 ]
 
-dependencies = []
+dependencies = [
+    "wcwidth>=0.8",
+]
 
 [dependency-groups]
 dev = [

@@ -84,9 +84,7 @@ def test_changed_input_rewrites_only_the_prompt_line(
     renderer.render("12")
 
     assert output.getvalue() == (
-        "\033[?25l"
-        "\033[19;1H\033[2KChoice? (0-1): 12"
-        "\033[19;18H\033[?25h"
+        "\033[?25l\033[19;1H\033[2KChoice? (0-1): 12\033[19;18H\033[?25h"
     )
 
 

@@ -73,7 +73,7 @@ class TerminalRenderer:
         viewport_height = terminal_height - menu_height - self.spacing
 
         if viewport_width <= 0 or viewport_height <= 0 or menu_width > terminal_width:
-            return ["Terminal window is too small."]
+            return self._render_terminal_too_small()
 
         if self.viewport is None:
             self.viewport = Viewport(rendered_content, viewport_width, viewport_height)
@@ -87,6 +87,10 @@ class TerminalRenderer:
         render = viewport_render + "\n" * self.spacing + menu_render
 
         return render.split("\n")
+
+    def _render_terminal_too_small(self) -> list[str]:
+        """Return the frame displayed when the terminal is too small."""
+        return ["Terminal window is too small."]
 
     def _write_full_frame(self, lines: list[str]) -> None:
         """Replace the complete terminal frame."""

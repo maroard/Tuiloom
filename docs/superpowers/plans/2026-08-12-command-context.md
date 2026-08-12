@@ -32,6 +32,8 @@
 - Modify: `src/tuiloom/__init__.py`
 - Modify: `src/tuiloom/screen_context/screen_context.py`
 - Modify: `src/tuiloom/render/menu_renderer.py`
+- Modify: `src/tuiloom/terminal_app.py`
+- Modify: `src/tuiloom/terminal_menu.py`
 - Create: `tests/test_command.py`
 - Modify: `tests/test_public_api.py`
 
@@ -190,6 +192,15 @@ from tuiloom.command import Command
 from tuiloom.screen_context.screen_context import ScreenContext
 ```
 
+In both `src/tuiloom/terminal_app.py` and
+`src/tuiloom/terminal_menu.py`, import the registry type from its new owner while
+continuing to import `ScreenContext` from the screen-context module:
+
+```python
+from tuiloom.command import CommandDict
+from tuiloom.screen_context.screen_context import ScreenContext
+```
+
 Export the four command symbols from `src/tuiloom/__init__.py`:
 
 ```python
@@ -229,7 +240,7 @@ Expected: all tests in both files pass.
 - [ ] **Step 5: Commit the public command API**
 
 ```bash
-git add src/tuiloom/command.py src/tuiloom/__init__.py src/tuiloom/screen_context/screen_context.py src/tuiloom/render/menu_renderer.py tests/test_command.py tests/test_public_api.py
+git add src/tuiloom/command.py src/tuiloom/__init__.py src/tuiloom/screen_context/screen_context.py src/tuiloom/render/menu_renderer.py src/tuiloom/terminal_app.py src/tuiloom/terminal_menu.py tests/test_command.py tests/test_public_api.py
 git commit -m "feat: add public command context types"
 ```
 

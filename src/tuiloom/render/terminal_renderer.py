@@ -1,7 +1,9 @@
+from os import terminal_size
 from shutil import get_terminal_size
 from sys import stdout
 
 from tuiloom.render.content_renderer import ContentRenderer
+from tuiloom.render.line_diff import LineChange, get_line_changes
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.viewport import Viewport
 
@@ -20,15 +22,48 @@ class TerminalRenderer:
         self.content_renderer = content_renderer
         self.spacing = spacing
         self.viewport: Viewport | None = None
+        self._previous_lines: list[str] | None = None
+        self._previous_terminal_size: terminal_size | None = None
 
-    def render(self) -> None:
+    def render(self, input_buffer: str = "") -> None:
         """Render and write one complete terminal frame."""
-        rendered_content = self.content_renderer.update()
-        menu_render = self.menu_renderer.render()
+        current_terminal_size = get_terminal_size()
+        lines = self._compose_frame(
+            input_buffer,
+            current_terminal_size.columns,
+            current_terminal_size.lines,
+        )
 
-        terminal_size = get_terminal_size()
-        terminal_width = terminal_size.columns
-        terminal_height = terminal_size.lines
+        if (
+            self._previous_lines is None
+            or self._previous_terminal_size != current_terminal_size
+        ):
+            self._write_full_frame(lines)
+
+        else:
+            changes = get_line_changes(self._previous_lines, lines)
+
+            if not changes:
+                return
+
+            self._write_line_changes(changes)
+
+        self._restore_input_cursor(lines)
+
+        stdout.flush()
+
+        self._previous_lines = lines
+        self._previous_terminal_size = current_terminal_size
+
+    def _compose_frame(
+        self,
+        input_buffer: str,
+        terminal_width: int,
+        terminal_height: int,
+    ) -> list[str]:
+        """Compose the logical terminal frame for the current state."""
+        rendered_content = self.content_renderer.update()
+        menu_render = self.menu_renderer.render() + input_buffer
 
         menu_lines = menu_render.splitlines() or [""]
         menu_height = len(menu_lines)
@@ -38,8 +73,7 @@ class TerminalRenderer:
         viewport_height = terminal_height - menu_height - self.spacing
 
         if viewport_width <= 0 or viewport_height <= 0 or menu_width > terminal_width:
-            self._render_terminal_too_small()
-            return
+            return ["Terminal window is too small."]
 
         if self.viewport is None:
             self.viewport = Viewport(rendered_content, viewport_width, viewport_height)
@@ -52,17 +86,27 @@ class TerminalRenderer:
 
         render = viewport_render + "\n" * self.spacing + menu_render
 
-        screen = "\033[H\033[J" + render + "\033[J"
+        return render.split("\n")
 
-        stdout.write(screen)
-        stdout.flush()
+    def _write_full_frame(self, lines: list[str]) -> None:
+        """Replace the complete terminal frame."""
+        stdout.write("\033[?25l\033[H\033[J" + "\n".join(lines))
 
-    def _render_terminal_too_small(self) -> None:
-        """Replace the frame with a terminal-size warning."""
-        screen = "\033[H\033[JTerminal window is too small.\033[J"
+    def _write_line_changes(self, changes: list[LineChange]) -> None:
+        """Replace complete terminal lines at their current rows."""
+        stdout.write("\033[?25l")
 
-        stdout.write(screen)
-        stdout.flush()
+        for change in changes:
+            stdout.write(f"\033[{change.row};1H\033[2K{change.content}")
+
+    def _get_cursor_position(self, lines: list[str]) -> tuple[int, int]:
+        """Return the terminal position immediately after the input line."""
+        return len(lines), len(lines[-1]) + 1
+
+    def _restore_input_cursor(self, lines: list[str]) -> None:
+        """Show the cursor immediately after the current input."""
+        row, column = self._get_cursor_position(lines)
+        stdout.write(f"\033[{row};{column}H\033[?25h")
 
     def scroll_up(self) -> None:
         """Move the viewport one row upward when it exists."""

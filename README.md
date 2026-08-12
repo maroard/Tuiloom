@@ -36,3 +36,13 @@ def make_generate_command(
 
     return generate
 ```
+
+## ANSI styles and Unicode
+
+Every visual Tuiloom string supports SGR colors and styles, including 16-color,
+256-color, and true-color sequences. Layout and cursor positioning account for
+combining characters, wide CJK text, and emoji grapheme clusters.
+
+Tuiloom intentionally strips terminal control sequences that can move the
+cursor, erase the screen, scroll, or change terminal state. The renderer keeps
+exclusive control of terminal geometry while preserving user-provided style.

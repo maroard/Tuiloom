@@ -188,3 +188,31 @@ def test_final_frame_safety_removes_cursor_control(
     lines = renderer._compose_frame("", 40, 20)
 
     assert all("\x1b[2J" not in line for line in lines)
+
+
+def test_render_restores_cursor_after_styled_wide_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    renderer = make_renderer(monkeypatch, output)
+
+    renderer.render("\x1b[31m界\x1b[0m")
+
+    assert output.getvalue().endswith("\033[19;18H\033[?25h")
+
+
+def test_shorter_segment_erases_only_residual_cells(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    renderer = make_renderer(monkeypatch, output)
+    renderer._previous_lines = ["abcdef"]
+    renderer._previous_terminal_size = os.terminal_size((40, 20))
+
+    changes = get_segment_changes(["abcdef"], ["abc"])
+    renderer._write_segment_changes(changes)
+
+    screen = output.getvalue()
+    assert "\033[1;4H" in screen
+    assert "\033[3X" in screen
+    assert "\033[2K" not in screen

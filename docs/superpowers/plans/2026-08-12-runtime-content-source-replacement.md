@@ -25,7 +25,9 @@ viewport, calls `set_content_renderer(new_renderer)`, then asserts the new
 renderer is stored and all cached rendering state is `None`:
 
 ```python
-def test_setting_content_renderer_resets_viewport_and_frame_cache(...) -> None:
+def test_setting_content_renderer_resets_viewport_and_frame_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     renderer = make_renderer(monkeypatch, StringIO())
     renderer.render()
     renderer.viewport = Viewport(RenderedContent(["old"], 3, 1, True), 3, 1)

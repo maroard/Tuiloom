@@ -7,6 +7,10 @@ class MenuRenderer:
 
     def __init__(self, screen_context: ScreenContext) -> None:
         """Capture the screen state required to render the menu."""
+        self.update_screen_context(screen_context)
+
+    def update_screen_context(self, screen_context: ScreenContext) -> None:
+        """Replace the menu state with the current screen context."""
         self.app_name = screen_context.app_name
         self.title = screen_context.title
         self.commands = screen_context.commands

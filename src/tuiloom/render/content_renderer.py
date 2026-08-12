@@ -2,6 +2,11 @@ from collections.abc import Callable, Iterator
 from typing import Literal
 
 from tuiloom.render.rendered_content import RenderedContent
+from tuiloom.render.terminal_text import (
+    display_width,
+    normalize_line,
+    normalize_text_lines,
+)
 
 # Content may be static text or lines, a text stream, or a refresh callable.
 type ContentSource = str | list[str] | Iterator[str] | Callable[[], str | list[str]]
@@ -107,12 +112,14 @@ class ContentRenderer:
     ) -> None:
         """Normalize text or lines and update the rendered dimensions."""
         if isinstance(content, str):
-            self.rendered_content.lines = content.splitlines() or [""]
+            self.rendered_content.lines = normalize_text_lines(content)
 
         elif isinstance(content, list) and all(
             isinstance(element, str) for element in content
         ):
-            self.rendered_content.lines = content or [""]
+            self.rendered_content.lines = [
+                normalize_line(line) for line in content
+            ] or [""]
 
         else:
             raise TypeError(
@@ -120,6 +127,6 @@ class ContentRenderer:
             )
 
         self.rendered_content.width = max(
-            len(line) for line in self.rendered_content.lines
+            display_width(line) for line in self.rendered_content.lines
         )
         self.rendered_content.height = len(self.rendered_content.lines)

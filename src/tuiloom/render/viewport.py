@@ -1,4 +1,5 @@
 from tuiloom.render.rendered_content import RenderedContent
+from tuiloom.render.terminal_text import clip_display, ljust_display
 
 
 class Viewport:
@@ -41,8 +42,12 @@ class Viewport:
         rendered_lines = []
 
         for line in visible_lines:
-            visible_part = line[self.offset_x : self.offset_x + self.width]
-            rendered_lines.append(visible_part.ljust(self.width))
+            visible_part = clip_display(
+                line,
+                self.offset_x,
+                self.offset_x + self.width,
+            )
+            rendered_lines.append(ljust_display(visible_part, self.width))
 
         while len(rendered_lines) < self.height:
             rendered_lines.append(" " * self.width)

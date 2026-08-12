@@ -95,14 +95,16 @@ class TerminalRenderer:
 
     def _write_full_frame(self, lines: list[str]) -> None:
         """Replace the complete terminal frame."""
-        stdout.write("\033[?25l\033[H\033[J" + "\n".join(lines))
+        safe_lines = [normalize_line(line) for line in lines]
+        stdout.write("\033[?25l\033[H\033[J" + "\n".join(safe_lines))
 
     def _write_segment_changes(self, changes: list[SegmentChange]) -> None:
         """Write changed terminal-cell segments at precise coordinates."""
         stdout.write("\033[?25l")
 
         for change in changes:
-            stdout.write(f"\033[{change.row};{change.column}H{change.content}")
+            safe_content = normalize_line(change.content)
+            stdout.write(f"\033[{change.row};{change.column}H{safe_content}")
 
             if change.clear_width:
                 stdout.write(f"\033[{change.clear_width}X")

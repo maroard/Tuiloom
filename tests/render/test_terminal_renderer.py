@@ -8,7 +8,7 @@ from tuiloom.command import CommandContext
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.rendered_content import RenderedContent
-from tuiloom.render.segment_diff import get_segment_changes
+from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
 from tuiloom.render.terminal_renderer import TerminalRenderer
 from tuiloom.render.viewport import Viewport
 from tuiloom.screen_context.screen_context import ScreenContext
@@ -188,6 +188,34 @@ def test_final_frame_safety_removes_cursor_control(
     lines = renderer._compose_frame("", 40, 20)
 
     assert all("\x1b[2J" not in line for line in lines)
+
+
+def test_full_frame_writer_strips_unsafe_terminal_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    renderer = make_renderer(monkeypatch, output)
+
+    renderer._write_full_frame(["safe\x1b[2Jtext"])
+
+    assert "safe" in output.getvalue()
+    assert "text" in output.getvalue()
+    assert "\x1b[2J" not in output.getvalue()
+
+
+def test_segment_writer_strips_unsafe_terminal_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    renderer = make_renderer(monkeypatch, output)
+
+    renderer._write_segment_changes(
+        [SegmentChange(row=1, column=1, content="safe\x1b[2Jtext")]
+    )
+
+    assert "safe" in output.getvalue()
+    assert "text" in output.getvalue()
+    assert "\x1b[2J" not in output.getvalue()
 
 
 def test_render_restores_cursor_after_styled_wide_input(

@@ -36,6 +36,14 @@ def test_normalize_line_keeps_colon_form_sgr() -> None:
     assert display_width(line) == 3
 
 
+def test_normalize_line_keeps_selective_sgr_resets() -> None:
+    line = normalize_line("\x1b[1;31mbold red\x1b[22;39mplain")
+
+    assert "\x1b[1;31m" in line
+    assert "\x1b[22;39m" in line
+    assert display_width(line) == 13
+
+
 def test_normalize_text_lines_propagates_style_and_resets_each_line() -> None:
     lines = normalize_text_lines("\x1b[31mfirst\nsecond\x1b[0m")
 

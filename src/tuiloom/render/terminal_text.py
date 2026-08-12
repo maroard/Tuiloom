@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from re import compile as compile_pattern
 
 from wcwidth import center as wc_center
@@ -9,6 +10,16 @@ from wcwidth import wrap as wc_wrap
 
 RESET_SGR = "\x1b[0m"
 _SGR_PATTERN = compile_pattern(r"\x1b\[[0-?]*[ -/]*m\Z")
+
+
+@dataclass(frozen=True)
+class VisualCell:
+    """Identify one occupied column of a styled Unicode grapheme."""
+
+    text: str
+    style: str
+    offset: int
+    width: int
 
 
 def sanitize_terminal_text(text: str) -> str:
@@ -109,3 +120,38 @@ def wrap_display(text: str, width: int) -> list[str]:
     safe = sanitize_terminal_text(text)
     wrapped = wc_wrap(safe, width, tabsize=8, propagate_sgr=True)
     return [normalize_line(line) for line in wrapped] or [""]
+
+
+def visual_cells(text: str) -> list[VisualCell]:
+    """Project safe styled graphemes into comparable terminal cells."""
+    safe = normalize_line(text)
+    plain_characters: list[str] = []
+    styles: list[str] = []
+    style = ""
+
+    for part, is_sequence in iter_sequences(safe):
+        if is_sequence:
+            style += part
+            continue
+
+        plain_characters.extend(part)
+        styles.extend([style] * len(part))
+
+    plain = "".join(plain_characters)
+    cells: list[VisualCell] = []
+    index = 0
+
+    for grapheme in iter_graphemes(plain):
+        grapheme_width = wc_width(grapheme)
+        grapheme_style = styles[index] if index < len(styles) else ""
+        index += len(grapheme)
+
+        if grapheme_width <= 0:
+            continue
+
+        cells.extend(
+            VisualCell(grapheme, grapheme_style, offset, grapheme_width)
+            for offset in range(grapheme_width)
+        )
+
+    return cells

@@ -6,6 +6,7 @@ from tuiloom.render.terminal_text import (
     ljust_display,
     normalize_line,
     normalize_text_lines,
+    visual_cells,
     wrap_display,
 )
 
@@ -77,3 +78,21 @@ def test_wrap_display_preserves_style_and_visible_width() -> None:
 
 def test_normalize_line_expands_tabs_by_terminal_columns() -> None:
     assert normalize_line("界\tb") == "界      b"
+
+
+def test_visual_cells_keep_grapheme_width_style_and_offsets() -> None:
+    cells = visual_cells("\x1b[31mA界\x1b[0m")
+
+    assert [(cell.text, cell.offset, cell.width) for cell in cells] == [
+        ("A", 0, 1),
+        ("界", 0, 2),
+        ("界", 1, 2),
+    ]
+    assert all("\x1b[31m" in cell.style for cell in cells)
+
+
+def test_visual_cells_keep_combining_sequence_as_one_cell() -> None:
+    cells = visual_cells("e\u0301")
+
+    assert len(cells) == 1
+    assert cells[0].text == "e\u0301"

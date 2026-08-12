@@ -3,8 +3,9 @@ from shutil import get_terminal_size
 from sys import stdout
 
 from tuiloom.render.content_renderer import ContentRenderer
-from tuiloom.render.line_diff import LineChange, get_line_changes
 from tuiloom.render.menu_renderer import MenuRenderer
+from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
+from tuiloom.render.terminal_text import display_width, normalize_line
 from tuiloom.render.viewport import Viewport
 
 
@@ -41,12 +42,12 @@ class TerminalRenderer:
             self._write_full_frame(lines)
 
         else:
-            changes = get_line_changes(self._previous_lines, lines)
+            changes = get_segment_changes(self._previous_lines, lines)
 
             if not changes:
                 return
 
-            self._write_line_changes(changes)
+            self._write_segment_changes(changes)
 
         self._restore_input_cursor(lines)
 
@@ -67,7 +68,7 @@ class TerminalRenderer:
 
         menu_lines = menu_render.splitlines() or [""]
         menu_height = len(menu_lines)
-        menu_width = max(len(line) for line in menu_lines)
+        menu_width = max(display_width(line) for line in menu_lines)
 
         viewport_width = terminal_width
         viewport_height = terminal_height - menu_height - self.spacing
@@ -86,7 +87,7 @@ class TerminalRenderer:
 
         render = viewport_render + "\n" * self.spacing + menu_render
 
-        return render.split("\n")
+        return [normalize_line(line) for line in render.split("\n")]
 
     def _render_terminal_too_small(self) -> list[str]:
         """Return the frame displayed when the terminal is too small."""
@@ -96,16 +97,19 @@ class TerminalRenderer:
         """Replace the complete terminal frame."""
         stdout.write("\033[?25l\033[H\033[J" + "\n".join(lines))
 
-    def _write_line_changes(self, changes: list[LineChange]) -> None:
-        """Replace complete terminal lines at their current rows."""
+    def _write_segment_changes(self, changes: list[SegmentChange]) -> None:
+        """Write changed terminal-cell segments at precise coordinates."""
         stdout.write("\033[?25l")
 
         for change in changes:
-            stdout.write(f"\033[{change.row};1H\033[2K{change.content}")
+            stdout.write(f"\033[{change.row};{change.column}H{change.content}")
+
+            if change.clear_width:
+                stdout.write(f"\033[{change.clear_width}X")
 
     def _get_cursor_position(self, lines: list[str]) -> tuple[int, int]:
         """Return the terminal position immediately after the input line."""
-        return len(lines), len(lines[-1]) + 1
+        return len(lines), display_width(lines[-1]) + 1
 
     def _restore_input_cursor(self, lines: list[str]) -> None:
         """Show the cursor immediately after the current input."""

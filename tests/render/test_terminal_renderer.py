@@ -8,6 +8,7 @@ from tuiloom.command import CommandContext
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.rendered_content import RenderedContent
+from tuiloom.render.segment_diff import get_segment_changes
 from tuiloom.render.terminal_renderer import TerminalRenderer
 from tuiloom.render.viewport import Viewport
 from tuiloom.screen_context.screen_context import ScreenContext
@@ -74,7 +75,7 @@ def test_unchanged_frame_produces_no_additional_output(
     assert output.getvalue() == ""
 
 
-def test_changed_input_rewrites_only_the_prompt_line(
+def test_changed_input_writes_only_the_changed_segment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = StringIO()
@@ -85,9 +86,10 @@ def test_changed_input_rewrites_only_the_prompt_line(
 
     renderer.render("12")
 
-    assert output.getvalue() == (
-        "\033[?25l\033[19;1H\033[2KChoice? (0-1): 12\033[19;18H\033[?25h"
-    )
+    screen = output.getvalue()
+    assert "\033[19;17H" in screen
+    assert "2" in screen
+    assert "Choice?" not in screen
 
 
 def test_resize_forces_complete_redraw(
@@ -144,3 +146,45 @@ def test_setting_content_renderer_resets_viewport_and_frame_cache(
     assert renderer.viewport is None
     assert renderer._previous_lines is None
     assert renderer._previous_terminal_size is None
+
+
+def test_two_changed_regions_produce_two_cursor_moves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = StringIO()
+    renderer = make_renderer(monkeypatch, output)
+    renderer._previous_lines = ["abc DEF ghi JKL"]
+    renderer._previous_terminal_size = os.terminal_size((40, 20))
+
+    renderer._write_segment_changes(
+        get_segment_changes(
+            renderer._previous_lines,
+            ["abc XYZ ghi MNO"],
+        )
+    )
+
+    screen = output.getvalue()
+    assert "\033[1;5H" in screen
+    assert "\033[1;13H" in screen
+    assert "\033[2K" not in screen
+
+
+def test_cursor_position_uses_visible_ansi_unicode_width(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_renderer(monkeypatch, StringIO())
+
+    assert renderer._get_cursor_position(
+        ["\x1b[31mChoice: 界\x1b[0m"]
+    ) == (1, 11)
+
+
+def test_final_frame_safety_removes_cursor_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_renderer(monkeypatch, StringIO())
+    renderer.content_renderer = ContentRenderer("safe\x1b[2Jtext")
+
+    lines = renderer._compose_frame("", 40, 20)
+
+    assert all("\x1b[2J" not in line for line in lines)

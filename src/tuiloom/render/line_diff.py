@@ -16,12 +16,15 @@ def get_line_changes(
 ) -> list[LineChange]:
     """Return the complete lines that differ between two terminal frames."""
     changes: list[LineChange] = []
+    missing = object()
 
     for row, (previous_line, current_line) in enumerate(
-        zip_longest(previous_lines, current_lines, fillvalue=""),
+        zip_longest(previous_lines, current_lines, fillvalue=missing),
         start=1,
     ):
         if previous_line != current_line:
-            changes.append(LineChange(row=row, content=current_line))
+            content = "" if current_line is missing else current_line
+            assert isinstance(content, str)
+            changes.append(LineChange(row=row, content=content))
 
     return changes

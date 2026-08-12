@@ -18,3 +18,11 @@ def test_line_diff_clears_removed_trailing_lines() -> None:
     assert get_line_changes(["first", "second"], ["first"]) == [
         LineChange(row=2, content="")
     ]
+
+
+def test_line_diff_returns_added_empty_trailing_line() -> None:
+    assert get_line_changes(["first"], ["first", ""]) == [LineChange(row=2, content="")]
+
+
+def test_line_diff_clears_removed_empty_trailing_line() -> None:
+    assert get_line_changes(["first", ""], ["first"]) == [LineChange(row=2, content="")]

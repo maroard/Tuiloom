@@ -20,9 +20,48 @@ class RecordingTerminalRenderer(TerminalRenderer):
         self.invalidations += 1
 
 
+class RecordingMenuRenderer:
+    """Record context refreshes without formatting a menu."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.contexts: list[object] = []
+
+    def update_screen_context(self, screen_context: object) -> None:
+        self.contexts.append(screen_context)
+        self.events.append("refresh")
+
+
+class OrderedTerminalRenderer(RecordingTerminalRenderer):
+    """Record terminal rendering in a shared event sequence."""
+
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    def render(self, input_buffer: str = "") -> None:
+        self.events.append("render")
+        super().render(input_buffer)
+
+
 def make_menu() -> TerminalMenu:
     app = TerminalApp("App")
     return app.set_main_menu("Menu")
+
+
+def test_menu_refreshes_screen_context_before_rendering() -> None:
+    menu = make_menu()
+    events: list[str] = []
+    menu_renderer = RecordingMenuRenderer(events)
+    terminal_renderer = OrderedTerminalRenderer(events)
+    menu.menu_renderer = menu_renderer  # type: ignore[assignment]
+    menu.terminal_renderer = terminal_renderer
+    menu.screen_context.message = "Credits"
+
+    menu._render()
+
+    assert menu_renderer.contexts == [menu.screen_context]
+    assert events == ["refresh", "render"]
 
 
 def test_menu_forwards_typed_input_to_terminal_renderer() -> None:

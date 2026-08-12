@@ -1,3 +1,5 @@
+from typing import Any
+
 from tuiloom.command import CommandContext
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.screen_context.screen_context import ScreenContext
@@ -9,14 +11,14 @@ def do_nothing(context: CommandContext) -> None:
 
 def make_context(**changes: object) -> ScreenContext:
     """Build a context with defaults that tests can selectively replace."""
-    values = {
+    values: dict[str, Any] = {
         "app_name": "App",
         "menu_name": "Menu",
         "title": "Title",
         "commands": {"0": (do_nothing, "Back")},
     }
     values.update(changes)
-    return ScreenContext(**values)  # type: ignore[arg-type]
+    return ScreenContext(**values)
 
 
 def test_update_screen_context_replaces_every_rendered_field() -> None:

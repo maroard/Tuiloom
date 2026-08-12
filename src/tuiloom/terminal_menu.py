@@ -218,7 +218,10 @@ class TerminalMenu:
             sleep(0.01)
 
     def _render(self) -> None:
-        """Render the menu with the current command input."""
+        """Refresh the menu state and render the current command input."""
+        if self.menu_renderer is not None:
+            self.menu_renderer.update_screen_context(self.screen_context)
+
         if self.terminal_renderer is not None:
             self.terminal_renderer.render(self._input_buffer)
 

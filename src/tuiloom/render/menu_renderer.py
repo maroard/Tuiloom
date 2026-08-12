@@ -1,4 +1,12 @@
 from tuiloom.command import Command
+from tuiloom.render.terminal_text import (
+    center_display,
+    display_width,
+    ljust_display,
+    normalize_line,
+    normalize_text_lines,
+    wrap_display,
+)
 from tuiloom.screen_context.screen_context import ScreenContext
 
 
@@ -27,12 +35,16 @@ class MenuRenderer:
 
     def _calculate_width(self) -> int:
         """Calculate the smallest width that fits every menu element."""
-        width_requirements = [len(self.app_name), len(self.title)]
+        width_requirements = [
+            display_width(self.app_name),
+            display_width(self.title),
+        ]
 
         for content in (self.text, self.message, self.alert):
             if content:
                 width_requirements.extend(
-                    len(line) + 2 for line in content.splitlines()
+                    display_width(line) + 2
+                    for line in normalize_text_lines(content)
                 )
 
         items = self._get_menu_items()
@@ -43,11 +55,17 @@ class MenuRenderer:
             right_items = items[middle:]
 
             left_requirement = max(
-                (len(f" {key}. {command[1]}") for key, command in left_items),
+                (
+                    display_width(f" {key}. {command[1]}")
+                    for key, command in left_items
+                ),
                 default=0,
             )
             right_requirement = max(
-                (len(f" {key}. {command[1]}") for key, command in right_items),
+                (
+                    display_width(f" {key}. {command[1]}")
+                    for key, command in right_items
+                ),
                 default=0,
             )
 
@@ -59,12 +77,13 @@ class MenuRenderer:
             )
         else:
             width_requirements.extend(
-                len(f" {key}. {command[1]}") for key, command in items
+                display_width(f" {key}. {command[1]}")
+                for key, command in items
             )
 
         zero_command = self.commands.get("0")
         if zero_command is not None:
-            width_requirements.append(len(f" 0. {zero_command[1]}"))
+            width_requirements.append(display_width(f" 0. {zero_command[1]}"))
 
         return max(width_requirements)
 
@@ -82,10 +101,10 @@ class MenuRenderer:
         return (
             f"╭{'─' * self.width}╮\n"
             f"│{'':{self.width}}│\n"
-            f"│{f'{self.app_name}':^{self.width}}│\n"
+            f"│{center_display(self.app_name, self.width)}│\n"
             f"│{'':{self.width}}│\n"
             f"├{'─' * self.width}┤\n"
-            f"│{self.title:^{self.width}}│\n"
+            f"│{center_display(self.title, self.width)}│\n"
             f"├{'─' * self.width}┤\n"
             f"{body_display}"
             f"{footer_display}"
@@ -101,7 +120,7 @@ class MenuRenderer:
         alert_display = ""
 
         for line in self._wrap_lines(self.alert):
-            alert_display += f"│{' ' + line:<{self.width}}│\n"
+            alert_display += f"│{ljust_display(' ' + line, self.width)}│\n"
 
         return alert_display
 
@@ -124,7 +143,7 @@ class MenuRenderer:
         text_label = ""
 
         for line in self._wrap_lines(self.text):
-            text_label += f"│{' ' + line:<{self.width}}│\n"
+            text_label += f"│{ljust_display(' ' + line, self.width)}│\n"
 
         text_label += f"│{'':{self.width}}│\n"
 
@@ -139,9 +158,11 @@ class MenuRenderer:
         else:
             commands_label = self._get_single_column_commands(items)
 
-        commands_label += (
-            f"│{'':{self.width}}│\n│{' 0. ' + self.commands['0'][1]:<{self.width}}│\n"
+        zero_command = ljust_display(
+            " 0. " + self.commands["0"][1],
+            self.width,
         )
+        commands_label += f"│{'':{self.width}}│\n│{zero_command}│\n"
 
         return commands_label
 
@@ -172,9 +193,9 @@ class MenuRenderer:
                 right_key, right_value = right_items[i]
                 right_text = f" {right_key}. {right_value[1]}"
 
-            commands_label += (
-                f"│{left_text:<{left_width}}{right_text:<{right_width}}│\n"
-            )
+            left_display = ljust_display(left_text, left_width)
+            right_display = ljust_display(right_text, right_width)
+            commands_label += f"│{left_display}{right_display}│\n"
 
         return commands_label
 
@@ -187,7 +208,7 @@ class MenuRenderer:
 
         for key, value in items:
             text = f" {key}. {value[1]}"
-            commands_label += f"│{text:<{self.width}}│\n"
+            commands_label += f"│{ljust_display(text, self.width)}│\n"
 
         return commands_label
 
@@ -211,47 +232,29 @@ class MenuRenderer:
         message_display = ""
 
         for line in self._wrap_lines(self.message):
-            message_display += f"│{' ' + line:<{self.width}}│\n"
+            message_display += f"│{ljust_display(' ' + line, self.width)}│\n"
 
         return message_display
 
     def _get_alert_prompt_display(self) -> str:
         """Return the prompt displayed while an alert is active."""
         if self.prompt is not None:
-            return self.prompt
+            return normalize_line(self.prompt)
 
         return "Press Enter to continue: "
 
     def _get_prompt_display(self) -> str:
         """Return the custom or default normal menu prompt."""
         if self.prompt is not None:
-            return self.prompt
+            return normalize_line(self.prompt)
 
         return f"Choice? (0-{len(self.commands) - 1}): "
 
     def _wrap_lines(self, text: str) -> list[str]:
-        """Wrap multiline text to the menu's available inner width."""
+        """Wrap safe styled text to the menu's available inner width."""
         wrapped_lines: list[str] = []
 
-        max_width = self.width - 2
+        for raw_line in normalize_text_lines(text):
+            wrapped_lines.extend(wrap_display(raw_line, self.width - 2))
 
-        for raw_line in text.splitlines():
-            words = raw_line.split()
-            current_line = ""
-
-            if not words:
-                wrapped_lines.append("")
-                continue
-
-            for word in words:
-                if not current_line:
-                    current_line = word
-                elif len(current_line) + 1 + len(word) <= max_width:
-                    current_line += " " + word
-                else:
-                    wrapped_lines.append(current_line)
-                    current_line = word
-
-            wrapped_lines.append(current_line)
-
-        return wrapped_lines
+        return wrapped_lines or [""]

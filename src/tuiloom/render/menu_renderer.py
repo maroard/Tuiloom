@@ -1,4 +1,5 @@
-from tuiloom.screen_context.screen_context import Command, ScreenContext
+from tuiloom.command import Command
+from tuiloom.screen_context.screen_context import ScreenContext
 
 
 class MenuRenderer:

@@ -1,15 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from time import sleep
 from typing import TYPE_CHECKING
 
 from tuiloom._message_registry import MessageKey
+from tuiloom.command import (
+    CommandBehavior,
+    CommandContext,
+    CommandDict,
+    _without_context,
+)
 from tuiloom.input_handler.input_event import InputEvent, InputEventType
 from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
-from tuiloom.screen_context.screen_context import CommandDict, ScreenContext
+from tuiloom.screen_context.screen_context import ScreenContext
 
 if TYPE_CHECKING:
     from tuiloom.terminal_app import TerminalApp
@@ -46,9 +51,7 @@ class TerminalMenu:
         self.app = app
         self.screen_context = screen_context
         self._content_source = (
-            content_source
-            if content_source is not None
-            else app.global_content_source
+            content_source if content_source is not None else app.global_content_source
         )
         self.spacing_with_content = spacing_with_content
         self.show = show
@@ -58,7 +61,7 @@ class TerminalMenu:
         self._disabled_messages: set[str] = set()
 
         self.commands: CommandDict = self.screen_context.commands
-        self.commands["0"] = (self.stop, "Back")
+        self.commands["0"] = (_without_context(self.stop), "Back")
 
         self.content_renderer: ContentRenderer | None = None
         self.menu_renderer: MenuRenderer | None = None
@@ -76,14 +79,14 @@ class TerminalMenu:
     def add_command(
         self,
         name: str,
-        behavior: Callable[[], None],
+        behavior: CommandBehavior,
         index: int | None = None,
     ) -> None:
         """Add or replace a numbered menu command.
 
         Args:
             name: Label displayed for the command.
-            behavior: Zero-argument callable invoked by the command.
+            behavior: Callback invoked with a context describing this execution.
             index: Command number, or ``None`` to use the next number.
 
         Raises:
@@ -115,7 +118,7 @@ class TerminalMenu:
         """
         self.add_command(
             name=name,
-            behavior=menu.run,
+            behavior=_without_context(menu.run),
             index=index,
         )
 
@@ -253,7 +256,7 @@ class TerminalMenu:
         command = self._input_buffer
         self._input_buffer = ""
 
-        if self.app._handle_global_command(command):
+        if self.app._handle_global_command(command, self):
             return
 
         command_data = self.commands.get(command)
@@ -263,7 +266,7 @@ class TerminalMenu:
             return
 
         action = command_data[0]
-        action()
+        action(CommandContext(app=self.app, menu=self, command_key=command))
 
     def _handle_unknown_command(self, command: str) -> None:
         """Display the unknown-command message when it is enabled."""

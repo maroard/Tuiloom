@@ -1,10 +1,10 @@
-from collections.abc import Callable
 from sys import stdout
 
 from tuiloom._message_registry import MessageRegistry
+from tuiloom.command import CommandBehavior, CommandContext, CommandDict
 from tuiloom.input_handler.input_handler import InputHandler
 from tuiloom.render.content_renderer import ContentSource
-from tuiloom.screen_context.screen_context import CommandDict, ScreenContext
+from tuiloom.screen_context.screen_context import ScreenContext
 from tuiloom.terminal_menu import TerminalMenu
 
 
@@ -75,17 +75,16 @@ class TerminalApp:
         self,
         key: str,
         name: str,
-        behavior: Callable[[], None],
+        behavior: CommandBehavior,
     ) -> None:
         """Register a command that is available in every menu.
 
-        Sequences entered by the user dispatch multiple individually registered
-        commands.
+        The complete user input resolves one exact normalized global key.
 
         Args:
             key: Single alphabetic character used to invoke the command.
             name: Label describing the command.
-            behavior: Zero-argument callable invoked by the command.
+            behavior: Callback invoked with a context describing this execution.
 
         Raises:
             ValueError: If ``key`` is not a single alphabetic character.
@@ -138,24 +137,16 @@ class TerminalApp:
         """Resolve a message through the application's private registry."""
         return self._message_registry.get(key, **context)
 
-    def _handle_global_command(self, command: str) -> bool:
-        """Execute a sequence of registered global commands atomically."""
-        if not command:
+    def _handle_global_command(self, command: str, menu: TerminalMenu) -> bool:
+        """Resolve and execute one exact normalized global command."""
+        command_key = command.upper()
+        command_data = self.global_commands.get(command_key)
+
+        if command_data is None:
             return False
 
-        actions_to_proceed: list[Callable[[], None]] = []
-
-        for char in command:
-            command_data = self.global_commands.get(char.upper())
-
-            if command_data is None:
-                return False
-
-            actions_to_proceed.append(command_data[0])
-
-        for action in actions_to_proceed:
-            action()
-
+        action = command_data[0]
+        action(CommandContext(app=self, menu=menu, command_key=command_key))
         return True
 
     def run(self) -> None:

@@ -1,10 +1,6 @@
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
-# A command pairs its zero-argument behavior with its displayed label.
-Command = tuple[Callable[[], None], str]
-# Commands are indexed by the input text that selects them.
-CommandDict = dict[str, Command]
+from tuiloom.command import CommandDict
 
 
 @dataclass

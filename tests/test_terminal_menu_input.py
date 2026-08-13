@@ -1,3 +1,5 @@
+import pytest
+
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
@@ -42,6 +44,26 @@ class OrderedTerminalRenderer(RecordingTerminalRenderer):
     def render(self, input_buffer: str = "") -> None:
         self.events.append("render")
         super().render(input_buffer)
+
+
+class RecordingEventLoop:
+    """Record menu event-loop lifecycle and source replacements."""
+
+    def __init__(self, menu: TerminalMenu) -> None:
+        self.menu = menu
+        self.run_calls = 0
+        self.closed = False
+        self.installed_sources: list[object] = []
+
+    def run(self) -> None:
+        self.run_calls += 1
+        self.menu.stop()
+
+    def close(self) -> None:
+        self.closed = True
+
+    def install_source(self, source: object) -> None:
+        self.installed_sources.append(source)
 
 
 def make_menu() -> TerminalMenu:
@@ -109,24 +131,34 @@ def test_menu_stores_content_source_before_rendering_starts() -> None:
     assert menu.content_renderer is None
 
 
-def test_menu_replaces_active_content_renderer_and_consumes_new_stream() -> None:
+def test_menu_replaces_active_content_source_through_event_loop() -> None:
     menu = make_menu()
     menu.running = True
-    old_content_renderer = ContentRenderer("old")
-    terminal_renderer = TerminalRenderer(
-        menu_renderer=MenuRenderer(menu.screen_context),
-        content_renderer=old_content_renderer,
-        spacing=1,
-    )
-    menu.content_renderer = old_content_renderer
-    menu.terminal_renderer = terminal_renderer
+    event_loop = RecordingEventLoop(menu)
+    menu._event_loop = event_loop  # type: ignore[assignment]
     stream = iter(["chunk"])
 
     menu.set_content_source(stream)
 
-    assert menu.content_renderer is terminal_renderer.content_renderer
-    assert menu.content_renderer is not old_content_renderer
-    assert menu.content_renderer.update().lines == ["chunk"]
+    assert event_loop.installed_sources == [stream]
+
+
+def test_menu_run_delegates_repeated_work_to_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu = make_menu()
+    menu.app.input_handler = object()  # type: ignore[assignment]
+    event_loop = RecordingEventLoop(menu)
+    monkeypatch.setattr(
+        menu,
+        "_create_event_loop",
+        lambda: event_loop,
+    )
+
+    menu.run()
+
+    assert event_loop.run_calls == 1
+    assert event_loop.closed is True
 
 
 def test_stopped_menu_stores_source_without_replacing_stale_renderer() -> None:

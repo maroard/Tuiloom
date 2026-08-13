@@ -60,6 +60,7 @@ class EventLoop:
         self._next_frame_at = now
         self._next_state_check_at = now
         self._dynamic_in_flight = False
+        self._next_dynamic_at = now
         self._closed = False
 
         self._install_worker(content_renderer)
@@ -74,12 +75,11 @@ class EventLoop:
         ready = self._selector.select(self._get_wait_timeout())
 
         for key, _ in ready:
-            if key.data == "input":
-                self._drain_input()
-            elif key.data == "source":
+            if key.data == "source":
                 self._drain_wakeup()
                 self._drain_source_events()
 
+        self._drain_input()
         self._request_dynamic_update()
         self._check_visible_state()
         self._render_if_due()
@@ -95,6 +95,7 @@ class EventLoop:
         """Replace the active source and discard every stale source event."""
         content_renderer = ContentRenderer(source)
         self.content_renderer = content_renderer
+        self.menu.content_renderer = content_renderer
         self.terminal_renderer.set_content_renderer(content_renderer)
         self._install_worker(content_renderer)
         self.request_render(immediate=True)
@@ -224,10 +225,12 @@ class EventLoop:
             self.content_renderer.state != "dynamic"
             or self._source_worker is None
             or self._dynamic_in_flight
+            or self._clock() < self._next_dynamic_at
         ):
             return
 
         self._dynamic_in_flight = True
+        self._next_dynamic_at = self._clock() + self._FRAME_INTERVAL
         self._source_worker.request_dynamic_update()
 
     def _render_if_due(self) -> None:
@@ -250,6 +253,14 @@ class EventLoop:
         if self._dirty:
             deadlines.append(self._next_frame_at)
 
+        input_timeout = self.input_handler.get_pending_timeout(now)
+
+        if input_timeout is not None:
+            deadlines.append(now + input_timeout)
+
+        if self.content_renderer.state == "dynamic" and not self._dynamic_in_flight:
+            deadlines.append(self._next_dynamic_at)
+
         return max(0.0, min(deadlines) - now)
 
     def _check_visible_state(self) -> None:
@@ -271,7 +282,7 @@ class EventLoop:
         """Wake the selector after publishing a source event."""
         try:
             self._wakeup_writer.send(b"\0")
-        except BlockingIOError:
+        except (BlockingIOError, OSError):
             pass
 
     def _drain_wakeup(self) -> None:

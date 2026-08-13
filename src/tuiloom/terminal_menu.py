@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from time import sleep
 from typing import TYPE_CHECKING
 
 from tuiloom._message_registry import MessageKey
@@ -10,6 +9,7 @@ from tuiloom.command import (
     CommandDict,
     _without_context,
 )
+from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent, InputEventType
 from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
@@ -66,6 +66,7 @@ class TerminalMenu:
         self.content_renderer: ContentRenderer | None = None
         self.menu_renderer: MenuRenderer | None = None
         self.terminal_renderer: TerminalRenderer | None = None
+        self._event_loop: EventLoop | None = None
 
     @property
     def is_main(self) -> bool:
@@ -134,11 +135,10 @@ class TerminalMenu:
         """
         self._content_source = content_source
 
-        if not self.running or self.terminal_renderer is None:
+        if not self.running or self._event_loop is None:
             return
 
-        self.content_renderer = ContentRenderer(content_source)
-        self.terminal_renderer.set_content_renderer(self.content_renderer)
+        self._event_loop.install_source(content_source)
 
     def disable_message(self, key: str) -> None:
         """Suppress a registry message locally in this menu.
@@ -207,15 +207,35 @@ class TerminalMenu:
             spacing=self.spacing_with_content,
         )
 
-        while self.running:
-            self._render()
+        self._event_loop = self._create_event_loop()
 
-            event = self.app.input_handler.poll()
+        try:
+            self._event_loop.run()
+        finally:
+            self._event_loop.close()
+            self._event_loop = None
 
-            if event is not None:
-                self._handle_event(event)
+    def _create_event_loop(self) -> EventLoop:
+        """Create the event loop after every required menu resource exists."""
+        if self.app.input_handler is None:
+            raise RuntimeError("Cannot create event loop without an input handler")
 
-            sleep(0.01)
+        if self.content_renderer is None:
+            raise RuntimeError("Cannot create event loop without a content renderer")
+
+        if self.menu_renderer is None:
+            raise RuntimeError("Cannot create event loop without a menu renderer")
+
+        if self.terminal_renderer is None:
+            raise RuntimeError("Cannot create event loop without a terminal renderer")
+
+        return EventLoop(
+            menu=self,
+            input_handler=self.app.input_handler,
+            menu_renderer=self.menu_renderer,
+            terminal_renderer=self.terminal_renderer,
+            content_renderer=self.content_renderer,
+        )
 
     def _render(self) -> None:
         """Refresh the menu state and render the current command input."""
@@ -277,6 +297,9 @@ class TerminalMenu:
         command_data = self.commands.get(command)
 
         if command_data is None:
+            if not command:
+                self.screen_context.message = None
+                return
             self._handle_unknown_command(command)
             return
 

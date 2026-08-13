@@ -45,6 +45,13 @@ class InputHandler:
         """Return the terminal descriptor watched by the application event loop."""
         return self.fd
 
+    def get_pending_timeout(self, now: float) -> float | None:
+        """Return the remaining delay before a buffered Escape becomes input."""
+        if self._escape_started_at is None:
+            return None
+
+        return max(0.0, self._escape_timeout - (now - self._escape_started_at))
+
     def _parse_buffer(self) -> InputEvent | None:
         """Parse one normalized event from the buffered terminal bytes."""
         if not self._input_buffer:

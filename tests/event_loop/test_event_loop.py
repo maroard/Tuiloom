@@ -64,6 +64,9 @@ class FakeInputHandler:
         self.poll_calls += 1
         return self.events.pop(0) if self.events else None
 
+    def get_pending_timeout(self, now: float) -> float | None:
+        return None
+
 
 class RecordingTerminalRenderer(TerminalRenderer):
     """Record frames without composing or writing terminal output."""

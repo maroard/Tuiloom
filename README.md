@@ -46,3 +46,16 @@ combining characters, wide CJK text, and emoji grapheme clusters.
 Tuiloom intentionally strips terminal control sequences that can move the
 cursor, erase the screen, scroll, or change terminal state. The renderer keeps
 exclusive control of terminal geometry while preserving user-provided style.
+
+## Streaming performance
+
+Synchronous iterators keep the same public API shown above, but Tuiloom consumes
+them outside the UI thread. Generated chunks cross a bounded buffer and are
+grouped into visual updates rendered at up to 60 frames per second. Keyboard
+input, scrolling, and cursor updates therefore remain responsive while a source
+waits for its next chunk.
+
+Generators should release the Python GIL during long native work when possible.
+A cancelled generator must eventually return from a blocked `next()` call before
+Tuiloom can close that generator's own resources, although stale output is
+ignored immediately.

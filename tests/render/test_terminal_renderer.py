@@ -75,6 +75,29 @@ def test_unchanged_frame_produces_no_additional_output(
     assert output.getvalue() == ""
 
 
+def test_clean_renderer_skips_complete_frame_composition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_renderer(monkeypatch, StringIO())
+    compose_calls = 0
+    original = renderer._compose_frame
+
+    def count(
+        input_buffer: str,
+        terminal_width: int,
+        terminal_height: int,
+    ) -> list[str]:
+        nonlocal compose_calls
+        compose_calls += 1
+        return original(input_buffer, terminal_width, terminal_height)
+
+    monkeypatch.setattr(renderer, "_compose_frame", count)
+    renderer.render()
+    renderer.render()
+
+    assert compose_calls == 1
+
+
 def test_changed_input_writes_only_the_changed_segment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

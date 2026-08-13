@@ -25,10 +25,16 @@ class TerminalRenderer:
         self.viewport: Viewport | None = None
         self._previous_lines: list[str] | None = None
         self._previous_terminal_size: terminal_size | None = None
+        self._last_render_key: tuple[object, ...] | None = None
 
     def render(self, input_buffer: str = "") -> None:
         """Render and write one complete terminal frame."""
         current_terminal_size = get_terminal_size()
+        render_key = self._get_render_key(input_buffer, current_terminal_size)
+
+        if render_key == self._last_render_key:
+            return
+
         lines = self._compose_frame(
             input_buffer,
             current_terminal_size.columns,
@@ -45,6 +51,9 @@ class TerminalRenderer:
             changes = get_segment_changes(self._previous_lines, lines)
 
             if not changes:
+                self._last_render_key = render_key
+                self._previous_lines = lines
+                self._previous_terminal_size = current_terminal_size
                 return
 
             self._write_segment_changes(changes)
@@ -55,6 +64,25 @@ class TerminalRenderer:
 
         self._previous_lines = lines
         self._previous_terminal_size = current_terminal_size
+        self._last_render_key = render_key
+
+    def _get_render_key(
+        self,
+        input_buffer: str,
+        current_terminal_size: terminal_size,
+    ) -> tuple[object, ...]:
+        """Return every cheap state value that can change the complete frame."""
+        offset_x = self.viewport.offset_x if self.viewport is not None else 0
+        offset_y = self.viewport.offset_y if self.viewport is not None else 0
+        return (
+            current_terminal_size,
+            self.content_renderer.rendered_content.revision,
+            self.menu_renderer.revision,
+            input_buffer,
+            self.spacing,
+            offset_x,
+            offset_y,
+        )
 
     def _compose_frame(
         self,
@@ -122,6 +150,7 @@ class TerminalRenderer:
         """Force a complete redraw of the next terminal frame."""
         self._previous_lines = None
         self._previous_terminal_size = None
+        self._last_render_key = None
 
     def set_content_renderer(self, content_renderer: ContentRenderer) -> None:
         """Replace active content and reset source-specific rendering state."""

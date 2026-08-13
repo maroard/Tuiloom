@@ -9,3 +9,4 @@ class RenderedContent:
     width: int
     height: int
     finished: bool
+    revision: int = 0

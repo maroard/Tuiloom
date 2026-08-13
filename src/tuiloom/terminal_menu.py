@@ -13,7 +13,7 @@ from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent, InputEventType
 from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
-from tuiloom.render.terminal_renderer import TerminalRenderer
+from tuiloom.render.terminal_renderer import AutoScrollMode, TerminalRenderer
 from tuiloom.screen_context.screen_context import ScreenContext
 
 if TYPE_CHECKING:
@@ -34,6 +34,7 @@ class TerminalMenu:
         content_source: ContentSource | None = None,
         spacing_with_content: int = 1,
         show: bool = True,
+        auto_scroll: AutoScrollMode | None = None,
     ) -> None:
         """Create a menu attached to an application.
 
@@ -47,6 +48,8 @@ class TerminalMenu:
                 menu controls.
             show: Initial visibility flag retained for application-controlled
                 menu display.
+            auto_scroll: Iterator auto-scroll policy, or ``None`` to preserve
+                manual vertical positioning.
         """
         self.app = app
         self.screen_context = screen_context
@@ -67,6 +70,8 @@ class TerminalMenu:
         self.menu_renderer: MenuRenderer | None = None
         self.terminal_renderer: TerminalRenderer | None = None
         self._event_loop: EventLoop | None = None
+        self._auto_scroll: AutoScrollMode | None = None
+        self.auto_scroll = auto_scroll
 
     @property
     def is_main(self) -> bool:
@@ -76,6 +81,28 @@ class TerminalMenu:
             ``True`` when this object is the application's main menu.
         """
         return self is self.app.main_menu
+
+    @property
+    def auto_scroll(self) -> AutoScrollMode | None:
+        """Return the iterator auto-scroll policy used by this menu."""
+        return self._auto_scroll
+
+    @auto_scroll.setter
+    def auto_scroll(self, mode: AutoScrollMode | None) -> None:
+        """Validate and replace the iterator auto-scroll policy."""
+        if mode not in (None, "smart", "strict"):
+            raise ValueError(
+                "Auto-scroll mode must be 'smart', 'strict', or None, "
+                f"got {mode!r}"
+            )
+
+        if mode == self._auto_scroll:
+            return
+
+        self._auto_scroll = mode
+
+        if self.terminal_renderer is not None:
+            self.terminal_renderer.reset_stream_auto_scroll()
 
     def add_command(
         self,

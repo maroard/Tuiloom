@@ -32,6 +32,10 @@ def test_package_declares_inline_typing() -> None:
     assert files("tuiloom").joinpath("py.typed").is_file()
 
 
+def test_auto_scroll_mode_is_public() -> None:
+    assert tuiloom.AutoScrollMode is not None
+
+
 def test_every_public_class_has_documentation() -> None:
     for public_class in (
         CommandContext,

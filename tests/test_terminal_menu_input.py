@@ -178,3 +178,48 @@ def test_stopped_menu_stores_source_without_replacing_stale_renderer() -> None:
     assert menu._content_source is stream
     assert menu.content_renderer is old_content_renderer
     assert terminal_renderer.content_renderer is old_content_renderer
+
+
+def test_menu_auto_scroll_defaults_to_none() -> None:
+    assert make_menu().auto_scroll is None
+
+
+@pytest.mark.parametrize("mode", ["smart", "strict"])
+def test_menu_accepts_supported_auto_scroll_modes(mode: str) -> None:
+    menu = make_menu()
+
+    menu.auto_scroll = mode  # type: ignore[assignment]
+
+    assert menu.auto_scroll == mode
+
+
+def test_menu_rejects_invalid_auto_scroll_mode() -> None:
+    menu = make_menu()
+
+    with pytest.raises(
+        ValueError,
+        match="Auto-scroll mode must be 'smart', 'strict', or None",
+    ):
+        menu.auto_scroll = "bottom"  # type: ignore[assignment]
+
+
+def test_menu_constructor_accepts_auto_scroll_mode() -> None:
+    app = TerminalApp("App")
+    menu = TerminalMenu(
+        app,
+        app.set_main_menu("Main").screen_context,
+        auto_scroll="smart",
+    )
+
+    assert menu.auto_scroll == "smart"
+
+
+def test_menu_constructor_rejects_invalid_auto_scroll_mode() -> None:
+    app = TerminalApp("App")
+
+    with pytest.raises(ValueError, match="Auto-scroll mode must be"):
+        TerminalMenu(
+            app,
+            app.set_main_menu("Main").screen_context,
+            auto_scroll="bottom",  # type: ignore[arg-type]
+        )

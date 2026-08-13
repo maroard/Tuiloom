@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from queue import Empty, Queue
 from selectors import EVENT_READ, BaseSelector, DefaultSelector
+from shutil import get_terminal_size
 from socket import socketpair
 from time import monotonic
 from typing import TYPE_CHECKING
@@ -59,6 +60,7 @@ class EventLoop:
         self._next_state_check_at = now
         self._dynamic_in_flight = False
         self._next_dynamic_at = now
+        self._terminal_size = get_terminal_size()
         self._closed = False
 
         self._install_worker(content_renderer)
@@ -262,7 +264,7 @@ class EventLoop:
         return max(0.0, min(deadlines) - now)
 
     def _check_visible_state(self) -> None:
-        """Detect direct screen-context mutations at a low fixed cadence."""
+        """Detect screen-context and terminal-size changes at a fixed cadence."""
         now = self._clock()
 
         if now < self._next_state_check_at:
@@ -273,6 +275,12 @@ class EventLoop:
 
         if self.menu_renderer.revision != revision:
             self.request_render()
+
+        terminal_size = get_terminal_size()
+
+        if terminal_size != self._terminal_size:
+            self._terminal_size = terminal_size
+            self.request_render(immediate=True)
 
         self._next_state_check_at = now + self._STATE_CHECK_INTERVAL
 

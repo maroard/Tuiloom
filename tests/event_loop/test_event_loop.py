@@ -1,8 +1,10 @@
+import os
 from selectors import BaseSelector, SelectorKey
 from typing import Any, cast
 
 import pytest
 
+import tuiloom.event_loop.event_loop as event_loop_module
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.input_handler.input_event import InputEvent
@@ -165,4 +167,26 @@ def test_source_error_is_raised_with_worker_traceback() -> None:
     with pytest.raises(ValueError, match="broken source"):
         loop._drain_source_events()
 
+    loop.close()
+
+
+def test_terminal_resize_requests_a_new_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminal_size = [os.terminal_size((80, 24))]
+    monkeypatch.setattr(
+        event_loop_module,
+        "get_terminal_size",
+        lambda: terminal_size[0],
+        raising=False,
+    )
+    loop, clock, _, terminal_renderer = make_loop()
+    loop._render_if_due()
+    terminal_size[0] = os.terminal_size((20, 5))
+    clock.advance(loop._STATE_CHECK_INTERVAL)
+
+    loop._check_visible_state()
+    loop._render_if_due()
+
+    assert terminal_renderer.render_calls == 2
     loop.close()

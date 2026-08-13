@@ -76,12 +76,21 @@ class RecordingTerminalRenderer(TerminalRenderer):
     def __init__(self) -> None:
         self.render_calls = 0
         self.content_renderer = ContentRenderer("")
+        self.auto_scroll_modes: list[object] = []
+        self.reset_auto_scroll_calls = 0
 
     def render(self, input_buffer: str = "") -> None:
         self.render_calls += 1
 
     def set_content_renderer(self, content_renderer: ContentRenderer) -> None:
         self.content_renderer = content_renderer
+        self.reset_stream_auto_scroll()
+
+    def apply_stream_auto_scroll(self, mode: object) -> None:
+        self.auto_scroll_modes.append(mode)
+
+    def reset_stream_auto_scroll(self) -> None:
+        self.reset_auto_scroll_calls += 1
 
 
 def make_loop(
@@ -189,4 +198,45 @@ def test_terminal_resize_requests_a_new_frame(
     loop._render_if_due()
 
     assert terminal_renderer.render_calls == 2
+    loop.close()
+
+
+def test_iterator_batch_applies_current_menu_auto_scroll_mode() -> None:
+    loop, _, _, terminal_renderer = make_loop(source=iter(()))
+    loop.menu.auto_scroll = "strict"
+    loop.source_events.put(SourceEvent(loop.generation, "data", "chunk"))
+
+    loop._drain_source_events()
+
+    assert terminal_renderer.auto_scroll_modes == ["strict"]
+    loop.close()
+
+
+def test_empty_iterator_event_drain_does_not_apply_auto_scroll() -> None:
+    loop, _, _, terminal_renderer = make_loop(source=iter(()))
+    loop.menu.auto_scroll = "strict"
+
+    loop._drain_source_events()
+
+    assert terminal_renderer.auto_scroll_modes == []
+    loop.close()
+
+
+def test_dynamic_result_does_not_apply_auto_scroll() -> None:
+    loop, _, _, terminal_renderer = make_loop(source=lambda: "dynamic")
+    loop.menu.auto_scroll = "strict"
+    loop.source_events.put(SourceEvent(loop.generation, "data", "dynamic"))
+
+    loop._drain_source_events()
+
+    assert terminal_renderer.auto_scroll_modes == []
+    loop.close()
+
+
+def test_installing_source_resets_auto_scroll_state() -> None:
+    loop, _, _, terminal_renderer = make_loop()
+
+    loop.install_source(iter(()))
+
+    assert terminal_renderer.reset_auto_scroll_calls == 1
     loop.close()

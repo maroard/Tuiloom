@@ -47,6 +47,32 @@ def make_renderer(
     return renderer
 
 
+def make_stream_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> TerminalRenderer:
+    """Create a renderer whose viewport shows three of many streamed lines."""
+    renderer = make_renderer(monkeypatch, StringIO())
+    renderer.set_content_renderer(ContentRenderer(iter(())))
+    monkeypatch.setattr(
+        terminal_renderer_module,
+        "get_terminal_size",
+        lambda: os.terminal_size((40, 16)),
+    )
+    return renderer
+
+
+def fill_and_follow_bottom(
+    renderer: TerminalRenderer,
+    mode: str,
+) -> None:
+    """Fill a stream and apply one auto-scroll policy."""
+    renderer.content_renderer.append_stream_batch(
+        ["1\n2\n3\n4\n5\n6\n7\n8"]
+    )
+    renderer.apply_stream_auto_scroll(mode)  # type: ignore[arg-type]
+    renderer.render()
+
+
 def test_first_render_draws_full_frame_and_positions_input_cursor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -265,3 +291,130 @@ def test_shorter_segment_erases_only_residual_cells(
     assert "\033[1;4H" in screen
     assert "\033[3X" in screen
     assert "\033[2K" not in screen
+
+
+def test_smart_auto_scroll_follows_new_stream_content(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    renderer.content_renderer.append_stream_batch(["1\n2\n3\n4\n5"])
+
+    renderer.apply_stream_auto_scroll("smart")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.is_at_bottom() is True
+
+
+def test_strict_auto_scroll_returns_to_bottom_after_manual_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    fill_and_follow_bottom(renderer, "strict")
+    renderer.scroll_up()
+    renderer.content_renderer.append_stream_batch(["\n9"])
+
+    renderer.apply_stream_auto_scroll("strict")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.is_at_bottom() is True
+
+
+def test_successful_scroll_up_suspends_smart_auto_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    fill_and_follow_bottom(renderer, "smart")
+
+    renderer.scroll_up()
+    preserved_offset = renderer.viewport.offset_y if renderer.viewport else -1
+    renderer.content_renderer.append_stream_batch(["\n9"])
+    renderer.apply_stream_auto_scroll("smart")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.offset_y == preserved_offset
+
+
+def test_ineffective_scroll_up_does_not_suspend_smart_auto_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    renderer.scroll_up()
+    renderer.content_renderer.append_stream_batch(["1\n2\n3\n4\n5"])
+
+    renderer.apply_stream_auto_scroll("smart")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.is_at_bottom() is True
+
+
+def test_manual_return_to_bottom_resumes_smart_auto_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    fill_and_follow_bottom(renderer, "smart")
+    renderer.scroll_up()
+
+    while renderer.viewport is not None and not renderer.viewport.is_at_bottom():
+        renderer.scroll_down()
+
+    renderer.content_renderer.append_stream_batch(["\n9"])
+    renderer.apply_stream_auto_scroll("smart")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.is_at_bottom() is True
+
+
+def test_disabled_auto_scroll_preserves_vertical_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    fill_and_follow_bottom(renderer, "strict")
+    renderer.scroll_up()
+    preserved_offset = renderer.viewport.offset_y if renderer.viewport else -1
+    renderer.content_renderer.append_stream_batch(["\n9"])
+
+    renderer.apply_stream_auto_scroll(None)
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.offset_y == preserved_offset
+
+
+def test_new_content_renderer_resets_smart_auto_scroll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    fill_and_follow_bottom(renderer, "smart")
+    renderer.scroll_up()
+    new_content_renderer = ContentRenderer(iter(()))
+    new_content_renderer.append_stream_batch(["1\n2\n3\n4\n5"])
+
+    renderer.set_content_renderer(new_content_renderer)
+    renderer.apply_stream_auto_scroll("smart")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.is_at_bottom() is True
+
+
+def test_auto_scroll_preserves_horizontal_offset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    renderer = make_stream_renderer(monkeypatch)
+    renderer.content_renderer.append_stream_batch(
+        ["abcdefghijk\n2\n3\n4\n5"]
+    )
+    renderer.render()
+    renderer.scroll_right()
+    horizontal_offset = renderer.viewport.offset_x if renderer.viewport else -1
+
+    renderer.apply_stream_auto_scroll("strict")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.offset_x == horizontal_offset

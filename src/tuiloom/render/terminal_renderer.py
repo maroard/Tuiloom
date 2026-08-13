@@ -1,12 +1,15 @@
 from os import terminal_size
 from shutil import get_terminal_size
 from sys import stdout
+from typing import Literal
 
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
 from tuiloom.render.terminal_text import display_width, normalize_line
 from tuiloom.render.viewport import Viewport
+
+type AutoScrollMode = Literal["smart", "strict"]
 
 
 class TerminalRenderer:
@@ -26,6 +29,8 @@ class TerminalRenderer:
         self._previous_lines: list[str] | None = None
         self._previous_terminal_size: terminal_size | None = None
         self._last_render_key: tuple[object, ...] | None = None
+        self._smart_auto_scroll_active = True
+        self._pending_auto_scroll: AutoScrollMode | None = None
 
     def render(self, input_buffer: str = "") -> None:
         """Render and write one complete terminal frame."""
@@ -111,6 +116,11 @@ class TerminalRenderer:
             self.viewport.width = viewport_width
             self.viewport.height = viewport_height
 
+        if self._pending_auto_scroll is not None:
+            pending_auto_scroll = self._pending_auto_scroll
+            self._pending_auto_scroll = None
+            self.apply_stream_auto_scroll(pending_auto_scroll)
+
         viewport_render = self.viewport.render()
 
         render = viewport_render + "\n" * self.spacing + menu_render
@@ -156,17 +166,45 @@ class TerminalRenderer:
         """Replace active content and reset source-specific rendering state."""
         self.content_renderer = content_renderer
         self.viewport = None
+        self.reset_stream_auto_scroll()
         self.invalidate()
+
+    def apply_stream_auto_scroll(self, mode: AutoScrollMode | None) -> None:
+        """Apply or defer one iterator-batch vertical following policy."""
+        if mode is None:
+            self._pending_auto_scroll = None
+            return
+
+        if mode == "smart" and not self._smart_auto_scroll_active:
+            return
+
+        if self.viewport is None:
+            self._pending_auto_scroll = mode
+            return
+
+        self.viewport.scroll_to_bottom()
+
+    def reset_stream_auto_scroll(self) -> None:
+        """Reset transient following state for a newly installed source."""
+        self._smart_auto_scroll_active = True
+        self._pending_auto_scroll = None
 
     def scroll_up(self) -> None:
         """Move the viewport one row upward when it exists."""
         if self.viewport is not None:
+            previous_offset = self.viewport.offset_y
             self.viewport.scroll_up()
+
+            if self.viewport.offset_y < previous_offset:
+                self._smart_auto_scroll_active = False
 
     def scroll_down(self) -> None:
         """Move the viewport one row downward when it exists."""
         if self.viewport is not None:
             self.viewport.scroll_down()
+
+            if self.viewport.is_at_bottom():
+                self._smart_auto_scroll_active = True
 
     def scroll_left(self) -> None:
         """Move the viewport one column left when it exists."""

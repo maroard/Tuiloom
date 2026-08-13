@@ -418,3 +418,24 @@ def test_auto_scroll_preserves_horizontal_offset(
 
     assert renderer.viewport is not None
     assert renderer.viewport.offset_x == horizontal_offset
+
+
+def test_auto_scroll_uses_resized_viewport_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    terminal_size = [os.terminal_size((40, 18))]
+    renderer = make_stream_renderer(monkeypatch)
+    monkeypatch.setattr(
+        terminal_renderer_module,
+        "get_terminal_size",
+        lambda: terminal_size[0],
+    )
+    fill_and_follow_bottom(renderer, "strict")
+    terminal_size[0] = os.terminal_size((40, 16))
+    renderer.content_renderer.append_stream_batch(["\n9"])
+
+    renderer.apply_stream_auto_scroll("strict")
+    renderer.render()
+
+    assert renderer.viewport is not None
+    assert renderer.viewport.is_at_bottom() is True

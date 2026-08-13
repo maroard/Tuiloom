@@ -12,12 +12,7 @@ from tuiloom.render.terminal_text import (
 
 
 def test_normalize_line_keeps_sgr_and_strips_terminal_controls() -> None:
-    text = (
-        "\x1b[38;2;10;20;30mcolor"
-        "\x1b[2J\x1b[4H"
-        "\x1b]0;title\x07"
-        "\x1b[0m"
-    )
+    text = "\x1b[38;2;10;20;30mcolor\x1b[2J\x1b[4H\x1b]0;title\x07\x1b[0m"
 
     line = normalize_line(text)
 

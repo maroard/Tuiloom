@@ -229,9 +229,7 @@ class ContentRenderer:
     def finish_stream(self) -> None:
         """Commit the stream tail and mark streaming content complete."""
         if self.state != "streaming" or self._stream_buffer is None:
-            raise RuntimeError(
-                "Cannot finish a non-streaming renderer"
-            )
+            raise RuntimeError("Cannot finish a non-streaming renderer")
 
         lines, width = self._stream_buffer.finish()
         self._set_rendered_content(lines, width)

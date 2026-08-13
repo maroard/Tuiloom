@@ -54,6 +54,7 @@ pythonpath = ["src"]
 [tool.ruff]
 target-version = "py312"
 line-length = 88
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = [

@@ -125,9 +125,7 @@ def test_two_column_commands_align_with_styled_wide_labels() -> None:
 
 
 def test_wrapping_preserves_sgr_and_unicode_boundaries() -> None:
-    renderer = MenuRenderer(
-        make_context(width=8, text="\x1b[34m界界 界界\x1b[0m")
-    )
+    renderer = MenuRenderer(make_context(width=8, text="\x1b[34m界界 界界\x1b[0m"))
 
     wrapped = renderer._wrap_lines(renderer.text or "")
 
@@ -136,9 +134,7 @@ def test_wrapping_preserves_sgr_and_unicode_boundaries() -> None:
 
 
 def test_styled_unicode_prompt_keeps_its_visible_text() -> None:
-    renderer = MenuRenderer(
-        make_context(width=20, prompt="\x1b[36mChoix界: \x1b[0m")
-    )
+    renderer = MenuRenderer(make_context(width=20, prompt="\x1b[36mChoix界: \x1b[0m"))
 
     prompt = renderer._get_prompt_display()
 

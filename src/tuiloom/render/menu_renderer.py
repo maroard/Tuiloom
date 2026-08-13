@@ -48,8 +48,7 @@ class MenuRenderer:
             app_name=screen_context.app_name,
             title=screen_context.title,
             commands=tuple(
-                (key, command[1])
-                for key, command in screen_context.commands.items()
+                (key, command[1]) for key, command in screen_context.commands.items()
             ),
             text=screen_context.text,
             two_columns=screen_context.two_columns,
@@ -89,8 +88,7 @@ class MenuRenderer:
         for content in (self.text, self.message, self.alert):
             if content:
                 width_requirements.extend(
-                    display_width(line) + 2
-                    for line in normalize_text_lines(content)
+                    display_width(line) + 2 for line in normalize_text_lines(content)
                 )
 
         items = self._get_menu_items()
@@ -101,10 +99,7 @@ class MenuRenderer:
             right_items = items[middle:]
 
             left_requirement = max(
-                (
-                    display_width(f" {key}. {command[1]}")
-                    for key, command in left_items
-                ),
+                (display_width(f" {key}. {command[1]}") for key, command in left_items),
                 default=0,
             )
             right_requirement = max(
@@ -123,8 +118,7 @@ class MenuRenderer:
             )
         else:
             width_requirements.extend(
-                display_width(f" {key}. {command[1]}")
-                for key, command in items
+                display_width(f" {key}. {command[1]}") for key, command in items
             )
 
         zero_command = self.commands.get("0")

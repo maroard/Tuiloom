@@ -69,9 +69,7 @@ class SourceWorker:
                 try:
                     chunk = next(source)
                 except StopIteration:
-                    self._publish(
-                        SourceEvent(self.generation, "complete")
-                    )
+                    self._publish(SourceEvent(self.generation, "complete"))
                     return
 
                 if self._cancelled.is_set():
@@ -83,9 +81,7 @@ class SourceWorker:
                         f"got {type(chunk).__name__}"
                     )
 
-                if not self._publish(
-                    SourceEvent(self.generation, "data", chunk)
-                ):
+                if not self._publish(SourceEvent(self.generation, "data", chunk)):
                     return
 
         finally:
@@ -107,17 +103,17 @@ class SourceWorker:
 
             content = source()
 
-            if not isinstance(content, (str, list)) or isinstance(
-                content, list
-            ) and not all(isinstance(line, str) for line in content):
+            if (
+                not isinstance(content, (str, list))
+                or isinstance(content, list)
+                and not all(isinstance(line, str) for line in content)
+            ):
                 raise TypeError(
                     "Dynamic content must be str or list[str], "
                     f"got {type(content).__name__}"
                 )
 
-            if not self._publish(
-                SourceEvent(self.generation, "data", content)
-            ):
+            if not self._publish(SourceEvent(self.generation, "data", content)):
                 return
 
     def _publish(self, event: SourceEvent) -> bool:

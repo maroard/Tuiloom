@@ -59,9 +59,7 @@ def test_viewport_clips_and_pads_styled_wide_text_by_columns() -> None:
 
 
 def test_horizontal_scroll_does_not_split_wide_grapheme() -> None:
-    rendered = RenderedContent(
-        lines=["A界B"], width=4, height=1, finished=True
-    )
+    rendered = RenderedContent(lines=["A界B"], width=4, height=1, finished=True)
     viewport = Viewport(rendered, width=2, height=1)
     viewport.scroll_right()
 

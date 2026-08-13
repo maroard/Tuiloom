@@ -50,9 +50,7 @@ class EventLoop:
         self._selector.register(input_handler.fileno(), EVENT_READ, "input")
         self._selector.register(self._wakeup_reader, EVENT_READ, "source")
 
-        self.source_events: Queue[SourceEvent] = Queue(
-            maxsize=self._SOURCE_QUEUE_SIZE
-        )
+        self.source_events: Queue[SourceEvent] = Queue(maxsize=self._SOURCE_QUEUE_SIZE)
         self.generation = 0
         self._source_worker: SourceWorker | None = None
         self._dirty = True

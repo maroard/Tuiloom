@@ -197,9 +197,7 @@ def test_cursor_position_uses_visible_ansi_unicode_width(
 ) -> None:
     renderer = make_renderer(monkeypatch, StringIO())
 
-    assert renderer._get_cursor_position(
-        ["\x1b[31mChoice: 界\x1b[0m"]
-    ) == (1, 11)
+    assert renderer._get_cursor_position(["\x1b[31mChoice: 界\x1b[0m"]) == (1, 11)
 
 
 def test_final_frame_safety_removes_cursor_control(

@@ -41,6 +41,10 @@ class InputHandler:
 
         return self._parse_buffer()
 
+    def fileno(self) -> int:
+        """Return the terminal descriptor watched by the application event loop."""
+        return self.fd
+
     def _parse_buffer(self) -> InputEvent | None:
         """Parse one normalized event from the buffered terminal bytes."""
         if not self._input_buffer:

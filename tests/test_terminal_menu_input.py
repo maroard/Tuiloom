@@ -14,12 +14,16 @@ class RecordingTerminalRenderer(TerminalRenderer):
     def __init__(self) -> None:
         self.input_buffers: list[str] = []
         self.invalidations = 0
+        self.auto_scroll_resets = 0
 
     def render(self, input_buffer: str = "") -> None:
         self.input_buffers.append(input_buffer)
 
     def invalidate(self) -> None:
         self.invalidations += 1
+
+    def reset_stream_auto_scroll(self) -> None:
+        self.auto_scroll_resets += 1
 
 
 class RecordingMenuRenderer:
@@ -201,6 +205,16 @@ def test_menu_rejects_invalid_auto_scroll_mode() -> None:
         match="Auto-scroll mode must be 'smart', 'strict', or None",
     ):
         menu.auto_scroll = "bottom"  # type: ignore[assignment]
+
+
+def test_changing_auto_scroll_mode_resets_renderer_follow_state() -> None:
+    menu = make_menu()
+    renderer = RecordingTerminalRenderer()
+    menu.terminal_renderer = renderer
+
+    menu.auto_scroll = "smart"
+
+    assert renderer.auto_scroll_resets == 1
 
 
 def test_menu_constructor_accepts_auto_scroll_mode() -> None:

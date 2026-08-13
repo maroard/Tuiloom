@@ -36,7 +36,7 @@ class Viewport:
     def render(self) -> str:
         """Render the visible content region at the current offsets."""
         max_offset_x = max(0, self.content.width - self.width)
-        max_offset_y = max(0, self.content.height - self.height)
+        max_offset_y = self._get_max_offset_y()
 
         self.offset_x = min(self.offset_x, max_offset_x)
         self.offset_y = min(self.offset_y, max_offset_y)
@@ -77,10 +77,22 @@ class Viewport:
 
     def scroll_down(self) -> None:
         """Move the vertical offset one row toward the bottom boundary."""
-        max_offset_y = max(0, self.content.height - self.height)
+        max_offset_y = self._get_max_offset_y()
 
         if self.offset_y < max_offset_y:
             self.offset_y += 1
+
+    def is_at_bottom(self) -> bool:
+        """Return whether the vertical offset is at its current lower boundary."""
+        return self.offset_y >= self._get_max_offset_y()
+
+    def scroll_to_bottom(self) -> None:
+        """Move the vertical offset to its current lower boundary."""
+        self.offset_y = self._get_max_offset_y()
+
+    def _get_max_offset_y(self) -> int:
+        """Return the current lower vertical boundary."""
+        return max(0, self.content.height - self.height)
 
     def scroll_left(self) -> None:
         """Move the horizontal offset one column toward the left boundary."""

@@ -85,3 +85,25 @@ def test_content_revision_invalidates_cached_viewport() -> None:
     rendered.revision += 1
 
     assert viewport.render() != first
+
+
+def test_viewport_reports_and_reaches_bottom_without_horizontal_movement() -> None:
+    viewport = Viewport(content(), width=3, height=2)
+    viewport.scroll_right()
+
+    assert viewport.is_at_bottom() is False
+
+    viewport.scroll_to_bottom()
+
+    assert viewport.is_at_bottom() is True
+    assert (viewport.offset_x, viewport.offset_y) == (1, 1)
+
+
+def test_short_content_is_already_at_bottom() -> None:
+    viewport = Viewport(content(), width=4, height=4)
+
+    assert viewport.is_at_bottom() is True
+
+    viewport.scroll_to_bottom()
+
+    assert viewport.offset_y == 0

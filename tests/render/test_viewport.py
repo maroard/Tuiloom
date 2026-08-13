@@ -67,3 +67,23 @@ def test_horizontal_scroll_does_not_split_wide_grapheme() -> None:
 
     assert viewport.render() == "界"
     assert display_width(viewport.render()) == 2
+
+
+def test_unchanged_viewport_reuses_cached_render() -> None:
+    viewport = Viewport(content(), width=4, height=2)
+
+    first = viewport.render()
+    second = viewport.render()
+
+    assert second is first
+
+
+def test_content_revision_invalidates_cached_viewport() -> None:
+    rendered = content()
+    viewport = Viewport(rendered, width=4, height=2)
+    first = viewport.render()
+    rendered.lines[0] = "changed"
+    rendered.width = 7
+    rendered.revision += 1
+
+    assert viewport.render() != first

@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from tuiloom.command import Command
 from tuiloom.render.terminal_text import (
     center_display,
@@ -10,15 +12,59 @@ from tuiloom.render.terminal_text import (
 from tuiloom.screen_context.screen_context import ScreenContext
 
 
+@dataclass(frozen=True, slots=True)
+class _MenuState:
+    """Capture every screen-context value that affects menu rendering."""
+
+    app_name: str
+    title: str
+    commands: tuple[tuple[str, str], ...]
+    text: str | None
+    two_columns: bool
+    message: str | None
+    alert: str | None
+    prompt: str | None
+    requested_width: int | None
+
+
 class MenuRenderer:
     """Build a complete terminal menu box from screen context."""
 
     def __init__(self, screen_context: ScreenContext) -> None:
         """Capture the screen state required to render the menu."""
+        self._state: _MenuState | None = None
+        self._cached_render: str | None = None
+        self._revision = 0
         self.update_screen_context(screen_context)
+
+    @property
+    def revision(self) -> int:
+        """Return the revision of the visible menu state."""
+        return self._revision
 
     def update_screen_context(self, screen_context: ScreenContext) -> None:
         """Replace the menu state with the current screen context."""
+        state = _MenuState(
+            app_name=screen_context.app_name,
+            title=screen_context.title,
+            commands=tuple(
+                (key, command[1])
+                for key, command in screen_context.commands.items()
+            ),
+            text=screen_context.text,
+            two_columns=screen_context.two_columns,
+            message=screen_context.message,
+            alert=screen_context.alert,
+            prompt=screen_context.prompt,
+            requested_width=screen_context.width,
+        )
+
+        if state == self._state:
+            return
+
+        self._state = state
+        self._cached_render = None
+        self._revision += 1
         self.app_name = screen_context.app_name
         self.title = screen_context.title
         self.commands = screen_context.commands
@@ -89,6 +135,14 @@ class MenuRenderer:
 
     def render(self) -> str:
         """Compose the complete menu box, footer, and prompt."""
+        if self._cached_render is not None:
+            return self._cached_render
+
+        self._cached_render = self._render_menu()
+        return self._cached_render
+
+    def _render_menu(self) -> str:
+        """Compose and return the current complete menu display."""
         if self.alert:
             body_display = self._get_alert_display()
             footer_display = self._get_footer_display()

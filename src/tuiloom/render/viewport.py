@@ -1,6 +1,8 @@
 from tuiloom.render.rendered_content import RenderedContent
 from tuiloom.render.terminal_text import clip_display, ljust_display
 
+type ViewportRenderKey = tuple[int, int, int, int, int]
+
 
 class Viewport:
     """Clip rendered content using bounded horizontal and vertical offsets."""
@@ -28,6 +30,8 @@ class Viewport:
         self.height = height
         self.offset_x = 0
         self.offset_y = 0
+        self._cached_key: ViewportRenderKey | None = None
+        self._cached_render: str | None = None
 
     def render(self) -> str:
         """Render the visible content region at the current offsets."""
@@ -36,6 +40,16 @@ class Viewport:
 
         self.offset_x = min(self.offset_x, max_offset_x)
         self.offset_y = min(self.offset_y, max_offset_y)
+        key = (
+            self.content.revision,
+            self.width,
+            self.height,
+            self.offset_x,
+            self.offset_y,
+        )
+
+        if key == self._cached_key and self._cached_render is not None:
+            return self._cached_render
 
         visible_lines = self.content.lines[self.offset_y : self.offset_y + self.height]
 
@@ -52,7 +66,9 @@ class Viewport:
         while len(rendered_lines) < self.height:
             rendered_lines.append(" " * self.width)
 
-        return "\n".join(rendered_lines)
+        self._cached_key = key
+        self._cached_render = "\n".join(rendered_lines)
+        return self._cached_render
 
     def scroll_up(self) -> None:
         """Move the vertical offset one row toward the top boundary."""

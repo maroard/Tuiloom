@@ -144,3 +144,25 @@ def test_styled_unicode_prompt_keeps_its_visible_text() -> None:
 
     assert display_width(prompt) == 9
     assert "\x1b[36m" in prompt
+
+
+def test_unchanged_screen_context_reuses_cached_menu_render() -> None:
+    context = make_context(width=20)
+    renderer = MenuRenderer(context)
+
+    first = renderer.render()
+    renderer.update_screen_context(context)
+    second = renderer.render()
+
+    assert second is first
+
+
+def test_changed_screen_context_invalidates_cached_menu_render() -> None:
+    context = make_context(width=20, message="first")
+    renderer = MenuRenderer(context)
+    first = renderer.render()
+
+    context.message = "second"
+    renderer.update_screen_context(context)
+
+    assert renderer.render() != first

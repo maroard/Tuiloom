@@ -66,9 +66,7 @@ def fill_and_follow_bottom(
     mode: str,
 ) -> None:
     """Fill a stream and apply one auto-scroll policy."""
-    renderer.content_renderer.append_stream_batch(
-        ["1\n2\n3\n4\n5\n6\n7\n8"]
-    )
+    renderer.content_renderer.append_stream_batch(["1\n2\n3\n4\n5\n6\n7\n8"])
     renderer.apply_stream_auto_scroll(mode)  # type: ignore[arg-type]
     renderer.render()
 
@@ -406,9 +404,7 @@ def test_auto_scroll_preserves_horizontal_offset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     renderer = make_stream_renderer(monkeypatch)
-    renderer.content_renderer.append_stream_batch(
-        ["abcdefghijk\n2\n3\n4\n5"]
-    )
+    renderer.content_renderer.append_stream_batch(["abcdefghijk\n2\n3\n4\n5"])
     renderer.render()
     renderer.scroll_right()
     horizontal_offset = renderer.viewport.offset_x if renderer.viewport else -1

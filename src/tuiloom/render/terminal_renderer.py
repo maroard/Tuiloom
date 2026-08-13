@@ -120,10 +120,7 @@ class TerminalRenderer:
             pending_auto_scroll = self._pending_auto_scroll
             self._pending_auto_scroll = None
 
-            if (
-                pending_auto_scroll == "strict"
-                or self._smart_auto_scroll_active
-            ):
+            if pending_auto_scroll == "strict" or self._smart_auto_scroll_active:
                 self.viewport.scroll_to_bottom()
 
         viewport_render = self.viewport.render()

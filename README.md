@@ -59,3 +59,13 @@ Generators should release the Python GIL during long native work when possible.
 A cancelled generator must eventually return from a blocked `next()` call before
 Tuiloom can close that generator's own resources, although stale output is
 ignored immediately.
+
+Iterator content can follow its newest output automatically:
+
+```python
+menu.auto_scroll = "smart"   # pauses after manual upward scrolling
+menu.auto_scroll = "strict"  # returns to the bottom after every batch
+menu.auto_scroll = None       # disabled, the default
+```
+
+Auto-scroll is vertical and applies only to iterator-backed content.

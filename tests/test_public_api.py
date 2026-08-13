@@ -13,6 +13,7 @@ def doc_lines(member: object) -> list[str]:
 
 def test_public_api_contains_only_supported_symbols() -> None:
     expected = {
+        "AutoScrollMode",
         "Command",
         "CommandBehavior",
         "CommandContext",

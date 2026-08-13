@@ -92,8 +92,7 @@ class TerminalMenu:
         """Validate and replace the iterator auto-scroll policy."""
         if mode not in (None, "smart", "strict"):
             raise ValueError(
-                "Auto-scroll mode must be 'smart', 'strict', or None, "
-                f"got {mode!r}"
+                f"Auto-scroll mode must be 'smart', 'strict', or None, got {mode!r}"
             )
 
         if mode == self._auto_scroll:

@@ -187,9 +187,7 @@ class EventLoop:
 
             if chunks:
                 self.content_renderer.append_stream_batch(chunks)
-                self.terminal_renderer.apply_stream_auto_scroll(
-                    self.menu.auto_scroll
-                )
+                self.terminal_renderer.apply_stream_auto_scroll(self.menu.auto_scroll)
                 self.request_render()
 
         elif self.content_renderer.state == "dynamic":

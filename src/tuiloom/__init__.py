@@ -1,5 +1,6 @@
 """Build typed terminal applications with menus and dynamic content."""
 
+from tuiloom._message_registry import MessageKey
 from tuiloom.command import (
     Command,
     CommandBehavior,
@@ -20,4 +21,5 @@ __all__ = [
     "ScreenContext",
     "TerminalApp",
     "TerminalMenu",
+    "MessageKey",
 ]

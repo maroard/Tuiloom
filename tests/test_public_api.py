@@ -21,6 +21,7 @@ def test_public_api_contains_only_supported_symbols() -> None:
         "ScreenContext",
         "TerminalApp",
         "TerminalMenu",
+        "MessageKey",
     }
     assert set(tuiloom.__all__) == expected
     assert all(getattr(tuiloom, name) is not None for name in expected)

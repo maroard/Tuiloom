@@ -19,10 +19,12 @@ def test_public_api_contains_only_supported_symbols() -> None:
         "CommandContext",
         "CommandDict",
         "ContentSource",
+        "InputBehavior",
         "ScreenContext",
         "TerminalApp",
         "TerminalMenu",
         "MessageKey",
+        "hyperlink",
     }
     assert set(tuiloom.__all__) == expected
     assert all(getattr(tuiloom, name) is not None for name in expected)
@@ -52,6 +54,8 @@ def test_every_user_facing_method_has_documentation() -> None:
     user_facing_methods = {
         TerminalApp: (
             "__init__",
+            "name",
+            "main_menu",
             "set_main_menu",
             "add_global_command",
             "add_message",
@@ -65,10 +69,13 @@ def test_every_user_facing_method_has_documentation() -> None:
             "add_command",
             "add_menu",
             "set_content_source",
+            "run_with_output",
+            "enter_input_mode",
+            "leave_input_mode",
             "disable_message",
             "enable_message",
             "is_message_enabled",
-            "set_exit_command_label",
+            "set_command_label",
             "run",
             "stop",
         ),

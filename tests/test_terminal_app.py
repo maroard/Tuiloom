@@ -1,3 +1,6 @@
+import sys
+from threading import get_ident
+
 import pytest
 
 from tuiloom import CommandContext, ScreenContext, TerminalApp, TerminalMenu
@@ -48,6 +51,73 @@ def test_menu_inherits_application_global_content_source() -> None:
     )
 
     assert menu._content_source == "global"
+
+
+def test_application_registers_an_existing_main_menu() -> None:
+    app = TerminalApp("Example")
+    menu = TerminalMenu(app, ScreenContext("Example", "Main", "Main"))
+
+    app.set_main_menu(menu)
+
+    assert app.main_menu is menu
+    assert menu.commands["0"][1] == "Quit"
+
+
+def test_application_rejects_main_menu_from_another_application() -> None:
+    app = TerminalApp("Example")
+    foreign_app = TerminalApp("Foreign")
+    menu = TerminalMenu(
+        foreign_app,
+        ScreenContext("Foreign", "Main", "Main"),
+    )
+
+    with pytest.raises(ValueError, match="must belong"):
+        app.set_main_menu(menu)
+
+
+def test_application_dispatches_captured_task_result_on_ui_thread() -> None:
+    app = TerminalApp("Example")
+    menu = TerminalMenu(app, ScreenContext("Example", "Model", "Model"))
+    callbacks: list[tuple[object, int]] = []
+    ui_thread = get_ident()
+
+    with app._output_capture.install():
+        session = app._start_output_task(
+            menu,
+            lambda: print("download") or 42,
+            lambda result: callbacks.append((result, get_ident())),
+            lambda error: pytest.fail(str(error)),
+        )
+        assert session.join(timeout=1)
+        assert callbacks == []
+        assert list(session.iter_output()) == ["download", "\n"]
+
+        assert app._dispatch_output_task_outcome() is menu
+
+    assert callbacks == [(42, ui_thread)]
+
+
+def test_run_installs_output_capture_while_main_menu_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeInputHandler:
+        def close(self) -> None:
+            pass
+
+    app = TerminalApp("Example")
+    menu = TerminalMenu(app, ScreenContext("Example", "Main", "Main"))
+    app.set_main_menu(menu)
+    original_stdout = sys.stdout
+    observed_stdout: list[object] = []
+    monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
+    monkeypatch.setattr(app, "_enter_terminal_screen", lambda: None)
+    monkeypatch.setattr(app, "_leave_terminal_screen", lambda: None)
+    monkeypatch.setattr(menu, "run", lambda: observed_stdout.append(sys.stdout))
+
+    app.run()
+
+    assert observed_stdout[0] is not original_stdout
+    assert sys.stdout is original_stdout
 
 
 def test_menu_local_content_source_overrides_application_global_source() -> None:

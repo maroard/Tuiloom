@@ -6,7 +6,9 @@ from tuiloom.command import (
     CommandBehavior,
     CommandContext,
     CommandDict,
+    InputBehavior,
 )
+from tuiloom.formatting import hyperlink
 from tuiloom.render.content_renderer import ContentSource
 from tuiloom.render.terminal_renderer import AutoScrollMode
 from tuiloom.screen_context.screen_context import ScreenContext
@@ -19,6 +21,8 @@ __all__ = [
     "CommandBehavior",
     "CommandContext",
     "CommandDict",
+    "InputBehavior",
+    "hyperlink",
     "ContentSource",
     "ScreenContext",
     "TerminalApp",

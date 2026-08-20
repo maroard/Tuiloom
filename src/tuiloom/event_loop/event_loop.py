@@ -81,6 +81,11 @@ class EventLoop:
 
         self._drain_input()
         self._request_dynamic_update()
+        completed_menu = self.menu.app._dispatch_output_task_outcome()
+
+        if completed_menu is self.menu:
+            self.request_render(immediate=True)
+
         self._check_visible_state()
         self._render_if_due()
 
@@ -242,7 +247,7 @@ class EventLoop:
             return
 
         self.menu_renderer.update_screen_context(self.menu.screen_context)
-        self.terminal_renderer.render(self.menu._input_buffer)
+        self.terminal_renderer.render(self.menu._display_input_buffer())
         self._dirty = False
         self._next_frame_at = now + self._FRAME_INTERVAL
 

@@ -23,6 +23,7 @@ class CommandContext:
 
 
 type CommandBehavior = Callable[[CommandContext], None]
+type InputBehavior = Callable[[str], None]
 type Command = tuple[CommandBehavior, str]
 type CommandDict = dict[str, Command]
 

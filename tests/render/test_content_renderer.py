@@ -104,6 +104,39 @@ def test_stream_completion_marks_content_finished() -> None:
     assert renderer.update().finished is True
 
 
+def test_stream_carriage_return_replaces_active_progress_line() -> None:
+    renderer = ContentRenderer(iter(()))
+
+    renderer.append_stream_batch(["Downloading 10%", "\rDownloading 20%"])
+
+    assert renderer.update().lines == ["Downloading 20%"]
+
+
+def test_stream_carriage_return_replaces_line_within_one_chunk() -> None:
+    renderer = ContentRenderer(iter(()))
+
+    renderer.append_stream_batch(["Downloading 10%\rDownloading 100%"])
+
+    assert renderer.update().lines == ["Downloading 100%"]
+
+
+def test_stream_crlf_commits_a_line_instead_of_replacing_it() -> None:
+    renderer = ContentRenderer(iter(()))
+
+    renderer.append_stream_batch(["first\r\nsecond"])
+
+    assert renderer.update().lines == ["first", "second"]
+
+
+def test_stream_crlf_split_across_batches_still_commits_line() -> None:
+    renderer = ContentRenderer(iter(()))
+
+    renderer.append_stream_batch(["first\r"])
+    renderer.append_stream_batch(["\nsecond"])
+
+    assert renderer.update().lines == ["first", "second"]
+
+
 def test_stream_normalization_does_not_reprocess_complete_active_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

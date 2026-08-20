@@ -28,25 +28,65 @@ class _StreamingTextBuffer:
         self._active_width = 0
         self._raw_tail = ""
         self._style_prefix = ""
+        self._pending_carriage_return = False
 
     def append(self, chunks: list[str]) -> tuple[list[str], int]:
         """Append chunks and return current normalized lines and width."""
-        incoming = self._raw_tail + "".join(chunks)
+        chunk_text = "".join(chunks)
+
+        if self._pending_carriage_return and not chunk_text:
+            return self._render()
+
+        if self._pending_carriage_return:
+            if chunk_text.startswith("\n"):
+                incoming = self._raw_tail + chunk_text
+            else:
+                incoming = self._raw_tail + "\r" + chunk_text
+            self._pending_carriage_return = False
+        else:
+            incoming = self._raw_tail + chunk_text
+
         self._raw_tail = ""
+
+        if incoming.endswith("\r"):
+            incoming = incoming[:-1]
+            self._pending_carriage_return = True
+
+        incoming = incoming.replace("\r\n", "\n")
         parts = incoming.split("\n")
         active_part = parts.pop()
 
         for completed_part in parts:
-            self._consume_part(completed_part, retain_tail=False)
+            self._consume_progress_part(completed_part, retain_tail=False)
             self._commit_line()
 
-        self._consume_part(active_part, retain_tail=True)
+        self._consume_progress_part(active_part, retain_tail=True)
 
         return self._render()
 
     def finish(self) -> tuple[list[str], int]:
         """Return final stream geometry without inventing a trailing line."""
         return self._render()
+
+    def _consume_progress_part(self, part: str, retain_tail: bool) -> None:
+        """Consume text while treating carriage returns as line replacement."""
+        segments = part.split("\r")
+
+        for index, segment in enumerate(segments):
+            if index:
+                self._reset_active_line()
+
+            self._consume_part(
+                segment,
+                retain_tail=retain_tail and index == len(segments) - 1,
+            )
+
+    def _reset_active_line(self) -> None:
+        """Discard the unfinished line before a carriage-return rewrite."""
+        self._active_fragments = []
+        self._active_width = 0
+        self._raw_tail = ""
+        self._style_prefix = ""
 
     def _consume_part(self, part: str, retain_tail: bool) -> None:
         """Normalize stable sequences while retaining an extendable suffix."""

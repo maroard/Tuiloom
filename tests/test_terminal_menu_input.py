@@ -4,6 +4,7 @@ from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
+from tuiloom.screen_context.screen_context import ScreenContext
 from tuiloom.terminal_app import TerminalApp
 from tuiloom.terminal_menu import TerminalMenu
 
@@ -72,7 +73,12 @@ class RecordingEventLoop:
 
 def make_menu() -> TerminalMenu:
     app = TerminalApp("App")
-    return app.set_main_menu("Menu")
+    menu = TerminalMenu(
+        app,
+        ScreenContext("App", "Main Menu", "Menu"),
+    )
+    app.set_main_menu(menu)
+    return menu
 
 
 def test_menu_refreshes_screen_context_before_rendering() -> None:
@@ -123,6 +129,32 @@ def test_menu_invalidates_cached_frame_after_command_execution() -> None:
     menu._handle_enter()
 
     assert renderer.invalidations == 1
+
+
+def test_set_command_label_can_rename_any_registered_command() -> None:
+    menu = make_menu()
+
+    def behavior(context: object) -> None:
+        pass
+
+    menu.add_command("Connect", behavior, index=1)
+
+    menu.set_command_label("1", "Disconnect")
+
+    assert menu.commands["1"] == (behavior, "Disconnect")
+
+
+def test_hidden_input_masks_display_but_submits_real_value() -> None:
+    menu = make_menu()
+    submitted: list[str] = []
+    menu.enter_input_mode("> ", submitted.append, hidden=True)
+    menu._input_buffer = "hf_secret"
+
+    assert menu._display_input_buffer() == "*********"
+
+    menu._handle_enter()
+
+    assert submitted == ["hf_secret"]
 
 
 def test_menu_stores_content_source_before_rendering_starts() -> None:
@@ -221,7 +253,7 @@ def test_menu_constructor_accepts_auto_scroll_mode() -> None:
     app = TerminalApp("App")
     menu = TerminalMenu(
         app,
-        app.set_main_menu("Main").screen_context,
+        ScreenContext("App", "Main", "Main"),
         auto_scroll="smart",
     )
 
@@ -234,6 +266,6 @@ def test_menu_constructor_rejects_invalid_auto_scroll_mode() -> None:
     with pytest.raises(ValueError, match="Auto-scroll mode must be"):
         TerminalMenu(
             app,
-            app.set_main_menu("Main").screen_context,
+            ScreenContext("App", "Main", "Main"),
             auto_scroll="bottom",  # type: ignore[arg-type]
         )

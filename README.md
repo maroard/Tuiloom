@@ -6,10 +6,20 @@ of each execution.
 ## Commands
 
 ```python
-from tuiloom import CommandBehavior, CommandContext, TerminalApp
+from tuiloom import (
+    CommandBehavior,
+    CommandContext,
+    ScreenContext,
+    TerminalApp,
+    TerminalMenu,
+)
 
 app = TerminalApp("Generator")
-menu = app.set_main_menu("Generation")
+menu = TerminalMenu(
+    app,
+    ScreenContext("Generator", "Main Menu", "Generation"),
+)
+app.set_main_menu(menu)
 
 
 def generate(context: CommandContext) -> None:
@@ -22,6 +32,15 @@ menu.add_command("Generate", generate)
 Tuiloom creates `CommandContext` during dispatch. Its `app`, `menu`, and
 `command_key` fields identify the active application, the menu where the command
 was entered, and the exact resolved registry key.
+
+Command labels can change at runtime without replacing their behavior or key:
+
+```python
+menu.add_command("Connect", connect, index=1)
+menu.set_command_label("1", "Disconnect")
+```
+
+`set_command_label()` raises `KeyError` when the requested key is not registered.
 
 Application dependencies can stay in closures; no command class is required:
 
@@ -69,3 +88,27 @@ menu.auto_scroll = None       # disabled, the default
 ```
 
 Auto-scroll is vertical and applies only to iterator-backed content.
+
+## Blocking operations with captured output
+
+Commands can move blocking work off the UI thread while displaying everything
+it writes to standard output or standard error:
+
+```python
+def download(context: CommandContext) -> None:
+    context.menu.run_with_output(
+        lambda: download_model("organization/model"),
+        on_success=lambda model: show_model(model),
+        on_error=lambda error: show_error(error),
+    )
+```
+
+The application owns the task, so leaving its originating menu does not stop
+the work. Captured output is shown only in that menu and is replayed when the
+user returns to it; every other menu keeps its own content and commands remain
+available. Progress bars that rewrite a line with a carriage return are
+rendered as one updating line.
+
+Immediately before a completion callback runs on the UI thread, Tuiloom removes
+the temporary output and restores the menu's ordinary content and auto-scroll
+mode. Only one captured-output task can run per application at a time.

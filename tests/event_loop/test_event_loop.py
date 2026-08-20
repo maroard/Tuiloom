@@ -135,6 +135,30 @@ def test_loop_drains_every_available_input_event() -> None:
     loop.close()
 
 
+def test_loop_dispatches_completed_output_task_before_rendering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _, _, _ = make_loop()
+    calls: list[str] = []
+
+    def dispatch() -> TerminalMenu:
+        calls.append("dispatch")
+        return loop.menu
+
+    monkeypatch.setattr(
+        loop.menu.app,
+        "_dispatch_output_task_outcome",
+        dispatch,
+    )
+    monkeypatch.setattr(loop, "_check_visible_state", lambda: calls.append("check"))
+    monkeypatch.setattr(loop, "_render_if_due", lambda: calls.append("render"))
+
+    loop.run_once()
+
+    assert calls == ["dispatch", "check", "render"]
+    loop.close()
+
+
 def test_loop_batches_all_current_source_chunks() -> None:
     loop, _, _, _ = make_loop(source=iter(()))
     generation = loop.generation

@@ -1,17 +1,31 @@
+from collections.abc import Callable
+from dataclasses import dataclass
+from queue import Empty, Queue
 from sys import stdout
 
 from tuiloom._message_registry import MessageRegistry
 from tuiloom.command import CommandBehavior, CommandContext, CommandDict
 from tuiloom.input_handler.input_handler import InputHandler
+from tuiloom.output_capture import OutputCapture
+from tuiloom.output_task import OutputTaskSession
 from tuiloom.render.content_renderer import ContentSource
-from tuiloom.screen_context.screen_context import ScreenContext
 from tuiloom.terminal_menu import TerminalMenu
+
+
+@dataclass(frozen=True, slots=True)
+class _OutputTaskRegistration:
+    """Associate one captured task with its originating menu callbacks."""
+
+    menu: TerminalMenu
+    session: OutputTaskSession
+    on_success: Callable[[object], None]
+    on_error: Callable[[Exception], None]
 
 
 class TerminalApp:
     """Configure and run a Tuiloom application in the active terminal.
 
-    The application owns global content, commands, and messages, creates the
+    The application owns global content, commands, messages, and its registered
     main menu, and restores the terminal state after execution.
     """
 
@@ -31,45 +45,52 @@ class TerminalApp:
         self.global_content_source = global_content_source
 
         self.global_commands: CommandDict = {}
-        self.main_menu: TerminalMenu | None = None
+        self._main_menu: TerminalMenu | None = None
 
         self._message_registry = MessageRegistry()
+        self._output_capture = OutputCapture()
+        self._active_output_task: _OutputTaskRegistration | None = None
+        self._output_task_outcomes: Queue[_OutputTaskRegistration] = Queue()
 
         # Created only while run() is active.
         self.input_handler: InputHandler | None = None
 
-    def set_main_menu(
-        self,
-        title: str,
-        name: str = "Main Menu",
-        width: int | None = None,
-    ) -> TerminalMenu:
-        """Create and register the application's main menu.
-
-        Args:
-            title: Heading displayed at the top of the menu.
-            name: Internal menu name used in contextual messages.
-            width: Inner menu width, or ``None`` to determine it automatically.
+    @property
+    def name(self) -> str:
+        """Return the public application name used by menu contexts.
 
         Returns:
-            The configured main menu, ready for commands and content.
+            The name supplied when this application was created.
         """
-        menu = TerminalMenu(
-            app=self,
-            screen_context=ScreenContext(
-                app_name=self._name,
-                menu_name=name,
-                title=title,
-                commands={},
-                width=width,
-            ),
-            content_source=self.global_content_source,
-        )
+        return self._name
 
-        self.main_menu = menu
-        menu.set_exit_command_label("Quit")
+    @property
+    def main_menu(self) -> TerminalMenu | None:
+        """Return the registered main menu, if one exists.
 
-        return menu
+        Returns:
+            The read-only registered menu reference, or ``None``.
+        """
+        return self._main_menu
+
+    def set_main_menu(self, menu: TerminalMenu) -> None:
+        """Register an existing menu as the application's main menu.
+
+        Args:
+            menu: Menu owned by this application.
+
+        Raises:
+            ValueError: If ``menu`` belongs to another application.
+        """
+        if menu.app is not self:
+            raise ValueError("Main menu must belong to this TerminalApp")
+
+        previous_menu = self._main_menu
+        if previous_menu is not None and previous_menu is not menu:
+            previous_menu.set_command_label("0", "Back")
+
+        menu.set_command_label("0", "Quit")
+        self._main_menu = menu
 
     def add_global_command(
         self,
@@ -149,25 +170,77 @@ class TerminalApp:
         action(CommandContext(app=self, menu=menu, command_key=command_key))
         return True
 
+    def _start_output_task(
+        self,
+        menu: TerminalMenu,
+        action: Callable[[], object],
+        on_success: Callable[[object], None],
+        on_error: Callable[[Exception], None],
+    ) -> OutputTaskSession:
+        """Start one application-owned captured-output task."""
+        if self._active_output_task is not None:
+            raise RuntimeError("Another output task is already running")
+
+        session = OutputTaskSession()
+        registration = _OutputTaskRegistration(
+            menu=menu,
+            session=session,
+            on_success=on_success,
+            on_error=on_error,
+        )
+        self._active_output_task = registration
+        session.start(
+            action,
+            self._output_capture,
+            lambda completed: self._output_task_outcomes.put(registration),
+        )
+        return session
+
+    def _dispatch_output_task_outcome(self) -> TerminalMenu | None:
+        """Apply one completed output-task result on the UI thread."""
+        try:
+            registration = self._output_task_outcomes.get_nowait()
+        except Empty:
+            return None
+
+        if registration is not self._active_output_task:
+            return None
+
+        self._active_output_task = None
+        registration.menu._detach_output_task(registration.session)
+        outcome = registration.session.outcome
+
+        if outcome is None:
+            raise RuntimeError("Completed output task has no outcome")
+
+        if outcome.error is None:
+            registration.on_success(outcome.result)
+        else:
+            registration.on_error(outcome.error)
+
+        return registration.menu
+
     def run(self) -> None:
         """Run the main menu and restore the terminal when it finishes.
 
         Raises:
             RuntimeError: If no main menu has been configured.
         """
-        if self.main_menu is None:
+        main_menu = self._main_menu
+        if main_menu is None:
             raise RuntimeError("Cannot run TerminalApp: no main menu has been set")
 
-        self.input_handler = InputHandler()
+        with self._output_capture.install():
+            self.input_handler = InputHandler()
 
-        try:
-            self._enter_terminal_screen()
-            self.main_menu.run()
+            try:
+                self._enter_terminal_screen()
+                main_menu.run()
 
-        finally:
-            self.input_handler.close()
-            self.input_handler = None
-            self._leave_terminal_screen()
+            finally:
+                self.input_handler.close()
+                self.input_handler = None
+                self._leave_terminal_screen()
 
     # Switch to the alternate terminal screen and hide cursor affordances.
     def _enter_terminal_screen(self) -> None:

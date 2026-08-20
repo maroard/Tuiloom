@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 from tuiloom._message_registry import MessageKey
 from tuiloom.command import (
     CommandBehavior,
     CommandContext,
     CommandDict,
+    InputBehavior,
     _without_context,
 )
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent, InputEventType
+from tuiloom.output_task import OutputTaskSession
 from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import AutoScrollMode, TerminalRenderer
@@ -61,6 +64,11 @@ class TerminalMenu:
 
         self.running = False
         self._input_buffer = ""
+        self._input_behavior: InputBehavior | None = None
+        self._input_hidden = False
+        self._previous_prompt: str | None = None
+        self._output_task_session: OutputTaskSession | None = None
+        self._output_task_previous_auto_scroll: AutoScrollMode | None = None
         self._disabled_messages: set[str] = set()
 
         self.commands: CommandDict = self.screen_context.commands
@@ -122,7 +130,7 @@ class TerminalMenu:
         if index == 0:
             raise ValueError(
                 "Command index 0 is reserved for Back/Quit. "
-                "Use set_exit_command_label() to change its label."
+                "Use set_command_label('0', label) to change its label."
             )
 
         if index is None:
@@ -149,10 +157,7 @@ class TerminalMenu:
             index=index,
         )
 
-    def set_content_source(
-        self,
-        content_source: ContentSource,
-    ) -> None:
+    def set_content_source(self, content_source: ContentSource) -> None:
         """Replace the content source used by this menu.
 
         Args:
@@ -164,7 +169,125 @@ class TerminalMenu:
         if not self.running or self._event_loop is None:
             return
 
+        if self._output_task_session is not None:
+            return
+
         self._event_loop.install_source(content_source)
+
+    def run_with_output[T](
+        self,
+        action: Callable[[], T],
+        *,
+        on_success: Callable[[T], None],
+        on_error: Callable[[Exception], None],
+    ) -> None:
+        """Run blocking work while showing its output as menu content.
+
+        The application keeps the callable alive outside the UI thread while
+        this menu is closed. Its standard output and standard error temporarily
+        replace this menu's content and are removed before completion callbacks
+        run in the UI thread.
+
+        Args:
+            action: Synchronous zero-argument operation to execute.
+            on_success: Callback receiving the operation's returned value.
+            on_error: Callback receiving an exception raised by the operation.
+
+        Raises:
+            RuntimeError: If the menu is inactive or another task is running.
+        """
+        if not self.running or self._event_loop is None:
+            raise RuntimeError("Output tasks can only run while the menu is active")
+        if self._output_task_session is not None:
+            raise RuntimeError("Another output task is already running")
+        previous_auto_scroll = self.auto_scroll
+
+        def complete(result: object) -> None:
+            on_success(cast(T, result))
+
+        self._output_task_previous_auto_scroll = previous_auto_scroll
+        self.auto_scroll = "strict"
+
+        try:
+            session = self.app._start_output_task(
+                self,
+                action,
+                complete,
+                on_error,
+            )
+            self._output_task_session = session
+            self._event_loop.install_source(session.iter_output())
+        except BaseException:
+            self._output_task_previous_auto_scroll = None
+            self.auto_scroll = previous_auto_scroll
+            raise
+
+    def _detach_output_task(self, session: OutputTaskSession) -> None:
+        """Remove completed task output and restore ordinary menu content."""
+        if session is not self._output_task_session:
+            return
+
+        self._output_task_session = None
+        previous_auto_scroll = self._output_task_previous_auto_scroll
+        self._output_task_previous_auto_scroll = None
+        self.auto_scroll = previous_auto_scroll
+
+        if not self.running or self._event_loop is None:
+            return
+
+        source = self._content_source
+
+        if source is None:
+            self._event_loop.install_source("")
+        else:
+            self._event_loop.install_source(source)
+
+    def _resolve_content_source(self) -> ContentSource | None:
+        """Return a fresh task view or this menu's ordinary content source."""
+        if self._output_task_session is not None:
+            return self._output_task_session.iter_output()
+
+        return self._content_source
+
+    def enter_input_mode(
+        self,
+        prompt: str,
+        behavior: InputBehavior,
+        *,
+        hidden: bool = False,
+    ) -> None:
+        """Route the next submitted text to a free-form input callback.
+
+        Input mode remains active until :meth:`leave_input_mode` is called,
+        allowing the callback to reject a value and display an error before
+        accepting another one.
+
+        Args:
+            prompt: Prompt displayed in place of the command-choice prompt.
+            behavior: Callback receiving the submitted text.
+            hidden: Whether to mask the input while preserving its real value
+                for the callback.
+        """
+        if self._input_behavior is None:
+            self._previous_prompt = self.screen_context.prompt
+
+        self._input_behavior = behavior
+        self._input_hidden = hidden
+        self._input_buffer = ""
+        self.screen_context.prompt = prompt
+
+    def leave_input_mode(self) -> None:
+        """Restore normal numbered-command input for this menu.
+
+        The submitted value and any hidden input buffer are discarded. The
+        prompt used before entering input mode is restored.
+        """
+        self._input_behavior = None
+        self._input_hidden = False
+        self._input_buffer = ""
+        self.screen_context.prompt = self._previous_prompt
+        self._previous_prompt = None
+        self.screen_context.message = None
 
     def disable_message(self, key: str) -> None:
         """Suppress a registry message locally in this menu.
@@ -198,14 +321,22 @@ class TerminalMenu:
         """
         return key not in self._disabled_messages
 
-    def set_exit_command_label(self, label: str) -> None:
-        """Change the label of the command numbered zero.
+    def set_command_label(self, command_key: str, label: str) -> None:
+        """Change one registered command's visible label.
 
         Args:
-            label: New label for the exit command.
+            command_key: Existing command key whose label must change.
+            label: Replacement label displayed by this menu.
+
+        Raises:
+            KeyError: If ``command_key`` is not registered in this menu.
         """
-        behavior, _ = self.commands["0"]
-        self.commands["0"] = (behavior, label)
+        try:
+            behavior, _ = self.commands[command_key]
+        except KeyError:
+            raise KeyError(f"Unknown command key: {command_key!r}") from None
+
+        self.commands[command_key] = (behavior, label)
 
     def run(self) -> None:
         """Run the menu until it is stopped.
@@ -219,11 +350,13 @@ class TerminalMenu:
         self.running = True
         self._input_buffer = ""
 
-        if self._content_source is None:
+        content_source = self._resolve_content_source()
+
+        if content_source is None:
             self.content_renderer = ContentRenderer("")
             self._handle_no_content_source()
         else:
-            self.content_renderer = ContentRenderer(self._content_source)
+            self.content_renderer = ContentRenderer(content_source)
 
         self.menu_renderer = MenuRenderer(self.screen_context)
 
@@ -269,7 +402,14 @@ class TerminalMenu:
             self.menu_renderer.update_screen_context(self.screen_context)
 
         if self.terminal_renderer is not None:
-            self.terminal_renderer.render(self._input_buffer)
+            self.terminal_renderer.render(self._display_input_buffer())
+
+    def _display_input_buffer(self) -> str:
+        """Return the visible representation of the current input buffer."""
+        if self._input_hidden:
+            return "*" * len(self._input_buffer)
+
+        return self._input_buffer
 
     def _handle_no_content_source(self) -> None:
         """Display the no-content message when it is enabled."""
@@ -315,6 +455,10 @@ class TerminalMenu:
         """Resolve and execute the command currently buffered by the menu."""
         command = self._input_buffer
         self._input_buffer = ""
+
+        if self._input_behavior is not None:
+            self._input_behavior(command)
+            return
 
         if self.app._handle_global_command(command, self):
             self._invalidate_renderer()
@@ -372,6 +516,10 @@ class TerminalMenu:
 
     def _handle_escape(self) -> None:
         """Stop the active menu in response to the Escape key."""
+        if self._input_behavior is not None:
+            self.leave_input_mode()
+            return
+
         self.stop()
 
     # Stop the active menu loop on the next iteration.

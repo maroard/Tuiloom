@@ -10,6 +10,9 @@ from wcwidth import wrap as wc_wrap
 
 RESET_SGR = "\x1b[0m"
 _SGR_PATTERN = compile_pattern(r"\x1b\[[0-?]*[ -/]*m\Z")
+_HYPERLINK_PATTERN = compile_pattern(
+    r"\x1b\]8;;(?:https?://[^\x00-\x20\x7f-\x9f\x1b\\]+)?\x1b\\\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -23,12 +26,12 @@ class VisualCell:
 
 
 def sanitize_terminal_text(text: str) -> str:
-    """Keep printable text, newlines, tabs, and SGR style sequences."""
+    """Keep printable text, SGR styles, and safe HTTP(S) hyperlinks."""
     safe_parts: list[str] = []
 
     for part, is_sequence in iter_sequences(text):
         if is_sequence:
-            if _SGR_PATTERN.fullmatch(part):
+            if _SGR_PATTERN.fullmatch(part) or _HYPERLINK_PATTERN.fullmatch(part):
                 safe_parts.append(part)
             continue
 

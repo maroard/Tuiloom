@@ -1,5 +1,4 @@
 .venv/
-.worktrees/
 __pycache__/
 .coverage
 .mypy_cache/

@@ -1,14 +1,11 @@
 from dataclasses import dataclass
-from typing import Literal
 
-type InputEventType = Literal[
-    "char", "enter", "backspace", "up", "down", "left", "right", "ctrl_c", "escape"
-]
+from tuiloom.key_binding import KeyBinding
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class InputEvent:
-    """Represent one normalized terminal input event."""
+    """Represent one normalized Blessed keyboard event."""
 
-    type: InputEventType
-    value: str | None
+    binding: KeyBinding | None
+    text: str | None = None

@@ -1,123 +1,121 @@
-import os
-import selectors
-import termios
-import tty
-from sys import stdin
-from time import monotonic
+from __future__ import annotations
 
-from tuiloom.input_handler.input_event import InputEvent, InputEventType
+from contextlib import AbstractContextManager
+from sys import stdin
+from typing import TextIO, cast
+
+from blessed import Terminal
+from blessed.keyboard import Keystroke
+
+from tuiloom.input_handler.input_event import InputEvent
+from tuiloom.key_binding import KeyBinding
+
+_LEGACY_NAMES: dict[str, tuple[str, bool]] = {
+    "SUP": ("up", True),
+    "SDOWN": ("down", True),
+    "SLEFT": ("left", True),
+    "SRIGHT": ("right", True),
+    "STAB": ("tab", True),
+    "BTAB": ("tab", True),
+}
+_SPECIAL_NAMES = {
+    "ESCAPE": "escape",
+    "ENTER": "enter",
+    "RETURN": "enter",
+    "BACKSPACE": "backspace",
+    "TAB": "tab",
+    "UP": "up",
+    "DOWN": "down",
+    "LEFT": "left",
+    "RIGHT": "right",
+}
+
+
+def normalize_keystroke(key: Keystroke) -> InputEvent:
+    """Convert a Blessed keystroke into a Tuiloom input event.
+
+    Unknown sequences remain consumable bindings, so malformed or unsupported
+    terminal input can never block later events in the input buffer.
+    """
+    name = key.name
+    raw_value = getattr(key, "value", str(key))
+    value = raw_value if isinstance(raw_value, str) else str(key)
+
+    if name is None:
+        text = str(key)
+        if not text:
+            return InputEvent(None)
+        if len(text) == 1:
+            return InputEvent(KeyBinding(text), text)
+        return InputEvent(None, text)
+
+    raw_name = name.removeprefix("KEY_")
+    legacy = _LEGACY_NAMES.get(raw_name)
+    if legacy is not None:
+        legacy_binding, shifted = legacy
+        return InputEvent(KeyBinding(legacy_binding, shift=shifted))
+
+    parts = raw_name.split("_")
+    ctrl = False
+    alt = False
+    shift = False
+    while parts and parts[0] in {"CTRL", "ALT", "SHIFT"}:
+        modifier = parts.pop(0)
+        ctrl = ctrl or modifier == "CTRL"
+        alt = alt or modifier == "ALT"
+        shift = shift or modifier == "SHIFT"
+
+    base_name = "_".join(parts)
+    resolved_binding: str | None = _SPECIAL_NAMES.get(base_name)
+    if resolved_binding is None:
+        if value and len(value) == 1:
+            resolved_binding = value
+        else:
+            resolved_binding = base_name.lower() or raw_name.lower()
+
+    event_text: str | None = value if value and not (ctrl or alt) else None
+    return InputEvent(
+        KeyBinding(resolved_binding, ctrl=ctrl, alt=alt, shift=shift),
+        event_text,
+    )
 
 
 class InputHandler:
-    """Read and normalize non-blocking terminal input."""
+    """Read decoded Unicode and special-key events through Blessed."""
 
-    def __init__(self) -> None:
-        """Configure the active terminal for non-blocking character input."""
-        self.fd = stdin.fileno()
-        self.original_settings = termios.tcgetattr(self.fd)
-
-        self.selector = selectors.DefaultSelector()
-        self.selector.register(stdin, selectors.EVENT_READ)
-
-        self._input_buffer = b""
-        self._escape_started_at: float | None = None
-        self._escape_timeout = 0.02
-
-        tty.setcbreak(self.fd)
+    def __init__(
+        self,
+        terminal: Terminal | None = None,
+        stream: TextIO = stdin,
+        *,
+        escape_delay: float = 0.02,
+    ) -> None:
+        """Enter cbreak mode for the interactive input stream."""
+        self._terminal = terminal if terminal is not None else Terminal()
+        self._stream = stream
+        self._escape_delay = escape_delay
+        self._cbreak = cast(AbstractContextManager[object], self._terminal.cbreak())
+        self._cbreak.__enter__()
+        self._closed = False
 
     def poll(self) -> InputEvent | None:
-        """Return the next available input event without blocking."""
-        event = self._parse_buffer()
-
-        if event is not None:
-            return event
-
-        events = self.selector.select(timeout=0)
-
-        if not events:
+        """Return one decoded event immediately, or ``None`` when idle."""
+        key = self._terminal.inkey(timeout=0, esc_delay=self._escape_delay)
+        if not key:
             return None
-
-        self._input_buffer += os.read(self.fd, 64)
-
-        return self._parse_buffer()
+        return normalize_keystroke(key)
 
     def fileno(self) -> int:
-        """Return the terminal descriptor watched by the application event loop."""
-        return self.fd
+        """Return the terminal descriptor watched by the event loop."""
+        return self._stream.fileno()
 
     def get_pending_timeout(self, now: float) -> float | None:
-        """Return the remaining delay before a buffered Escape becomes input."""
-        if self._escape_started_at is None:
-            return None
-
-        return max(0.0, self._escape_timeout - (now - self._escape_started_at))
-
-    def _parse_buffer(self) -> InputEvent | None:
-        """Parse one normalized event from the buffered terminal bytes."""
-        if not self._input_buffer:
-            self._escape_started_at = None
-            return None
-
-        arrow_events: dict[bytes, InputEventType] = {
-            b"A": "up",
-            b"B": "down",
-            b"C": "right",
-            b"D": "left",
-        }
-
-        first_byte = self._input_buffer[:1]
-
-        if first_byte in (b"\x7f", b"\x08"):
-            self._input_buffer = self._input_buffer[1:]
-            return InputEvent("backspace", None)
-
-        if first_byte in (b"\n", b"\r"):
-            self._input_buffer = self._input_buffer[1:]
-            return InputEvent("enter", None)
-
-        if first_byte == b"\x1b":
-            if len(self._input_buffer) == 1:
-                if self._escape_started_at is None:
-                    self._escape_started_at = monotonic()
-                    return None
-
-                if monotonic() - self._escape_started_at < self._escape_timeout:
-                    return None
-
-                self._input_buffer = self._input_buffer[1:]
-                self._escape_started_at = None
-
-                return InputEvent("escape", None)
-
-            self._escape_started_at = None
-
-            if self._input_buffer[1:2] != b"[":
-                self._input_buffer = self._input_buffer[1:]
-                return InputEvent("escape", None)
-
-            if len(self._input_buffer) < 3:
-                return None
-
-            event_type = arrow_events.get(self._input_buffer[2:3])
-
-            if event_type is None:
-                return None
-
-            self._input_buffer = self._input_buffer[3:]
-
-            return InputEvent(event_type, None)
-
-        char = first_byte.decode()
-        self._input_buffer = self._input_buffer[1:]
-
-        return InputEvent("char", char)
+        """Return no external deadline because Blessed owns Escape timing."""
+        return None
 
     def close(self) -> None:
-        """Restore the terminal settings and release the input selector."""
-        termios.tcsetattr(
-            self.fd,
-            termios.TCSANOW,
-            self.original_settings,
-        )
-
-        self.selector.close()
+        """Restore terminal input settings exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        self._cbreak.__exit__(None, None, None)

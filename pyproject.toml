@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
-    { name = "Mathias" }
+    { name = "maroard" }
 ]
 keywords = [
     "tui",
@@ -29,23 +29,51 @@ classifiers = [
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Terminals",
 ]
 
 dependencies = [
+    "blessed>=1.48,<2",
     "wcwidth>=0.8",
 ]
+
+[project.urls]
+Homepage = "https://github.com/maroard/Tuiloom"
+Repository = "https://github.com/maroard/Tuiloom"
+Issues = "https://github.com/maroard/Tuiloom/issues"
 
 [dependency-groups]
 dev = [
     "mypy>=1.17",
     "pytest>=8.4",
+    "pytest-cov>=6.2",
     "ruff>=0.12",
+    "twine>=6.1",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tuiloom"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/LICENSE",
+    "/README.md",
+    "/pyproject.toml",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["tuiloom"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

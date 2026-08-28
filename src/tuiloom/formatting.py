@@ -1,18 +1,28 @@
-from urllib.parse import urlparse
+from tuiloom.render.terminal_text import (
+    is_safe_hyperlink_url,
+    sanitize_hyperlink_text,
+)
 
 
 def hyperlink(text: str, url: str) -> str:
-    """Return text linked to one safe HTTP(S) URL with terminal OSC 8."""
-    parsed_url = urlparse(url)
-    contains_control = any(
-        ord(character) < 32 or 127 <= ord(character) <= 159 for character in url
-    )
+    """Wrap safe styled text in a terminal OSC 8 HTTP(S) hyperlink.
 
-    if (
-        parsed_url.scheme not in ("http", "https")
-        or not parsed_url.netloc
-        or contains_control
-    ):
+    Args:
+        text: Visible link text. Unsafe terminal controls and nested OSC links
+            are removed; safe SGR color and style sequences are retained.
+        url: Absolute HTTP or HTTPS URL with a network location. Whitespace,
+            C0/C1 controls, Escape, and backslash are rejected.
+
+    Returns:
+        Sanitized text enclosed by a complete OSC 8 open/close pair.
+
+    Raises:
+        ValueError: If ``url`` is unsafe or is not an absolute HTTP(S) URL.
+
+    Example:
+        ``hyperlink("Tuiloom", "https://github.com/maroard/Tuiloom")``
+    """
+    if not is_safe_hyperlink_url(url):
         raise ValueError(f"Invalid terminal hyperlink URL: {url!r}")
-
-    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
+    safe_text = sanitize_hyperlink_text(text)
+    return f"\033]8;;{url}\033\\{safe_text}\033]8;;\033\\"

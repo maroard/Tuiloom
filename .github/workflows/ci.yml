@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.12", "3.13", "3.14"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      - run: uv sync --locked --dev
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run mypy src tests
+      - run: uv run pytest --cov=tuiloom --cov-report=term-missing
+      - run: uv build
+      - run: uv run twine check dist/*
+      - name: Verify artifacts and isolated wheel installation
+        shell: bash
+        run: |
+          python - <<'PY'
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          wheel = next(Path("dist").glob("*.whl"))
+          with zipfile.ZipFile(wheel) as archive:
+              names = archive.namelist()
+              assert any(name.endswith("tuiloom/py.typed") for name in names)
+              assert any(name.endswith(".dist-info/licenses/LICENSE") for name in names)
+
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          with tarfile.open(sdist) as archive:
+              names = archive.getnames()
+              assert not any("/docs/" in name for name in names)
+              assert not any(name.endswith("/Makefile") for name in names)
+              assert not any(name.endswith("/uv.lock") for name in names)
+          PY
+          uv venv --python "${{ matrix.python-version }}" .venv-smoke
+          uv pip install --python .venv-smoke/bin/python dist/*.whl
+          .venv-smoke/bin/python -c "import tuiloom; print(tuiloom.TerminalApp('smoke').name)"

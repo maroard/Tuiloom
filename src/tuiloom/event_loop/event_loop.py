@@ -38,11 +38,11 @@ class EventLoop:
         selector_factory: Callable[[], BaseSelector] = DefaultSelector,
     ) -> None:
         """Create an event loop over initialized menu renderers."""
-        self.menu = menu
-        self.input_handler = input_handler
-        self.menu_renderer = menu_renderer
-        self.terminal_renderer = terminal_renderer
-        self.content_renderer = content_renderer
+        self._menu = menu
+        self._input_handler = input_handler
+        self._menu_renderer = menu_renderer
+        self._terminal_renderer = terminal_renderer
+        self._content_renderer = content_renderer
         self._clock = clock
         self._selector = selector_factory()
         self._wakeup_reader, self._wakeup_writer = socketpair()
@@ -51,8 +51,8 @@ class EventLoop:
         self._selector.register(input_handler.fileno(), EVENT_READ, "input")
         self._selector.register(self._wakeup_reader, EVENT_READ, "source")
 
-        self.source_events: Queue[SourceEvent] = Queue(maxsize=self._SOURCE_QUEUE_SIZE)
-        self.generation = 0
+        self._source_events: Queue[SourceEvent] = Queue(maxsize=self._SOURCE_QUEUE_SIZE)
+        self._generation = 0
         self._source_worker: SourceWorker | None = None
         self._dirty = True
         now = self._clock()
@@ -67,7 +67,7 @@ class EventLoop:
 
     def run(self) -> None:
         """Process events until the owning menu stops."""
-        while self.menu.running:
+        while self._menu._running:
             self.run_once()
 
     def run_once(self) -> None:
@@ -81,9 +81,9 @@ class EventLoop:
 
         self._drain_input()
         self._request_dynamic_update()
-        completed_menu = self.menu.app._dispatch_output_task_outcome()
+        completed_menu = self._menu.app._dispatch_output_task_outcome()
 
-        if completed_menu is self.menu:
+        if completed_menu is self._menu:
             self.request_render(immediate=True)
 
         self._check_visible_state()
@@ -99,9 +99,9 @@ class EventLoop:
     def install_source(self, source: ContentSource) -> None:
         """Replace the active source and discard every stale source event."""
         content_renderer = ContentRenderer(source)
-        self.content_renderer = content_renderer
-        self.menu.content_renderer = content_renderer
-        self.terminal_renderer.set_content_renderer(content_renderer)
+        self._content_renderer = content_renderer
+        self._menu._content_renderer = content_renderer
+        self._terminal_renderer.set_content_renderer(content_renderer)
         self._install_worker(content_renderer)
         self.request_render(immediate=True)
 
@@ -124,7 +124,7 @@ class EventLoop:
         if self._source_worker is not None:
             self._source_worker.cancel()
 
-        self.generation += 1
+        self._generation += 1
         self._clear_source_events()
         self._source_worker = None
         self._dynamic_in_flight = False
@@ -138,9 +138,9 @@ class EventLoop:
             raise RuntimeError("Non-static content source cannot be consumed")
 
         self._source_worker = SourceWorker(
-            generation=self.generation,
+            generation=self._generation,
             source=source,
-            events=self.source_events,
+            events=self._source_events,
             notify=self._notify_source,
         )
         self._source_worker.start()
@@ -149,22 +149,22 @@ class EventLoop:
         """Discard queued results belonging to a replaced source."""
         while True:
             try:
-                self.source_events.get_nowait()
+                self._source_events.get_nowait()
             except Empty:
                 return
 
     def _drain_input(self) -> None:
         """Handle every input event immediately available from the terminal."""
         while True:
-            event = self.input_handler.poll()
+            event = self._input_handler.poll()
 
             if event is None:
                 return
 
-            self.menu._handle_event(event)
+            self._menu._handle_event(event)
             self.request_render()
 
-            if not self.menu.running:
+            if not self._menu._running:
                 return
 
     def _drain_source_events(self) -> None:
@@ -173,17 +173,17 @@ class EventLoop:
 
         while True:
             try:
-                event = self.source_events.get_nowait()
+                event = self._source_events.get_nowait()
             except Empty:
                 break
 
-            if event.generation == self.generation:
+            if event.generation == self._generation:
                 events.append(event)
 
         if not events:
             return
 
-        if self.content_renderer.state == "streaming":
+        if self._content_renderer.state == "streaming":
             chunks = [
                 event.value
                 for event in events
@@ -191,11 +191,11 @@ class EventLoop:
             ]
 
             if chunks:
-                self.content_renderer.append_stream_batch(chunks)
-                self.terminal_renderer.apply_stream_auto_scroll(self.menu.auto_scroll)
+                self._content_renderer.append_stream_batch(chunks)
+                self._terminal_renderer.apply_stream_auto_scroll(self._menu.auto_scroll)
                 self.request_render()
 
-        elif self.content_renderer.state == "dynamic":
+        elif self._content_renderer.state == "dynamic":
             values = [event.value for event in events if event.kind == "data"]
 
             if values:
@@ -204,7 +204,7 @@ class EventLoop:
                 if not isinstance(value, (str, list)):
                     raise RuntimeError("Dynamic worker returned invalid content")
 
-                self.content_renderer.replace_dynamic_content(value)
+                self._content_renderer.replace_dynamic_content(value)
                 self.request_render()
 
             self._dynamic_in_flight = False
@@ -215,7 +215,7 @@ class EventLoop:
     def _handle_source_event(self, event: SourceEvent) -> None:
         """Handle completion and failures after applying source data."""
         if event.kind == "complete":
-            self.content_renderer.finish_stream()
+            self._content_renderer.finish_stream()
             self.request_render()
             return
 
@@ -228,7 +228,7 @@ class EventLoop:
     def _request_dynamic_update(self) -> None:
         """Request one dynamic result when no evaluation is in flight."""
         if (
-            self.content_renderer.state != "dynamic"
+            self._content_renderer.state != "dynamic"
             or self._source_worker is None
             or self._dynamic_in_flight
             or self._clock() < self._next_dynamic_at
@@ -246,8 +246,8 @@ class EventLoop:
         if not self._dirty or now < self._next_frame_at:
             return
 
-        self.menu_renderer.update_screen_context(self.menu.screen_context)
-        self.terminal_renderer.render(self.menu._display_input_buffer())
+        self._menu_renderer.update()
+        self._terminal_renderer.render()
         self._dirty = False
         self._next_frame_at = now + self._FRAME_INTERVAL
 
@@ -259,12 +259,12 @@ class EventLoop:
         if self._dirty:
             deadlines.append(self._next_frame_at)
 
-        input_timeout = self.input_handler.get_pending_timeout(now)
+        input_timeout = self._input_handler.get_pending_timeout(now)
 
         if input_timeout is not None:
             deadlines.append(now + input_timeout)
 
-        if self.content_renderer.state == "dynamic" and not self._dynamic_in_flight:
+        if self._content_renderer.state == "dynamic" and not self._dynamic_in_flight:
             deadlines.append(self._next_dynamic_at)
 
         return max(0.0, min(deadlines) - now)
@@ -276,10 +276,13 @@ class EventLoop:
         if now < self._next_state_check_at:
             return
 
-        revision = self.menu_renderer.revision
-        self.menu_renderer.update_screen_context(self.menu.screen_context)
+        revision = self._menu_renderer.revision
+        self._menu_renderer.update()
 
-        if self.menu_renderer.revision != revision:
+        if self._menu_renderer.revision != revision:
+            self.request_render()
+
+        if self._menu._tick_task_exit(now):
             self.request_render()
 
         terminal_size = get_terminal_size()

@@ -1,6 +1,7 @@
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from queue import Queue
 from threading import Event
+from typing import cast
 
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
@@ -66,3 +67,50 @@ def test_cancelled_worker_stops_publishing_after_blocked_next_returns() -> None:
     worker.join(timeout=1)
 
     assert events.empty()
+
+
+def test_dynamic_worker_evaluates_requests_and_cancels_cleanly() -> None:
+    events: Queue[SourceEvent] = Queue(maxsize=8)
+    values: Iterator[str | list[str]] = iter(["first", ["second"]])
+    worker = SourceWorker(2, lambda: next(values), events, lambda: None)
+    worker.start()
+    worker.request_dynamic_update()
+    first = events.get(timeout=1)
+    worker.request_dynamic_update()
+    second = events.get(timeout=1)
+    worker.cancel()
+    worker.join(timeout=1)
+    assert first.value == "first"
+    assert second.value == ["second"]
+
+
+def test_worker_reports_invalid_iterator_and_dynamic_values() -> None:
+    iterator_events: Queue[SourceEvent] = Queue(maxsize=8)
+    iterator = SourceWorker(
+        1,
+        cast(Iterator[str], iter([3])),
+        iterator_events,
+        lambda: None,
+    )
+    iterator.start()
+    iterator.join(timeout=1)
+    assert isinstance(iterator_events.get_nowait().error, TypeError)
+
+    dynamic_events: Queue[SourceEvent] = Queue(maxsize=8)
+    dynamic = SourceWorker(
+        1,
+        cast(Callable[[], str | list[str]], lambda: 3),
+        dynamic_events,
+        lambda: None,
+    )
+    dynamic.start()
+    dynamic.request_dynamic_update()
+    failure = dynamic_events.get(timeout=1)
+    dynamic.join(timeout=1)
+    assert isinstance(failure.error, TypeError)
+
+
+def test_request_dynamic_update_is_ignored_for_iterator() -> None:
+    events: Queue[SourceEvent] = Queue(maxsize=8)
+    worker = SourceWorker(1, iter([]), events, lambda: None)
+    worker.request_dynamic_update()

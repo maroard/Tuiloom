@@ -1,266 +1,179 @@
-import os
+from __future__ import annotations
+
+from collections.abc import Callable
 from selectors import BaseSelector, SelectorKey
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
-import tuiloom.event_loop.event_loop as event_loop_module
+from tuiloom import KeyBinding, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.input_handler.input_handler import InputHandler
-from tuiloom.render.content_renderer import ContentRenderer, ContentSource
+from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
-from tuiloom.screen_context.screen_context import ScreenContext
-from tuiloom.terminal_app import TerminalApp
-from tuiloom.terminal_menu import TerminalMenu
-
-
-class FakeClock:
-    """Provide deterministic monotonic time for event-loop tests."""
-
-    def __init__(self) -> None:
-        self.value = 0.0
-
-    def __call__(self) -> float:
-        return self.value
-
-    def advance(self, seconds: float) -> None:
-        self.value += seconds
 
 
 class FakeSelector:
-    """Record registrations and return explicitly queued readiness."""
-
     def __init__(self) -> None:
+        self.registered: list[object] = []
         self.ready: list[tuple[SelectorKey, int]] = []
-        self.registered: list[SelectorKey] = []
+        self.timeouts: list[float | None] = []
         self.closed = False
 
-    def register(self, fileobj: Any, events: int, data: object = None) -> SelectorKey:
-        key = SelectorKey(fileobj, fileobj, events, data)
-        self.registered.append(key)
-        return key
+    def register(self, fileobj: object, events: int, data: object) -> None:
+        self.registered.append(fileobj)
 
     def select(self, timeout: float | None = None) -> list[tuple[SelectorKey, int]]:
-        ready = self.ready
-        self.ready = []
+        self.timeouts.append(timeout)
+        ready, self.ready = self.ready, []
         return ready
 
     def close(self) -> None:
         self.closed = True
 
 
-class FakeInputHandler:
-    """Return a controlled sequence of non-blocking input events."""
-
+class FakeInput:
     def __init__(self, events: list[InputEvent | None]) -> None:
         self.events = events
-        self.poll_calls = 0
 
     def fileno(self) -> int:
         return 0
 
     def poll(self) -> InputEvent | None:
-        self.poll_calls += 1
         return self.events.pop(0) if self.events else None
 
     def get_pending_timeout(self, now: float) -> float | None:
         return None
 
 
-class RecordingTerminalRenderer(TerminalRenderer):
-    """Record frames without composing or writing terminal output."""
-
-    def __init__(self) -> None:
-        self.render_calls = 0
-        self.content_renderer = ContentRenderer("")
-        self.auto_scroll_modes: list[object] = []
-        self.reset_auto_scroll_calls = 0
-
-    def render(self, input_buffer: str = "") -> None:
-        self.render_calls += 1
-
-    def set_content_renderer(self, content_renderer: ContentRenderer) -> None:
-        self.content_renderer = content_renderer
-        self.reset_stream_auto_scroll()
-
-    def apply_stream_auto_scroll(self, mode: object) -> None:
-        self.auto_scroll_modes.append(mode)
-
-    def reset_stream_auto_scroll(self) -> None:
-        self.reset_auto_scroll_calls += 1
-
-
 def make_loop(
+    events: list[InputEvent | None],
     *,
-    input_events: list[InputEvent | None] | None = None,
-    source: ContentSource = "",
-) -> tuple[EventLoop, FakeClock, FakeInputHandler, RecordingTerminalRenderer]:
+    content: str = "content",
+    clock: Callable[[], float] = lambda: 0.0,
+) -> tuple[TerminalMenu, EventLoop, FakeSelector, TerminalRenderer]:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("App", "Menu", "Menu"))
-    menu.running = True
-    input_handler = FakeInputHandler(input_events or [None])
-    menu_renderer = MenuRenderer(menu.screen_context)
-    terminal_renderer = RecordingTerminalRenderer()
-    content_renderer = ContentRenderer(source)
-    selector = FakeSelector()
-    clock = FakeClock()
-    loop = EventLoop(
+    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source=content)
+    menu._running = True
+    menu.add_command("Stop", lambda context: menu._stop_immediately())
+    content_renderer = ContentRenderer(content)
+    menu_renderer = MenuRenderer(menu)
+    terminal_renderer = TerminalRenderer(
         menu=menu,
-        input_handler=cast(InputHandler, input_handler),
         menu_renderer=menu_renderer,
-        terminal_renderer=terminal_renderer,
         content_renderer=content_renderer,
+        content_spacing=True,
+    )
+    selector = FakeSelector()
+    loop = EventLoop(
+        menu,
+        cast(InputHandler, FakeInput(events)),
+        menu_renderer,
+        terminal_renderer,
+        content_renderer,
         clock=clock,
         selector_factory=lambda: cast(BaseSelector, selector),
     )
-    return loop, clock, input_handler, terminal_renderer
+    return menu, loop, selector, terminal_renderer
 
 
-def test_loop_drains_every_available_input_event() -> None:
-    loop, _, input_handler, _ = make_loop(
-        input_events=[
-            InputEvent("char", "1"),
-            InputEvent("char", "2"),
-            None,
-        ]
-    )
-
-    loop._drain_input()
-
-    assert loop.menu._input_buffer == "12"
-    assert input_handler.poll_calls == 3
-    loop.close()
-
-
-def test_loop_dispatches_completed_output_task_before_rendering(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    loop, _, _, _ = make_loop()
-    calls: list[str] = []
-
-    def dispatch() -> TerminalMenu:
-        calls.append("dispatch")
-        return loop.menu
-
-    monkeypatch.setattr(
-        loop.menu.app,
-        "_dispatch_output_task_outcome",
-        dispatch,
-    )
-    monkeypatch.setattr(loop, "_check_visible_state", lambda: calls.append("check"))
-    monkeypatch.setattr(loop, "_render_if_due", lambda: calls.append("render"))
-
+def test_event_loop_drains_immediate_input_and_stops() -> None:
+    menu, loop, _, _ = make_loop([InputEvent(KeyBinding("enter")), None])
     loop.run_once()
-
-    assert calls == ["dispatch", "check", "render"]
+    assert not menu._running
     loop.close()
 
 
-def test_loop_batches_all_current_source_chunks() -> None:
-    loop, _, _, _ = make_loop(source=iter(()))
-    generation = loop.generation
-    loop.source_events.put(SourceEvent(generation, "data", "a"))
-    loop.source_events.put(SourceEvent(generation, "data", "b"))
-    loop.source_events.put(SourceEvent(generation, "data", "c"))
-
-    loop._drain_source_events()
-
-    assert loop.content_renderer.update().lines == ["abc"]
-    assert loop.content_renderer.update().revision == 1
-    loop.close()
-
-
-def test_loop_does_not_render_clean_state_before_deadline() -> None:
-    loop, clock, _, terminal_renderer = make_loop()
-    loop.request_render()
-    loop._render_if_due()
-    clock.advance(0.005)
-
-    loop._render_if_due()
-
-    assert terminal_renderer.render_calls == 1
-    loop.close()
-
-
-def test_source_error_is_raised_with_worker_traceback() -> None:
-    loop, _, _, _ = make_loop(source=iter(()))
-    error = ValueError("broken source")
-    loop.source_events.put(
-        SourceEvent(
-            loop.generation,
-            "error",
-            error=error,
-            traceback=error.__traceback__,
-        )
-    )
-
-    with pytest.raises(ValueError, match="broken source"):
-        loop._drain_source_events()
-
-    loop.close()
-
-
-def test_terminal_resize_requests_a_new_frame(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    terminal_size = [os.terminal_size((80, 24))]
-    monkeypatch.setattr(
-        event_loop_module,
-        "get_terminal_size",
-        lambda: terminal_size[0],
-        raising=False,
-    )
-    loop, clock, _, terminal_renderer = make_loop()
-    loop._render_if_due()
-    terminal_size[0] = os.terminal_size((20, 5))
-    clock.advance(loop._STATE_CHECK_INTERVAL)
-
+def test_event_loop_detects_context_and_terminal_state_changes() -> None:
+    menu, loop, _, renderer = make_loop([None])
+    menu.screen_context.message = "changed"
     loop._check_visible_state()
+    assert loop._dirty
+    renderer.invalidate()
+    loop.close()
+    loop.close()
+
+
+def test_install_source_replaces_menu_and_terminal_renderers() -> None:
+    menu, loop, _, renderer = make_loop([None])
+    old = menu._content_renderer
+    loop.install_source("new")
+    assert menu._content_renderer is not old
+    assert renderer._content_renderer is menu._content_renderer
+    loop.close()
+
+
+def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
+    menu, loop, _, renderer = make_loop([None])
+    streaming = ContentRenderer(iter([]))
+    loop._content_renderer = streaming
+    menu._content_renderer = streaming
+    renderer.set_content_renderer(streaming)
+    loop._source_events.put(SourceEvent(loop._generation - 1, "data", "stale"))
+    loop._source_events.put(SourceEvent(loop._generation, "data", "fresh\n"))
+    loop._source_events.put(SourceEvent(loop._generation, "complete"))
+    loop._drain_source_events()
+    assert streaming.rendered_content.lines == ["fresh"]
+    assert streaming.rendered_content.finished
+    loop.close()
+
+
+def test_dynamic_events_keep_latest_value_and_validate_results() -> None:
+    menu, loop, _, renderer = make_loop([None])
+    dynamic = ContentRenderer(lambda: "first")
+    loop._content_renderer = dynamic
+    menu._content_renderer = dynamic
+    renderer.set_content_renderer(dynamic)
+    loop._dynamic_in_flight = True
+    loop._source_events.put(SourceEvent(loop._generation, "data", "old"))
+    loop._source_events.put(SourceEvent(loop._generation, "data", ["new"]))
+    loop._drain_source_events()
+    assert dynamic.rendered_content.lines == ["new"]
+    assert not loop._dynamic_in_flight
+
+    loop._source_events.put(
+        SourceEvent(loop._generation, "data", 3)  # type: ignore[arg-type]
+    )
+    with pytest.raises(RuntimeError, match="invalid"):
+        loop._drain_source_events()
+    loop.close()
+
+
+def test_source_errors_are_raised_with_validation() -> None:
+    _, loop, _, _ = make_loop([None])
+    error = ValueError("source failed")
+    with pytest.raises(ValueError, match="source failed"):
+        loop._handle_source_event(SourceEvent(loop._generation, "error", error=error))
+    with pytest.raises(RuntimeError, match="no exception"):
+        loop._handle_source_event(SourceEvent(loop._generation, "error"))
+    loop.close()
+
+
+def test_render_deadlines_and_run_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [0.0]
+    menu, loop, selector, renderer = make_loop(
+        [InputEvent(KeyBinding("enter")), None], clock=lambda: now[0]
+    )
+    renders: list[None] = []
+    monkeypatch.setattr(renderer, "render", lambda: renders.append(None))
+    loop.request_render(immediate=True)
     loop._render_if_due()
-
-    assert terminal_renderer.render_calls == 2
+    assert renders == [None]
+    loop._render_if_due()
+    assert renders == [None]
+    menu._running = True
+    loop.run()
+    assert not menu._running
+    assert selector.timeouts
     loop.close()
 
 
-def test_iterator_batch_applies_current_menu_auto_scroll_mode() -> None:
-    loop, _, _, terminal_renderer = make_loop(source=iter(()))
-    loop.menu.auto_scroll = "strict"
-    loop.source_events.put(SourceEvent(loop.generation, "data", "chunk"))
-
+def test_wakeup_socket_is_drained_without_blocking() -> None:
+    _, loop, _, _ = make_loop([None])
+    loop._notify_source()
+    loop._drain_wakeup()
     loop._drain_source_events()
-
-    assert terminal_renderer.auto_scroll_modes == ["strict"]
-    loop.close()
-
-
-def test_empty_iterator_event_drain_does_not_apply_auto_scroll() -> None:
-    loop, _, _, terminal_renderer = make_loop(source=iter(()))
-    loop.menu.auto_scroll = "strict"
-
-    loop._drain_source_events()
-
-    assert terminal_renderer.auto_scroll_modes == []
-    loop.close()
-
-
-def test_dynamic_result_does_not_apply_auto_scroll() -> None:
-    loop, _, _, terminal_renderer = make_loop(source=lambda: "dynamic")
-    loop.menu.auto_scroll = "strict"
-    loop.source_events.put(SourceEvent(loop.generation, "data", "dynamic"))
-
-    loop._drain_source_events()
-
-    assert terminal_renderer.auto_scroll_modes == []
-    loop.close()
-
-
-def test_installing_source_resets_auto_scroll_state() -> None:
-    loop, _, _, terminal_renderer = make_loop()
-
-    loop.install_source(iter(()))
-
-    assert terminal_renderer.reset_auto_scroll_calls == 1
     loop.close()

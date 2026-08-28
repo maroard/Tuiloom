@@ -6,10 +6,18 @@ type MessageValue = str | MessageFactory
 
 
 class MessageKey(StrEnum):
-    """Identify messages provided internally by Tuiloom."""
+    """Identify built-in messages that may be shown or disabled.
+
+    ``NO_CONTENT_SOURCE`` explains that a menu has no content box.
+    ``UNKNOWN_COMMAND`` describes discarded textual command input retained for
+    integrations. ``TASK_EXIT_CHOICES`` presents safe task-closing choices and
+    ``TASK_WAITING`` labels the animated wait state.
+    """
 
     NO_CONTENT_SOURCE = "no_content_source"
     UNKNOWN_COMMAND = "unknown_command"
+    TASK_EXIT_CHOICES = "task_exit_choices"
+    TASK_WAITING = "task_waiting"
 
 
 class MessageRegistry:
@@ -35,6 +43,11 @@ class MessageRegistry:
             MessageKey.UNKNOWN_COMMAND,
             self._unknown_command,
         )
+        self._add_built_in_message(
+            MessageKey.TASK_EXIT_CHOICES,
+            "1: Force quit\n2: Wait and quit\n0: Cancel",
+        )
+        self._add_built_in_message(MessageKey.TASK_WAITING, "Task in progress")
 
     # Register a message owned by the library.
     def _add_built_in_message(
@@ -76,6 +89,15 @@ class MessageRegistry:
             return message(**context)
 
         return message
+
+    def validate_key(self, key: str) -> None:
+        """Raise ``KeyError`` unless ``key`` is registered."""
+        self._validate_existing_key(key)
+
+    def is_enabled(self, key: str) -> bool:
+        """Validate and report global enablement."""
+        self._validate_existing_key(key)
+        return key not in self._disabled
 
     def _validate_new_key(self, key: str) -> None:
         """Reject empty or already registered message keys."""

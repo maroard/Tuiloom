@@ -1,3 +1,8 @@
 .venv/
 .worktrees/
 __pycache__/
+.coverage
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+build/

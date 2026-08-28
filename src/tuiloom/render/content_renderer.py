@@ -1,3 +1,9 @@
+"""Normalize the four supported forms of application content.
+
+``ContentSource`` accepts static ``str``, static ``list[str]``, streaming
+``Iterator[str]``, or a refresh ``Callable[[], str | list[str]]``.
+"""
+
 from collections.abc import Callable, Iterator
 from typing import Literal
 

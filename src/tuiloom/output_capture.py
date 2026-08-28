@@ -63,6 +63,11 @@ class OutputCapture:
         self._writer: OutputWriter | None = None
         self._lock = RLock()
         self._installed = False
+        self._stdout: TextIO | None = None
+        self._stderr: TextIO | None = None
+        self._routed_stdout: TextIO | None = None
+        self._routed_stderr: TextIO | None = None
+        self._deferred_uninstall = False
 
     @contextmanager
     def install(self) -> Iterator[None]:
@@ -73,21 +78,25 @@ class OutputCapture:
 
             stdout = sys.stdout
             stderr = sys.stderr
+            self._stdout = stdout
+            self._stderr = stderr
             self._owner_thread_id = get_ident()
             self._installed = True
 
-        sys.stdout = cast(TextIO, _RoutedTextStream(self, stdout))
-        sys.stderr = cast(TextIO, _RoutedTextStream(self, stderr))
+        self._routed_stdout = cast(TextIO, _RoutedTextStream(self, stdout))
+        self._routed_stderr = cast(TextIO, _RoutedTextStream(self, stderr))
+        sys.stdout = self._routed_stdout
+        sys.stderr = self._routed_stderr
 
         try:
             yield
         finally:
-            sys.stdout = stdout
-            sys.stderr = stderr
             with self._lock:
-                self._writer = None
-                self._owner_thread_id = None
-                self._installed = False
+                keep_installed = self._deferred_uninstall and self._writer is not None
+                if not keep_installed:
+                    self._owner_thread_id = None
+            if not keep_installed:
+                self._uninstall()
 
     @contextmanager
     def route_background_output(
@@ -108,6 +117,39 @@ class OutputCapture:
             with self._lock:
                 if self._writer is writer:
                     self._writer = None
+                deferred = self._deferred_uninstall
+            if deferred:
+                self._uninstall()
+
+    def detach_background_output(self) -> None:
+        """Discard future task writes and keep routing until its thread exits."""
+        with self._lock:
+            if not self._installed:
+                raise RuntimeError("Output capture is not installed")
+            if self._writer is None:
+                return
+            self._writer = lambda text: len(text)
+            self._deferred_uninstall = True
+
+    def _uninstall(self) -> None:
+        """Restore streams if they still point at this capture's routers."""
+        with self._lock:
+            stdout = self._stdout
+            stderr = self._stderr
+            routed_stdout = self._routed_stdout
+            routed_stderr = self._routed_stderr
+            if stdout is not None and sys.stdout is routed_stdout:
+                sys.stdout = stdout
+            if stderr is not None and sys.stderr is routed_stderr:
+                sys.stderr = stderr
+            self._writer = None
+            self._owner_thread_id = None
+            self._installed = False
+            self._deferred_uninstall = False
+            self._stdout = None
+            self._stderr = None
+            self._routed_stdout = None
+            self._routed_stderr = None
 
     def _background_writer(self) -> OutputWriter | None:
         """Return the active writer outside the application UI thread."""

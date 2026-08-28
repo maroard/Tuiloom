@@ -1,308 +1,179 @@
-from dataclasses import dataclass
+from __future__ import annotations
 
-from tuiloom.command import Command
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
 from tuiloom.render.terminal_text import (
     center_display,
     display_width,
     ljust_display,
-    normalize_line,
     normalize_text_lines,
     wrap_display,
 )
-from tuiloom.screen_context.screen_context import ScreenContext
+
+if TYPE_CHECKING:
+    from tuiloom.terminal_menu import TerminalMenu
 
 
 @dataclass(frozen=True, slots=True)
 class _MenuState:
-    """Capture every screen-context value that affects menu rendering."""
+    """Capture every value affecting the menu box."""
 
     app_name: str
     title: str
-    commands: tuple[tuple[str, str], ...]
-    text: str | None
-    two_columns: bool
-    message: str | None
-    alert: str | None
-    prompt: str | None
+    menu_name: str
     requested_width: int | None
+    text: str | None
+    message: str | None
+    commands: tuple[tuple[str, bool], ...]
+    exit_label: str
+    selected_index: int
+    focus: str
+    has_content: bool
+    show: bool
+    alert: str | None
+    alert_prompt: str | None
+    input_prompt: str | None
+    input_text: str
 
 
 class MenuRenderer:
-    """Build a complete terminal menu box from screen context."""
+    """Build the navigation box for a menu's current state."""
 
-    def __init__(self, screen_context: ScreenContext) -> None:
-        """Capture the screen state required to render the menu."""
+    def __init__(self, menu: TerminalMenu) -> None:
+        """Capture a menu and initialize its render cache."""
+        self._menu = menu
         self._state: _MenuState | None = None
         self._cached_render: str | None = None
         self._revision = 0
-        self.update_screen_context(screen_context)
+        self.update()
 
     @property
     def revision(self) -> int:
-        """Return the revision of the visible menu state."""
+        """Return the visible-state revision."""
         return self._revision
 
-    def update_screen_context(self, screen_context: ScreenContext) -> None:
-        """Replace the menu state with the current screen context."""
-        state = _MenuState(
-            app_name=screen_context.app_name,
-            title=screen_context.title,
-            commands=tuple(
-                (key, command[1]) for key, command in screen_context.commands.items()
-            ),
-            text=screen_context.text,
-            two_columns=screen_context.two_columns,
-            message=screen_context.message,
-            alert=screen_context.alert,
-            prompt=screen_context.prompt,
-            requested_width=screen_context.width,
-        )
+    @property
+    def width(self) -> int:
+        """Return the calculated inner width."""
+        state = self._require_state()
+        requirements = [
+            4,
+            display_width(state.app_name),
+            display_width(state.title),
+        ]
+        for content in (
+            state.text,
+            state.message,
+            state.alert,
+            state.alert_prompt,
+            state.input_prompt,
+        ):
+            if content:
+                requirements.extend(
+                    display_width(line) + 2 for line in normalize_text_lines(content)
+                )
+        requirements.extend(display_width(f"> {label}") for label, _ in state.commands)
+        requirements.append(display_width(f"> {state.exit_label}"))
+        if state.input_prompt is not None:
+            requirements.append(
+                display_width(f"{state.input_prompt}{state.input_text}") + 2
+            )
+        return max(max(requirements), state.requested_width or 0)
 
+    def update(self) -> None:
+        """Refresh the cached snapshot from the owning menu."""
+        menu = self._menu
+        context = menu.screen_context
+        state = _MenuState(
+            app_name=menu.app.name,
+            title=context.title,
+            menu_name=context.menu_name,
+            requested_width=context.width,
+            text=context.text,
+            message=context.message,
+            commands=tuple(
+                (command.label, command.enabled) for command in menu.commands
+            ),
+            exit_label=menu._exit_label,
+            selected_index=menu._selected_index,
+            focus=menu._focus,
+            has_content=menu._has_content(),
+            show=menu.show,
+            alert=menu._alert_text,
+            alert_prompt=menu._alert_prompt,
+            input_prompt=menu._input_prompt if menu._alert_text is None else None,
+            input_text=menu._display_input_buffer(),
+        )
         if state == self._state:
             return
-
         self._state = state
         self._cached_render = None
         self._revision += 1
-        self.app_name = screen_context.app_name
-        self.title = screen_context.title
-        self.commands = screen_context.commands
-        self.text = screen_context.text
-        self.two_columns = screen_context.two_columns
-        self.message = screen_context.message
-        self.alert = screen_context.alert
-        self.prompt = screen_context.prompt
-
-        requested_width = screen_context.width
-        self.width: int = (
-            requested_width if requested_width is not None else self._calculate_width()
-        )
-
-    def _calculate_width(self) -> int:
-        """Calculate the smallest width that fits every menu element."""
-        width_requirements = [
-            display_width(self.app_name),
-            display_width(self.title),
-        ]
-
-        for content in (self.text, self.message, self.alert):
-            if content:
-                width_requirements.extend(
-                    display_width(line) + 2 for line in normalize_text_lines(content)
-                )
-
-        items = self._get_menu_items()
-
-        if self.two_columns:
-            middle = (len(items) + 1) // 2
-            left_items = items[:middle]
-            right_items = items[middle:]
-
-            left_requirement = max(
-                (display_width(f" {key}. {command[1]}") for key, command in left_items),
-                default=0,
-            )
-            right_requirement = max(
-                (
-                    display_width(f" {key}. {command[1]}")
-                    for key, command in right_items
-                ),
-                default=0,
-            )
-
-            width_requirements.append(
-                max(
-                    2 * left_requirement,
-                    2 * right_requirement - 1,
-                )
-            )
-        else:
-            width_requirements.extend(
-                display_width(f" {key}. {command[1]}") for key, command in items
-            )
-
-        zero_command = self.commands.get("0")
-        if zero_command is not None:
-            width_requirements.append(display_width(f" 0. {zero_command[1]}"))
-
-        return max(width_requirements)
 
     def render(self) -> str:
-        """Compose the complete menu box, footer, and prompt."""
-        if self._cached_render is not None:
-            return self._cached_render
-
-        self._cached_render = self._render_menu()
+        """Return the complete menu box or an empty hidden frame."""
+        self.update()
+        state = self._require_state()
+        if not state.show:
+            return ""
+        if self._cached_render is None:
+            self._cached_render = self._render_menu(state)
         return self._cached_render
 
-    def _render_menu(self) -> str:
-        """Compose and return the current complete menu display."""
-        if self.alert:
-            body_display = self._get_alert_display()
-            footer_display = self._get_footer_display()
-            prompt_display = self._get_alert_prompt_display()
-        else:
-            body_display = self._get_body_display()
-            footer_display = self._get_footer_display()
-            prompt_display = self._get_prompt_display()
-
-        return (
-            f"╭{'─' * self.width}╮\n"
-            f"│{'':{self.width}}│\n"
-            f"│{center_display(self.app_name, self.width)}│\n"
-            f"│{'':{self.width}}│\n"
-            f"├{'─' * self.width}┤\n"
-            f"│{center_display(self.title, self.width)}│\n"
-            f"├{'─' * self.width}┤\n"
-            f"{body_display}"
-            f"{footer_display}"
-            "\n"
-            f"{prompt_display}"
+    def _render_menu(self, state: _MenuState) -> str:
+        width = self.width
+        focused = (
+            not state.has_content or state.focus == "menu" or state.alert is not None
         )
-
-    def _get_alert_display(self) -> str:
-        """Render alert text as wrapped menu rows."""
-        if not self.alert:
-            return ""
-
-        alert_display = ""
-
-        for line in self._wrap_lines(self.alert):
-            alert_display += f"│{ljust_display(' ' + line, self.width)}│\n"
-
-        return alert_display
-
-    def _get_body_display(self) -> str:
-        """Build the normal menu body from text and commands."""
-        body_display = ""
-
-        if self.text:
-            body_display += self._get_text_display()
-
-        body_display += self._get_commands_display()
-
-        return body_display
-
-    def _get_text_display(self) -> str:
-        """Render optional descriptive text above the command list."""
-        if not self.text:
-            return ""
-
-        text_label = ""
-
-        for line in self._wrap_lines(self.text):
-            text_label += f"│{ljust_display(' ' + line, self.width)}│\n"
-
-        text_label += f"│{'':{self.width}}│\n"
-
-        return text_label
-
-    def _get_commands_display(self) -> str:
-        """Render commands followed by the reserved zero command."""
-        items = self._get_menu_items()
-
-        if self.two_columns:
-            commands_label = self._get_two_columns_commands(items)
+        horizontal = "─" if focused else "┄"
+        vertical = "│" if focused else "┊"
+        lines = [
+            f"╭{horizontal * width}╮",
+            f"{vertical}{center_display(state.app_name, width)}{vertical}",
+            f"├{horizontal * width}┤",
+            f"{vertical}{center_display(state.title, width)}{vertical}",
+            f"├{horizontal * width}┤",
+        ]
+        if state.alert is not None:
+            lines.extend(self._text_rows(state.alert, width, vertical))
+            if state.alert_prompt is not None:
+                lines.append(f"{vertical}{'':{width}}{vertical}")
+                lines.extend(self._text_rows(state.alert_prompt, width, vertical))
         else:
-            commands_label = self._get_single_column_commands(items)
+            if state.text:
+                lines.extend(self._text_rows(state.text, width, vertical))
+                lines.append(f"{vertical}{'':{width}}{vertical}")
+            for index, (label, enabled) in enumerate(state.commands):
+                marker = ">" if index == state.selected_index else " "
+                suffix = " (disabled)" if not enabled else ""
+                row = ljust_display(f"{marker} {label}{suffix}", width)
+                lines.append(f"{vertical}{row}{vertical}")
+            exit_marker = ">" if state.selected_index == len(state.commands) else " "
+            exit_row = ljust_display(f"{exit_marker} {state.exit_label}", width)
+            lines.append(f"{vertical}{exit_row}{vertical}")
+            if state.input_prompt is not None:
+                lines.append(f"{vertical}{'':{width}}{vertical}")
+                lines.extend(
+                    self._text_rows(
+                        f"{state.input_prompt}{state.input_text}", width, vertical
+                    )
+                )
+        if state.message:
+            lines.append(f"├{horizontal * width}┤")
+            lines.extend(self._text_rows(state.message, width, vertical))
+        lines.append(f"╰{horizontal * width}╯")
+        return "\n".join(lines)
 
-        zero_command = ljust_display(
-            " 0. " + self.commands["0"][1],
-            self.width,
-        )
-        commands_label += f"│{'':{self.width}}│\n│{zero_command}│\n"
-
-        return commands_label
-
-    def _get_menu_items(self) -> list[tuple[str, Command]]:
-        """Return command entries excluding the reserved zero command."""
-        return [(key, value) for key, value in self.commands.items() if key != "0"]
-
-    def _get_two_columns_commands(
-        self,
-        items: list[tuple[str, Command]],
-    ) -> str:
-        """Format command entries in a balanced two-column layout."""
-        left_width = self.width // 2
-        right_width = self.width - left_width
-
-        middle = (len(items) + 1) // 2
-        left_items = items[:middle]
-        right_items = items[middle:]
-
-        commands_label = ""
-
-        for i in range(middle):
-            left_key, left_value = left_items[i]
-            left_text = f" {left_key}. {left_value[1]}"
-
-            right_text = ""
-            if i < len(right_items):
-                right_key, right_value = right_items[i]
-                right_text = f" {right_key}. {right_value[1]}"
-
-            left_display = ljust_display(left_text, left_width)
-            right_display = ljust_display(right_text, right_width)
-            commands_label += f"│{left_display}{right_display}│\n"
-
-        return commands_label
-
-    def _get_single_column_commands(
-        self,
-        items: list[tuple[str, Command]],
-    ) -> str:
-        """Format command entries in a single-column layout."""
-        commands_label = ""
-
-        for key, value in items:
-            text = f" {key}. {value[1]}"
-            commands_label += f"│{ljust_display(text, self.width)}│\n"
-
-        return commands_label
-
-    def _get_footer_display(self) -> str:
-        """Build the menu footer and optional message section."""
-        footer_display = ""
-
-        if self.message:
-            footer_display += f"├{'─' * self.width}┤\n"
-            footer_display += self._get_message_display()
-
-        footer_display += f"╰{'─' * self.width}╯\n"
-
-        return footer_display
-
-    def _get_message_display(self) -> str:
-        """Render message text as wrapped footer rows."""
-        if not self.message:
-            return ""
-
-        message_display = ""
-
-        for line in self._wrap_lines(self.message):
-            message_display += f"│{ljust_display(' ' + line, self.width)}│\n"
-
-        return message_display
-
-    def _get_alert_prompt_display(self) -> str:
-        """Return the prompt displayed while an alert is active."""
-        if self.prompt is not None:
-            return normalize_line(self.prompt)
-
-        return "Press Enter to continue: "
-
-    def _get_prompt_display(self) -> str:
-        """Return the custom or default normal menu prompt."""
-        if self.prompt is not None:
-            return normalize_line(self.prompt)
-
-        return f"Choice? (0-{len(self.commands) - 1}): "
-
-    def _wrap_lines(self, text: str) -> list[str]:
-        """Wrap safe styled text to the menu's available inner width."""
-        wrapped_lines: list[str] = []
-
+    @staticmethod
+    def _text_rows(text: str, width: int, vertical: str) -> list[str]:
+        rows: list[str] = []
         for raw_line in normalize_text_lines(text):
-            wrapped_lines.extend(wrap_display(raw_line, self.width - 2))
+            for line in wrap_display(raw_line, max(1, width - 2)):
+                rows.append(f"{vertical}{ljust_display(' ' + line, width)}{vertical}")
+        return rows or [f"{vertical}{'':{width}}{vertical}"]
 
-        return wrapped_lines or [""]
+    def _require_state(self) -> _MenuState:
+        if self._state is None:
+            raise RuntimeError("Menu renderer has no state")
+        return self._state

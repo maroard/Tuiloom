@@ -1,34 +1,37 @@
-from dataclasses import dataclass, field
-
-from tuiloom.command import CommandDict
+from dataclasses import dataclass
 
 
 @dataclass
 class ScreenContext:
-    """Store the user-configurable display state consumed by menu renderers.
+    """Store the user-configurable display state for one menu.
 
     Attributes:
-        app_name: Application name displayed by the menu.
-        menu_name: Internal menu name used in contextual messages.
-        title: Heading displayed at the top of the menu.
-        width: Inner menu width, or ``None`` for automatic sizing.
-        commands: Commands indexed by their selection text.
-        text: Optional descriptive text displayed above commands.
-        two_columns: Whether commands are arranged in two columns.
-        message: Optional informational message displayed in the footer.
-        alert: Optional alert that replaces the normal menu body.
-        prompt: Optional replacement for the default input prompt.
-        show_menu: Whether the menu is intended to be displayed.
+        menu_name: Internal name used by contextual messages.
+        title: Heading displayed in the menu box.
+        width: Minimum inner width, or ``None`` for content-based sizing.
+        text: Optional descriptive text above selectable commands.
+        message: Optional footer message.
     """
 
-    app_name: str
     menu_name: str
     title: str
     width: int | None = None
-    commands: CommandDict = field(default_factory=dict)
     text: str | None = None
-    two_columns: bool = False
     message: str | None = None
-    alert: str | None = None
-    prompt: str | None = None
-    show_menu: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate the minimum width eagerly."""
+        self._validate_width(self.width)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Validate width replacements as eagerly as construction."""
+        if name == "width":
+            self._validate_width(value)
+        super().__setattr__(name, value)
+
+    @staticmethod
+    def _validate_width(value: object) -> None:
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise ValueError("ScreenContext.width must be a positive integer or None")

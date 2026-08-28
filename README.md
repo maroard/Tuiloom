@@ -1,114 +1,264 @@
 # Tuiloom
 
-Tuiloom builds typed terminal menus whose command callbacks receive the context
-of each execution.
+Tuiloom builds typed, keyboard-navigable terminal menus with dynamic content,
+Unicode-safe rendering, captured task output, alerts, and free-form input. It
+supports Python 3.12–3.14 on Linux and macOS.
 
-## Commands
+> Tuiloom is not published yet. The API described here is the pre-PyPI API.
+
+## Installation
+
+```bash
+pip install tuiloom
+```
+
+## First menu
 
 ```python
-from tuiloom import (
-    CommandBehavior,
-    CommandContext,
-    ScreenContext,
-    TerminalApp,
-    TerminalMenu,
-)
+from tuiloom import CommandContext, ScreenContext, TerminalApp, TerminalMenu
 
 app = TerminalApp("Generator")
 menu = TerminalMenu(
     app,
-    ScreenContext("Generator", "Main Menu", "Generation"),
+    ScreenContext(
+        menu_name="main",
+        title="Generation",
+        text="Choose an operation",
+        width=24,  # minimum inner width, not a fixed width
+    ),
+    content_source="Ready",
 )
-app.set_main_menu(menu)
-
 
 def generate(context: CommandContext) -> None:
-    context.menu.set_content_source("Generated from this menu")
-
+    context.menu.set_content_source("Generated")
 
 menu.add_command("Generate", generate)
+app.set_main_menu(menu)
+app.run()
 ```
 
-Tuiloom creates `CommandContext` during dispatch. Its `app`, `menu`, and
-`command_key` fields identify the active application, the menu where the command
-was entered, and the exact resolved registry key.
+`TerminalApp.run()` is blocking. It requires an interactive terminal and must
+run on the Python main thread. Terminal and cursor state are restored if a
+callback or renderer raises.
 
-Command labels can change at runtime without replacing their behavior or key:
+## Navigation and focus
+
+The menu initially has focus. Up and Down move the selected command in a loop,
+Enter activates it, and Escape activates the automatic final `Back` or `Quit`
+option. The selected row always contains `>` so selection remains visible
+without ANSI colors.
+
+When content exists, Tab alternates focus between the menu and content boxes.
+With content focused, all four arrows move its viewport. Manual upward movement
+suspends `auto_scroll="smart"`; reaching the bottom resumes it.
+
+Focused boxes use solid borders and unfocused boxes use dotted borders. A menu
+without content has one solid box and Tab does nothing. Use
+`content_spacing=False` to remove the otherwise single blank row between boxes.
+
+## Content sources
+
+All four `ContentSource` forms are accepted:
 
 ```python
-menu.add_command("Connect", connect, index=1)
-menu.set_command_label("1", "Disconnect")
+from collections.abc import Iterator
+
+static_text = "one\ntwo"
+static_lines = ["one", "two"]
+
+def stream() -> Iterator[str]:
+    yield "one\n"
+    yield "two\n"
+
+def refreshed() -> str | list[str]:
+    return ["current", "state"]
+
+menu.set_content_source(static_text)
+menu.set_content_source(static_lines)
+menu.set_content_source(stream())
+menu.set_content_source(refreshed)
 ```
 
-`set_command_label()` raises `KeyError` when the requested key is not registered.
+An omitted menu source inherits `TerminalApp.global_content_source`. A content
+box is rendered only when a source exists.
 
-Application dependencies can stay in closures; no command class is required:
+## Stable command handles
+
+Adding a command returns a stable handle. Positions are zero-based; booleans,
+negative positions, and out-of-range positions are rejected immediately.
 
 ```python
-def make_generate_command(
-    decoder: ConstrainedDecoder,
-    prompt_builder: PromptBuilder,
-) -> CommandBehavior:
-    def generate(context: CommandContext) -> None:
-        instructions = prompt_builder.get_prompt()
-        context.menu.set_content_source(decoder.stream(instructions))
-
-    return generate
+command = menu.add_command("Connect", connect)
+menu.set_command_label(command, "Disconnect")
+menu.set_command_behavior(command, disconnect)
+menu.move_command(command, 0)
+menu.disable_command(command)
+menu.enable_command(command)
+menu.set_exit_label("Close")
 ```
 
-## ANSI styles and Unicode
-
-Every visual Tuiloom string supports SGR colors and styles, including 16-color,
-256-color, and true-color sequences. Layout and cursor positioning account for
-combining characters, wide CJK text, and emoji grapheme clusters.
-
-Tuiloom intentionally strips terminal control sequences that can move the
-cursor, erase the screen, scroll, or change terminal state. The renderer keeps
-exclusive control of terminal geometry while preserving user-provided style.
-
-## Streaming performance
-
-Synchronous iterators keep the same public API shown above, but Tuiloom consumes
-them outside the UI thread. Generated chunks cross a bounded buffer and are
-grouped into visual updates rendered at up to 60 frames per second. Keyboard
-input, scrolling, and cursor updates therefore remain responsive while a source
-waits for its next chunk.
-
-Generators should release the Python GIL during long native work when possible.
-A cancelled generator must eventually return from a blocked `next()` call before
-Tuiloom can close that generator's own resources, although stale output is
-ignored immediately.
-
-Iterator content can follow its newest output automatically:
+Submenus must belong to the same application and are validated when added:
 
 ```python
-menu.auto_scroll = "smart"   # pauses after manual upward scrolling
-menu.auto_scroll = "strict"  # returns to the bottom after every batch
-menu.auto_scroll = None       # disabled, the default
+settings = TerminalMenu(app, ScreenContext("settings", "Settings"))
+open_settings = menu.add_menu(settings, "Settings", position=0)
 ```
 
-Auto-scroll is vertical and applies only to iterator-backed content.
+`CommandContext.command` is the invoked `MenuCommand` or `GlobalCommand`.
+`CommandContext.binding` is its triggering `KeyBinding`. Alert confirmation uses
+`command=None` and the Enter binding.
 
-## Blocking operations with captured output
-
-Commands can move blocking work off the UI thread while displaying everything
-it writes to standard output or standard error:
+## Bindings and global commands
 
 ```python
-def download(context: CommandContext) -> None:
-    context.menu.run_with_output(
-        lambda: download_model("organization/model"),
-        on_success=lambda model: show_model(model),
-        on_error=lambda error: show_error(error),
-    )
+from tuiloom import KeyBinding, KeyMap, TerminalApp
+
+keymap = KeyMap()
+keymap.set_binding("focus", KeyBinding("f", ctrl=True))
+app = TerminalApp("App", keymap=keymap)
+
+refresh = app.add_global_command(
+    KeyBinding("r", ctrl=True),
+    "Refresh",
+    refresh_callback,
+)
+app.set_global_command_binding(refresh, KeyBinding("f5"))
+app.set_global_command_label(refresh, "Reload")
+app.set_global_command_behavior(refresh, reload_callback)
 ```
 
-The application owns the task, so leaving its originating menu does not stop
-the work. Captured output is shown only in that menu and is replayed when the
-user returns to it; every other menu keeps its own content and commands remain
-available. Progress bars that rewrite a line with a carriage return are
-rendered as one updating line.
+Global commands are intentionally invisible. `app.global_commands` is a
+read-only tuple of handles whose binding, label, and callback metadata can be
+used to build custom help text. A menu may override or disable one locally:
 
-Immediately before a completion callback runs on the UI thread, Tuiloom removes
-the temporary output and restores the menu's ordinary content and auto-scroll
-mode. Only one captured-output task can run per application at a time.
+```python
+menu.set_global_command_behavior(refresh, local_refresh)
+menu.disable_global_command(refresh)
+menu.enable_global_command(refresh)
+menu.clear_global_command_behavior(refresh)
+```
+
+System and global bindings cannot collide. Mutations validate first and leave
+the old binding unchanged on failure. Terminals using legacy keyboard protocols
+cannot distinguish every modifier combination: Ctrl+letter is often
+case-insensitive and Shift may be represented only by character case.
+
+## Free-form and hidden input
+
+```python
+def submit_password(value: str) -> None:
+    if value:
+        menu.leave_input_mode()
+
+menu.enter_input_mode("Password: ", submit_password, hidden=True)
+```
+
+Hidden masking and Backspace operate on complete Unicode graphemes, including
+combining characters and emoji sequences. During free-form entry every global
+command is disabled. Enter submits the current value and Escape leaves input
+mode.
+
+Input priority is: task-exit choice, hidden-menu handling, free-form input,
+global commands, alerts, then focus/navigation. Unknown terminal sequences are
+consumed and never block later input.
+
+## Alerts
+
+A blocking alert has no misleading confirmation prompt and Enter does not close
+it:
+
+```python
+menu.show_alert("Waiting for an external event")
+menu.clear_alert()
+```
+
+A confirmable alert receives a `CommandContext` and closes only when its callback
+returns normally:
+
+```python
+menu.show_alert(
+    "Saved",
+    on_confirm=lambda context: context.menu.set_content_source("Ready"),
+    # prompt="Continue",  # optional; default is Press Enter to continue
+)
+```
+
+Alerts preserve the content box and suspend any input prompt, buffer, hidden
+state, and callback. Clearing the alert restores them. Global commands remain
+active while an alert is shown.
+
+## Messages and visibility
+
+```python
+from tuiloom import MessageKey
+
+app.add_message("saved", "Saved successfully")
+menu.show_message("saved")       # True when displayed
+menu.clear_message()
+menu.disable_message("saved")    # local suppression
+app.disable_message("saved")     # application-wide suppression
+
+menu.show_message(MessageKey.NO_CONTENT_SOURCE)
+```
+
+`MessageKey` also includes unknown-input and captured-task exit/wait messages.
+Message keys are validated by every enable/disable/show operation. A suppressed
+message returns `False` from `show_message()` without replacing the current
+footer.
+
+Setting `menu.show = False` clears the complete frame while its loop, sources,
+and tasks keep running. Only global commands and Escape remain active; all other
+input is discarded and cannot reappear when the menu is shown again.
+
+## Captured task output and closing
+
+```python
+def download() -> str:
+    print("Downloading…")
+    return "archive.zip"
+
+menu.run_with_output(
+    download,
+    on_success=lambda path: menu.show_alert(f"Saved {path}"),
+    on_error=lambda error: menu.show_alert(str(error)),
+    description="Download in progress",
+)
+```
+
+Only one application task may run at a time. Its callback runs on the UI thread.
+Capture covers `print` and Python writes to `sys.stdout`/`sys.stderr`; subprocess
+output and direct POSIX file-descriptor writes are not captured.
+
+Quitting the root menu during a task displays:
+
+- `1`: force quit, abandon callbacks, and discard the task's later Python output;
+- `2`: wait and quit, animate the description, run the completion callback, then
+  restore the terminal and quit even if the callback changes menus;
+- `0`: cancel the exit request and restore the previous footer.
+
+While waiting, `0` remains available. Terminal restoration is guaranteed when a
+completion callback raises.
+
+## Terminal hyperlinks
+
+```python
+from tuiloom import hyperlink
+
+label = hyperlink("Project", "https://github.com/maroard/Tuiloom")
+```
+
+Only absolute HTTP/HTTPS URLs with a network location are accepted. Whitespace,
+C0/C1 controls, Escape, and backslash are rejected. Link text is sanitized while
+safe SGR styles are preserved.
+
+## Development
+
+```bash
+make install
+make check       # read-only lint, format, strict MyPy, tests and coverage
+make fix         # the only formatting/fix target
+make build       # wheel + sdist + twine check
+```
+
+CI runs Linux and macOS with Python 3.12, 3.13, and 3.14, then verifies the
+distributions and installs the wheel in a fresh environment.

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from re import compile as compile_pattern
+from urllib.parse import urlparse
 
 from wcwidth import center as wc_center
 from wcwidth import clip as wc_clip
@@ -10,9 +11,7 @@ from wcwidth import wrap as wc_wrap
 
 RESET_SGR = "\x1b[0m"
 _SGR_PATTERN = compile_pattern(r"\x1b\[[0-?]*[ -/]*m\Z")
-_HYPERLINK_PATTERN = compile_pattern(
-    r"\x1b\]8;;(?:https?://[^\x00-\x20\x7f-\x9f\x1b\\]+)?\x1b\\\Z"
-)
+_HYPERLINK_PATTERN = compile_pattern(r"\x1b\]8;;([^\x1b\\]*)\x1b\\\Z")
 
 
 @dataclass(frozen=True)
@@ -31,7 +30,14 @@ def sanitize_terminal_text(text: str) -> str:
 
     for part, is_sequence in iter_sequences(text):
         if is_sequence:
-            if _SGR_PATTERN.fullmatch(part) or _HYPERLINK_PATTERN.fullmatch(part):
+            hyperlink_match = _HYPERLINK_PATTERN.fullmatch(part)
+            if _SGR_PATTERN.fullmatch(part) or (
+                hyperlink_match is not None
+                and (
+                    not hyperlink_match.group(1)
+                    or is_safe_hyperlink_url(hyperlink_match.group(1))
+                )
+            ):
                 safe_parts.append(part)
             continue
 
@@ -44,6 +50,42 @@ def sanitize_terminal_text(text: str) -> str:
             )
         )
 
+    return "".join(safe_parts)
+
+
+def is_safe_hyperlink_url(url: str) -> bool:
+    """Return whether an URL is safe for an OSC 8 parameter."""
+    if not isinstance(url, str) or not url or "\\" in url:
+        return False
+    if any(
+        character.isspace() or ord(character) < 32 or 127 <= ord(character) <= 159
+        for character in url
+    ):
+        return False
+    try:
+        parsed = urlparse(url)
+        netloc = parsed.netloc
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(netloc)
+
+
+def sanitize_hyperlink_text(text: str) -> str:
+    """Keep printable text and safe SGR while removing every OSC sequence."""
+    safe_parts: list[str] = []
+    for part, is_sequence in iter_sequences(text):
+        if is_sequence:
+            if _SGR_PATTERN.fullmatch(part):
+                safe_parts.append(part)
+            continue
+        safe_parts.append(
+            "".join(
+                character
+                for character in part
+                if character in "\n\t"
+                or (ord(character) >= 32 and not 127 <= ord(character) <= 159)
+            )
+        )
     return "".join(safe_parts)
 
 

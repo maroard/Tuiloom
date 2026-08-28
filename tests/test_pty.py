@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import os
+import pty
+import select
+import subprocess
+import sys
+from pathlib import Path
+from time import monotonic
+
+
+def _read_until(master: int, process: subprocess.Popen[bytes], needle: bytes) -> bytes:
+    output = bytearray()
+    deadline = monotonic() + 5
+    while monotonic() < deadline:
+        readable, _, _ = select.select([master], [], [], 0.1)
+        if readable:
+            try:
+                output.extend(os.read(master, 8192))
+            except OSError:
+                break
+            if needle in output:
+                return bytes(output)
+        if process.poll() is not None:
+            break
+    raise AssertionError(f"PTY output did not contain {needle!r}: {bytes(output)!r}")
+
+
+def _spawn(script: str) -> tuple[subprocess.Popen[bytes], int]:
+    master, slave = pty.openpty()
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(Path(__file__).parents[1] / "src")
+    environment.setdefault("TERM", "xterm-256color")
+    process = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=environment,
+    )
+    os.close(slave)
+    return process, master
+
+
+def _finish(process: subprocess.Popen[bytes], master: int) -> bytes:
+    try:
+        output = _read_until(master, process, b"RESTORED")
+        assert process.wait(timeout=2) == 0
+        return output
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=2)
+
+
+def test_pty_unicode_navigation_and_terminal_restoration() -> None:
+    script = """
+from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+app = TerminalApp("Unicode App")
+menu = TerminalMenu(app, ScreenContext("main", "Menu界"), content_source="café 👨‍👩‍👧")
+menu.add_command("Activate", lambda context: context.menu.stop())
+app.set_main_menu(menu)
+app.run()
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    initial = _read_until(master, process, b"Activate")
+    os.write(master, b"\r")
+    final = initial + _finish(process, master)
+    assert "Menu界".encode() in final
+    assert "café 👨‍👩‍👧".encode() in final
+    assert b"\x1b[?1049l" in final
+
+
+def test_pty_hidden_input_submits_unicode_and_backspaces_a_grapheme() -> None:
+    script = """
+from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+app = TerminalApp("Input App")
+menu = TerminalMenu(app, ScreenContext("main", "Input"))
+values = []
+def begin(context):
+    def submit(value):
+        values.append(value)
+        menu.leave_input_mode()
+        menu.stop()
+    menu.enter_input_mode("Password: ", submit, hidden=True)
+menu.add_command("Secret", begin)
+app.set_main_menu(menu)
+app.run()
+print(f"VALUE={values[0]!r}")
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    _read_until(master, process, b"Secret")
+    os.write(master, b"\r")
+    visible = _read_until(master, process, b"Password:")
+    os.write(master, "e\u0301👨‍👩‍👧".encode())
+    os.write(master, b"\x7f\r")
+    final = visible + _finish(process, master)
+    assert b"Password:" in final
+    assert "VALUE='é'".encode() in final

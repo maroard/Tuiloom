@@ -261,6 +261,20 @@ def test_panel_error_is_propagated_and_close_joins_other_workers() -> None:
     assert not other._worker.is_alive()
 
 
+def test_completed_temporary_output_panel_is_removed_after_final_chunks() -> None:
+    menu, loop, _, _ = make_loop([None], content="primary")
+    panel = menu.add_content_source(iter(()), description="Output")
+    panel._remove_when_finished = True
+    panel._renderer.append_stream_batch(["final\n"])
+    loop._source_events.put(SourceEvent(panel, panel._generation, "complete"))
+
+    loop._drain_source_events()
+
+    assert panel._renderer.rendered_content.lines == ["final"]
+    assert panel not in menu.content_panels
+    loop.close()
+
+
 def test_render_deadlines_and_run_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     now = [0.0]
     menu, loop, selector, renderer = make_loop(

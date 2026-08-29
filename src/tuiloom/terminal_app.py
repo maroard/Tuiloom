@@ -8,6 +8,7 @@ from threading import current_thread, main_thread
 
 from tuiloom._message_registry import MessageRegistry
 from tuiloom.command import CommandBehavior, CommandContext, GlobalCommand
+from tuiloom.content_panel import ContentPanel
 from tuiloom.input_handler.input_handler import InputHandler
 from tuiloom.key_binding import KeyBinding, KeyMap
 from tuiloom.output_capture import OutputCapture
@@ -25,6 +26,7 @@ class _OutputTaskRegistration:
     on_success: Callable[[object], None] | None
     on_error: Callable[[Exception], None] | None
     description: str
+    panel: ContentPanel | None = None
     exit_when_complete: bool = False
     exit_menu: TerminalMenu | None = None
     abandoned: bool = False
@@ -229,6 +231,16 @@ class TerminalApp:
             self._active_output_task = None
             raise
         return session
+
+    def _attach_output_panel(
+        self,
+        session: OutputTaskSession,
+        panel: ContentPanel,
+    ) -> None:
+        registration = self._active_output_task
+        if registration is None or registration.session is not session:
+            raise RuntimeError("Output task registration is no longer active")
+        registration.panel = panel
 
     def _dispatch_output_task_outcome(self) -> TerminalMenu | None:
         try:

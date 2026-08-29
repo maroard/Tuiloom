@@ -371,6 +371,8 @@ class EventLoop:
         """Handle completion and failures after applying source data."""
         if event.kind == "complete":
             event.panel._renderer.finish_stream()
+            if event.panel._remove_when_finished and not event.panel._removed:
+                self._menu.remove_content_panel(event.panel)
             self.request_render()
             return
 

@@ -74,7 +74,7 @@ class TerminalMenu:
         self._alert_prompt: str | None = None
 
         self._output_task_session: OutputTaskSession | None = None
-        self._output_task_previous_auto_scroll: AutoScrollMode | None = None
+        self._output_task_panel: ContentPanel | None = None
         self._disabled_messages: set[str] = set()
         self._disabled_global_commands: set[GlobalCommand] = set()
         self._global_overrides: dict[GlobalCommand, CommandBehavior] = {}
@@ -399,25 +399,25 @@ class TerminalMenu:
             raise RuntimeError("Output tasks can only run while the menu is active")
         if self._output_task_session is not None:
             raise RuntimeError("Another output task is already running")
-        previous_auto_scroll = self.auto_scroll
 
         def complete(result: object) -> None:
             on_success(cast(T, result))
 
-        self._output_task_previous_auto_scroll = previous_auto_scroll
-        self.auto_scroll = "strict"
         try:
             session = self.app._start_output_task(
                 self, action, complete, on_error, description
             )
             self._output_task_session = session
-            self._event_loop.install_source(
+            panel = self.add_content_source(
                 session.iter_output(),
                 description=description,
+                auto_scroll="strict",
             )
+            self._output_task_panel = panel
+            self.app._attach_output_panel(session, panel)
         except BaseException:
-            self._output_task_previous_auto_scroll = None
-            self.auto_scroll = previous_auto_scroll
+            self._output_task_session = None
+            self._output_task_panel = None
             raise
 
     def enter_input_mode(
@@ -615,8 +615,6 @@ class TerminalMenu:
         self._selected_index = selectable[(current + delta) % len(selectable)]
 
     def _resolve_content_source(self) -> ContentSource | None:
-        if self._output_task_session is not None:
-            return self._output_task_session.iter_output()
         return self._content_source
 
     def _has_content(self) -> bool:
@@ -762,20 +760,22 @@ class TerminalMenu:
         if session is not self._output_task_session:
             return
         self._output_task_session = None
-        previous = self._output_task_previous_auto_scroll
-        self._output_task_previous_auto_scroll = None
-        self.auto_scroll = previous
-        if self._running and self._event_loop is not None:
-            source = self._content_source
-            self._event_loop.install_source(
-                source if source is not None else "",
-                description=self._content_description,
-            )
+        panel = self._output_task_panel
+        self._output_task_panel = None
+        if panel is None or panel._removed:
+            return
+        if panel._renderer.rendered_content.finished:
+            self.remove_content_panel(panel)
+        else:
+            panel._remove_when_finished = True
 
     def _abandon_output_task(self, session: OutputTaskSession) -> None:
         if session is self._output_task_session:
             self._output_task_session = None
-            self._output_task_previous_auto_scroll = None
+            panel = self._output_task_panel
+            self._output_task_panel = None
+            if panel is not None:
+                panel._remove_when_finished = True
 
     def _show_automatic_message(self, key: str, **context: object) -> bool:
         if not self.is_message_enabled(key):

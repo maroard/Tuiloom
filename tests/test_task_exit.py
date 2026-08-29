@@ -6,7 +6,7 @@ from threading import Event, get_ident
 
 import pytest
 
-from tuiloom import KeyBinding, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ContentPanel, KeyBinding, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.output_task import OutputTaskSession
 
@@ -234,20 +234,14 @@ def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:
     assert not menu._running
 
 
-def test_run_with_output_validates_state_installs_stream_and_restores_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_run_with_output_adds_a_strict_temporary_panel() -> None:
     app, menu = make_main()
-    installed: list[tuple[object, str]] = []
+    base = menu.content_panels[0]
+    added: list[ContentPanel] = []
 
     class Loop:
-        def install_source(
-            self,
-            source: object,
-            *,
-            description: str = "Content in progress",
-        ) -> None:
-            installed.append((source, description))
+        def add_content_panel(self, panel: ContentPanel) -> None:
+            added.append(panel)
 
     menu._event_loop = Loop()  # type: ignore[assignment]
     with app._output_capture.install():
@@ -259,11 +253,14 @@ def test_run_with_output_validates_state_installs_stream_and_restores_source(
         )
         session = menu._output_task_session
         assert isinstance(session, OutputTaskSession)
+        output_panel = menu.content_panels[-1]
+        assert menu.content_panels == (base, output_panel)
+        assert output_panel.description == "Compute"
+        assert output_panel.auto_scroll == "strict"
         assert session.join(1)
         app._dispatch_output_task_outcome()
-    assert len(installed) == 2
-    assert installed[0][1] == "Compute"
-    assert installed[1][1] == "Content in progress"
+    assert added == [output_panel]
+    assert output_panel._remove_when_finished
     assert menu.auto_scroll is None
 
     menu._running = False

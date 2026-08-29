@@ -97,7 +97,7 @@ class MenuRenderer:
             ),
             exit_label=menu._exit_label,
             selected_index=menu._selected_index,
-            focus=menu._focus,
+            focus="menu" if menu._focused_panel is None else "content",
             has_content=menu._has_content(),
             show=menu.show,
             alert=menu._alert_text,

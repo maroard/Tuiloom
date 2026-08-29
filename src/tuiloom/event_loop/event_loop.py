@@ -348,10 +348,10 @@ class EventLoop:
                 ]
                 if chunks:
                     renderer.append_stream_batch(chunks)
-                    if panel is self._menu._primary_content_panel:
-                        self._terminal_renderer.apply_stream_auto_scroll(
-                            panel.auto_scroll
-                        )
+                    self._terminal_renderer.apply_stream_auto_scroll(
+                        panel.auto_scroll,
+                        panel,
+                    )
                     self.request_render()
             elif renderer.state == "dynamic":
                 values = [event.value for event in events if event.kind == "data"]
@@ -429,8 +429,7 @@ class EventLoop:
         deadlines.extend(
             panel._next_dynamic_at
             for panel in self._menu.content_panels
-            if panel._renderer.state == "dynamic"
-            and not panel._dynamic_in_flight
+            if panel._renderer.state == "dynamic" and not panel._dynamic_in_flight
         )
 
         return max(0.0, min(deadlines) - now)

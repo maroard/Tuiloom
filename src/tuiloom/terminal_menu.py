@@ -29,8 +29,6 @@ from tuiloom.screen_context.screen_context import ScreenContext
 if TYPE_CHECKING:
     from tuiloom.terminal_app import TerminalApp
 
-type FocusZone = Literal["menu", "content"]
-
 
 class TerminalMenu:
     """Configure selectable commands, content, alerts, and messages."""
@@ -64,7 +62,7 @@ class TerminalMenu:
         self._commands: list[MenuCommand] = []
         self._exit_label = "Back"
         self._selected_index = 0
-        self._focus: FocusZone = "menu"
+        self._focused_panel: ContentPanel | None = None
         self._running = False
 
         self._input_buffer = ""
@@ -234,6 +232,8 @@ class TerminalMenu:
     def remove_content_panel(self, panel: ContentPanel) -> None:
         """Remove one owned panel and cooperatively retire its worker."""
         self._require_content_panel(panel)
+        removed_position = self._content_panels.index(panel)
+        was_focused = panel is self._focused_panel
         self._content_panels.remove(panel)
         if panel is self._primary_content_panel:
             self._primary_content_panel = None
@@ -241,6 +241,14 @@ class TerminalMenu:
         panel._removed = True
         if self._running and self._event_loop is not None:
             self._event_loop.retire_content_panel(panel)
+        if was_focused:
+            self._focused_panel = (
+                self._content_panels[removed_position]
+                if removed_position < len(self._content_panels)
+                else None
+            )
+        else:
+            self._normalize_focus()
         self._invalidate_renderer()
 
     def add_command(
@@ -501,11 +509,16 @@ class TerminalMenu:
             raise RuntimeError("Cannot run TerminalMenu outside TerminalApp.run()")
         self._running = True
         self._input_buffer = ""
-        self._focus = "menu"
+        self._focused_panel = None
         self._normalize_selection()
         source = self._resolve_content_source()
-        self._content_renderer = ContentRenderer(source if source is not None else "")
-        if source is None:
+        primary = self._primary_content_panel
+        self._content_renderer = (
+            primary._renderer
+            if primary is not None
+            else ContentRenderer(source if source is not None else "")
+        )
+        if not self._content_panels:
             self._show_automatic_message(
                 MessageKey.NO_CONTENT_SOURCE,
                 menu_name=self.screen_context.menu_name,
@@ -565,9 +578,7 @@ class TerminalMenu:
         if isinstance(position, bool) or not isinstance(position, int):
             raise TypeError("Content panel position must be an integer or None")
         upper = (
-            len(self._content_panels)
-            if allow_end
-            else len(self._content_panels) - 1
+            len(self._content_panels) if allow_end else len(self._content_panels) - 1
         )
         if position < 0 or position > upper:
             raise ValueError("Content panel position is outside the menu")
@@ -610,7 +621,26 @@ class TerminalMenu:
 
     def _has_content(self) -> bool:
         """Return whether the content box currently has a source."""
-        return self._content_source is not None or self._output_task_session is not None
+        return bool(self._content_panels) or self._output_task_session is not None
+
+    def _visible_content_panels(self) -> tuple[ContentPanel, ...]:
+        """Return panels currently projected into the terminal frame."""
+        return self.content_panels
+
+    def _normalize_focus(self) -> None:
+        if self._focused_panel not in self._visible_content_panels():
+            self._focused_panel = None
+
+    def _cycle_focus(self) -> None:
+        focusable: list[ContentPanel | None] = [
+            None,
+            *self._visible_content_panels(),
+        ]
+        try:
+            current = focusable.index(self._focused_panel)
+        except ValueError:
+            current = 0
+        self._focused_panel = focusable[(current + 1) % len(focusable)]
 
     def _create_event_loop(self) -> EventLoop:
         if (
@@ -661,10 +691,10 @@ class TerminalMenu:
                 self.stop()
             return
         if action == "focus" and self._has_content():
-            self._focus = "content" if self._focus == "menu" else "menu"
+            self._cycle_focus()
         elif action == "back":
             self.stop()
-        elif self._focus == "menu":
+        elif self._focused_panel is None:
             if action == "up":
                 self._move_selection(-1)
             elif action == "down":
@@ -712,9 +742,10 @@ class TerminalMenu:
         self, direction: Literal["up", "down", "left", "right"]
     ) -> None:
         renderer = self._terminal_renderer
-        if renderer is None:
+        panel = self._focused_panel
+        if renderer is None or panel is None:
             return
-        getattr(renderer, f"scroll_{direction}")()
+        renderer.scroll_panel(panel, direction)
 
     def _display_input_buffer(self) -> str:
         if not self._input_hidden:

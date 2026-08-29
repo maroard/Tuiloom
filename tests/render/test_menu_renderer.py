@@ -33,12 +33,12 @@ def test_menu_render_uses_name_title_text_and_selected_indicator() -> None:
 def test_menu_border_reflects_focus_and_single_zone_is_solid() -> None:
     menu, renderer = make_renderer()
     assert "─" in renderer.render()
-    menu._focus = "content"
+    menu._focused_panel = menu.content_panels[0]
     renderer.update()
     assert "┄" in renderer.render()
 
     single, single_renderer = make_renderer(content=None)
-    single._focus = "content"
+    single._focused_panel = None
     single_renderer.update()
     assert "─" in single_renderer.render()
     assert "┄" not in single_renderer.render()

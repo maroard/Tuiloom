@@ -141,9 +141,7 @@ def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
     loop._content_renderer = streaming
     menu._content_renderer = streaming
     renderer.set_content_renderer(streaming)
-    loop._source_events.put(
-        SourceEvent(panel, loop._generation - 1, "data", "stale")
-    )
+    loop._source_events.put(SourceEvent(panel, loop._generation - 1, "data", "stale"))
     loop._source_events.put(SourceEvent(panel, loop._generation, "data", "fresh\n"))
     loop._source_events.put(SourceEvent(panel, loop._generation, "complete"))
     loop._drain_source_events()
@@ -194,12 +192,8 @@ def test_events_are_routed_to_their_own_panels() -> None:
     first = menu.content_panels[0]
     second = menu.add_content_source(iter(()), description="Second")
 
-    loop._source_events.put(
-        SourceEvent(first, first._generation, "data", "first\n")
-    )
-    loop._source_events.put(
-        SourceEvent(second, second._generation, "data", "second\n")
-    )
+    loop._source_events.put(SourceEvent(first, first._generation, "data", "first\n"))
+    loop._source_events.put(SourceEvent(second, second._generation, "data", "second\n"))
     loop._drain_source_events()
 
     assert first._renderer.rendered_content.lines == ["first"]

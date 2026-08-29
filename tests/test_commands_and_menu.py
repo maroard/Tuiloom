@@ -101,13 +101,13 @@ def test_focus_navigation_routes_arrows_only_to_focused_zone() -> None:
     _, menu = make_menu(content="long content")
     menu.add_command("One", lambda context: None)
     press(menu, "tab")
-    assert menu._focus == "content"
+    assert menu._focused_panel is menu.content_panels[0]
     press(menu, "tab")
-    assert str(menu._focus) == "menu"
+    assert menu._focused_panel is None
 
     _, no_content = make_menu()
     press(no_content, "tab")
-    assert no_content._focus == "menu"
+    assert no_content._focused_panel is None
 
 
 def test_global_commands_are_immediate_invisible_and_locally_configurable() -> None:

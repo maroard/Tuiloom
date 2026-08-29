@@ -37,7 +37,7 @@ def test_composes_two_boxes_with_focus_and_optional_spacing() -> None:
     assert lines[0].startswith("╭┄")
     assert any(line.startswith("╭─") for line in lines)
     assert "" in lines
-    menu._focus = "content"
+    menu._focused_panel = menu.content_panels[0]
     lines = renderer._compose_frame(30, 16)
     assert lines[0].startswith("╭─")
     assert any(line.startswith("╭┄") for line in lines[2:])
@@ -60,6 +60,47 @@ def test_content_viewport_fills_available_inner_geometry() -> None:
     assert renderer.viewport is not None
     assert renderer.viewport.width == 18
     assert renderer.viewport.height > 0
+
+
+def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
+    menu, renderer = make_renderer(content="first")
+    first = menu.content_panels[0]
+    menu.set_content_panel_description(first, "First")
+    second = menu.add_content_source("second", description="Second")
+
+    lines = renderer._compose_frame(32, 20)
+    top_indices = [index for index, line in enumerate(lines) if line.startswith("╭")]
+    bottom_indices = [index for index, line in enumerate(lines) if line.startswith("╰")]
+
+    assert len(top_indices) == 3
+    assert "First" in lines[top_indices[0]]
+    assert "Second" in lines[top_indices[1]]
+    first_height = bottom_indices[0] - top_indices[0]
+    second_height = bottom_indices[1] - top_indices[1]
+    assert first_height - second_height in (0, 1)
+    assert first._viewport is not None
+    assert second._viewport is not None
+
+
+def test_multiple_panels_require_one_inner_row_each() -> None:
+    menu, renderer = make_renderer(content="first")
+    menu.add_content_source("second", description="Second")
+    assert renderer._compose_frame(30, 10) == ["Terminal window is too small."]
+
+
+def test_scrolling_changes_only_the_target_panel_viewport() -> None:
+    menu, renderer = make_renderer(content="\n".join(str(index) for index in range(30)))
+    first = menu.content_panels[0]
+    second = menu.add_content_source(
+        "\n".join(f"b{index}" for index in range(30)),
+        description="Second",
+    )
+    renderer._compose_frame(24, 20)
+
+    renderer.scroll_panel(first, "down")
+
+    assert first._viewport is not None and first._viewport.offset_y == 1
+    assert second._viewport is not None and second._viewport.offset_y == 0
 
 
 @pytest.mark.parametrize("size", [(5, 5), (30, 2)])

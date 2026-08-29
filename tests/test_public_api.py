@@ -4,6 +4,7 @@ from inspect import getdoc
 import tuiloom
 from tuiloom import (
     CommandContext,
+    ContentPanel,
     GlobalCommand,
     KeyBinding,
     KeyMap,
@@ -19,6 +20,7 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "AutoScrollMode",
         "CommandBehavior",
         "CommandContext",
+        "ContentPanel",
         "ContentSource",
         "GlobalCommand",
         "InputBehavior",
@@ -45,6 +47,7 @@ def test_package_declares_inline_typing() -> None:
 def test_public_classes_and_methods_have_documentation() -> None:
     classes = (
         CommandContext,
+        ContentPanel,
         GlobalCommand,
         KeyBinding,
         KeyMap,
@@ -82,6 +85,13 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "is_main",
             "show",
             "auto_scroll",
+            "content_panels",
+            "add_content_source",
+            "set_content_panel_source",
+            "set_content_panel_description",
+            "set_content_panel_auto_scroll",
+            "move_content_panel",
+            "remove_content_panel",
             "add_command",
             "add_menu",
             "set_command_label",

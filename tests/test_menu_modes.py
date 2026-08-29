@@ -180,13 +180,12 @@ def test_active_content_replacement_forwards_its_description() -> None:
     installed: list[tuple[object, str]] = []
 
     class Loop:
-        def install_source(
+        def replace_content_panel(
             self,
+            panel: object,
             source: object,
-            *,
-            description: str = "Content in progress",
         ) -> None:
-            installed.append((source, description))
+            installed.append((source, menu.content_panels[0].description))
 
     menu._running = True
     menu._event_loop = Loop()  # type: ignore[assignment]

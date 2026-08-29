@@ -16,6 +16,7 @@ from tuiloom.command import (
     MenuCommand,
     _without_context,
 )
+from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.key_binding import KeyBinding
@@ -91,6 +92,16 @@ class TerminalMenu:
         self._event_loop: EventLoop | None = None
         self._auto_scroll: AutoScrollMode | None = None
         self.auto_scroll = auto_scroll
+        self._content_panels: list[ContentPanel] = []
+        self._primary_content_panel: ContentPanel | None = None
+        if self._content_source is not None:
+            self._primary_content_panel = ContentPanel(
+                self,
+                self._content_source,
+                self._content_description,
+                self._auto_scroll,
+            )
+            self._content_panels.append(self._primary_content_panel)
 
     @property
     def app(self) -> TerminalApp:
@@ -106,6 +117,11 @@ class TerminalMenu:
     def commands(self) -> tuple[MenuCommand, ...]:
         """Return an immutable ordered view of user command handles."""
         return tuple(self._commands)
+
+    @property
+    def content_panels(self) -> tuple[ContentPanel, ...]:
+        """Return an immutable ordered view of this menu's content panels."""
+        return tuple(self._content_panels)
 
     @property
     def is_main(self) -> bool:
@@ -138,8 +154,94 @@ class TerminalMenu:
         if mode == self._auto_scroll:
             return
         self._auto_scroll = mode
+        if self._primary_content_panel is not None:
+            self._primary_content_panel._auto_scroll = mode
+            self._primary_content_panel._smart_auto_scroll_active = True
+            self._primary_content_panel._pending_auto_scroll = None
         if self._terminal_renderer is not None:
             self._terminal_renderer.reset_stream_auto_scroll()
+
+    def add_content_source(
+        self,
+        content_source: ContentSource,
+        *,
+        description: str = "Content in progress",
+        auto_scroll: AutoScrollMode | None = None,
+        position: int | None = None,
+    ) -> ContentPanel:
+        """Add an independently rendered content source and return its handle."""
+        self._validate_auto_scroll(auto_scroll)
+        insert_at = self._validate_content_position(position, allow_end=True)
+        panel = ContentPanel(self, content_source, description, auto_scroll)
+        self._content_panels.insert(insert_at, panel)
+        if self._running and self._event_loop is not None:
+            self._event_loop.add_content_panel(panel)
+        self._invalidate_renderer()
+        return panel
+
+    def set_content_panel_source(
+        self,
+        panel: ContentPanel,
+        content_source: ContentSource,
+    ) -> None:
+        """Replace one owned panel's source without changing its identity."""
+        self._require_content_panel(panel)
+        panel._source = content_source
+        if self._running and self._event_loop is not None:
+            self._event_loop.replace_content_panel(panel, content_source)
+        else:
+            panel._renderer = ContentRenderer(content_source)
+            panel._viewport = None
+        if panel is self._primary_content_panel:
+            self._content_source = content_source
+
+    def set_content_panel_description(
+        self,
+        panel: ContentPanel,
+        description: str,
+    ) -> None:
+        """Replace the visible and shutdown description of one panel."""
+        self._require_content_panel(panel)
+        panel._description = description
+        if panel._worker is not None:
+            panel._worker.description = description
+        if panel is self._primary_content_panel:
+            self._content_description = description
+        self._invalidate_renderer()
+
+    def set_content_panel_auto_scroll(
+        self,
+        panel: ContentPanel,
+        mode: AutoScrollMode | None,
+    ) -> None:
+        """Set one panel's iterator auto-scroll policy."""
+        self._require_content_panel(panel)
+        self._validate_auto_scroll(mode)
+        panel._auto_scroll = mode
+        panel._smart_auto_scroll_active = True
+        panel._pending_auto_scroll = None
+        if panel is self._primary_content_panel:
+            self._auto_scroll = mode
+
+    def move_content_panel(self, panel: ContentPanel, position: int) -> None:
+        """Move one owned panel to a zero-based position."""
+        self._require_content_panel(panel)
+        target = self._validate_content_position(position, allow_end=False)
+        self._content_panels.remove(panel)
+        self._content_panels.insert(target, panel)
+        self._invalidate_renderer()
+
+    def remove_content_panel(self, panel: ContentPanel) -> None:
+        """Remove one owned panel and cooperatively retire its worker."""
+        self._require_content_panel(panel)
+        self._content_panels.remove(panel)
+        if panel is self._primary_content_panel:
+            self._primary_content_panel = None
+            self._content_source = None
+        panel._removed = True
+        if self._running and self._event_loop is not None:
+            self._event_loop.retire_content_panel(panel)
+        self._invalidate_renderer()
 
     def add_command(
         self,
@@ -253,14 +355,23 @@ class TerminalMenu:
         description: str = "Content in progress",
     ) -> None:
         """Replace content with static text, lines, an iterator, or callable."""
-        self._content_source = content_source
-        self._content_description = description
-        if (
-            self._running
-            and self._event_loop is not None
-            and self._output_task_session is None
-        ):
-            self._event_loop.install_source(content_source, description=description)
+        panel = self._primary_content_panel
+        if panel is None:
+            panel = ContentPanel(
+                self,
+                content_source,
+                description,
+                self._auto_scroll,
+            )
+            self._content_panels.insert(0, panel)
+            self._primary_content_panel = panel
+            self._content_source = content_source
+            self._content_description = description
+            if self._running and self._event_loop is not None:
+                self._event_loop.add_content_panel(panel)
+            return
+        self.set_content_panel_description(panel, description)
+        self.set_content_panel_source(panel, content_source)
 
     def run_with_output[T](
         self,
@@ -430,6 +541,42 @@ class TerminalMenu:
     def _require_command(self, command: MenuCommand) -> None:
         if not isinstance(command, MenuCommand) or command._menu is not self:
             raise ValueError("Menu command does not belong to this menu")
+
+    def _position_of_content_panel(self, panel: ContentPanel) -> int:
+        self._require_content_panel(panel)
+        return self._content_panels.index(panel)
+
+    def _require_content_panel(self, panel: ContentPanel) -> None:
+        if (
+            not isinstance(panel, ContentPanel)
+            or panel._menu is not self
+            or panel._removed
+        ):
+            raise ValueError("Content panel does not belong to this menu")
+
+    def _validate_content_position(
+        self,
+        position: int | None,
+        *,
+        allow_end: bool,
+    ) -> int:
+        if position is None:
+            return len(self._content_panels)
+        if isinstance(position, bool) or not isinstance(position, int):
+            raise TypeError("Content panel position must be an integer or None")
+        upper = (
+            len(self._content_panels)
+            if allow_end
+            else len(self._content_panels) - 1
+        )
+        if position < 0 or position > upper:
+            raise ValueError("Content panel position is outside the menu")
+        return position
+
+    @staticmethod
+    def _validate_auto_scroll(mode: AutoScrollMode | None) -> None:
+        if mode not in (None, "smart", "strict"):
+            raise ValueError("auto_scroll must be 'smart', 'strict', or None")
 
     def _validate_position(self, position: int | None, *, allow_end: bool) -> int:
         if position is None:

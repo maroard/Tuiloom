@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tuiloom"
-version = "0.1.1"
+version = "0.1.1.1"
 description = "Beautiful terminal interfaces, simple to build, easy to navigate."
 readme = "README.md"
 requires-python = ">=3.12"

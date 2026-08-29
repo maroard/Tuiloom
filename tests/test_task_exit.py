@@ -43,7 +43,7 @@ def test_wait_and_quit_runs_callback_on_ui_thread_then_stops() -> None:
         )
         menu._output_task_session = session
         menu.stop()
-        assert "Force quit" in (menu.screen_context.message or "")
+        assert "Stop and quit" in (menu.screen_context.message or "")
         number(menu, "2")
         assert menu._exit_mode == "waiting"
         assert menu._tick_task_exit(menu._wait_started_at + 0.41)
@@ -97,7 +97,7 @@ def test_wait_callback_exception_still_stops_menu_and_propagates() -> None:
     assert not menu._running
 
 
-def test_force_quit_discards_future_python_output_and_callbacks(
+def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_stdout = io.StringIO()
@@ -126,26 +126,128 @@ def test_force_quit_discards_future_python_output_and_callbacks(
         assert started.wait(1)
         menu.stop()
         number(menu, "1")
+        assert menu._running
+        assert menu.screen_context.message == "Stopping…"
+        assert sys.stdout is not original_stdout
+        print("ui remains visible")
+        release.set()
+        assert session.join(1)
+        assert app._dispatch_output_task_outcome() is menu
+        assert menu._tick_task_exit(menu._wait_started_at + 0.41)
         assert not menu._running
-    assert sys.stdout is not original_stdout
-    print("ui remains visible")
-    release.set()
-    assert session.join(1)
     assert sys.stdout is original_stdout
     assert "late" not in original_stdout.getvalue()
     assert "ui remains visible" in original_stdout.getvalue()
     assert callbacks == []
 
 
+def test_source_work_offers_exit_choices_and_stop_waits_for_real_termination() -> None:
+    _, menu = make_main()
+
+    class Work:
+        description = "Generating function calls"
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.cancelled = False
+            self.joined = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def join(self, timeout: float | None = None) -> bool:
+            self.joined = True
+            return not self.alive
+
+    work = Work()
+
+    class Loop:
+        @property
+        def active_work(self) -> Work:
+            return work
+
+    menu._event_loop = Loop()  # type: ignore[assignment]
+
+    menu.stop()
+    assert menu._running
+    assert "Stop and quit" in (menu.screen_context.message or "")
+
+    number(menu, "1")
+    assert work.cancelled
+    assert menu._running
+    assert menu.screen_context.message == "Stopping…"
+
+    number(menu, "0")
+    assert menu._exit_mode == "stopping"
+    assert menu._running
+
+    work.alive = False
+    assert menu._tick_task_exit(menu._wait_started_at + 0.41)
+    assert work.joined
+    assert not menu._running
+
+
+def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:
+    _, menu = make_main()
+
+    class Work:
+        description = "Streaming"
+
+        def __init__(self) -> None:
+            self.alive = True
+            self.cancelled = False
+            self.joined = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def join(self, timeout: float | None = None) -> bool:
+            self.joined = True
+            return not self.alive
+
+    work = Work()
+
+    class Loop:
+        @property
+        def active_work(self) -> Work | None:
+            return work if work.alive else None
+
+    menu._event_loop = Loop()  # type: ignore[assignment]
+    menu.stop()
+    number(menu, "2")
+
+    assert menu._exit_mode == "waiting"
+    assert not work.cancelled
+    assert menu._running
+    assert menu._tick_task_exit(menu._wait_started_at + 0.41)
+    assert "Streaming" in (menu.screen_context.message or "")
+
+    work.alive = False
+    assert menu._tick_task_exit(menu._wait_started_at + 0.81)
+    assert work.joined
+    assert not menu._running
+
+
 def test_run_with_output_validates_state_installs_stream_and_restores_source(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, menu = make_main()
-    installed: list[object] = []
+    installed: list[tuple[object, str]] = []
 
     class Loop:
-        def install_source(self, source: object) -> None:
-            installed.append(source)
+        def install_source(
+            self,
+            source: object,
+            *,
+            description: str = "Content in progress",
+        ) -> None:
+            installed.append((source, description))
 
     menu._event_loop = Loop()  # type: ignore[assignment]
     with app._output_capture.install():
@@ -160,6 +262,8 @@ def test_run_with_output_validates_state_installs_stream_and_restores_source(
         assert session.join(1)
         app._dispatch_output_task_outcome()
     assert len(installed) == 2
+    assert installed[0][1] == "Compute"
+    assert installed[1][1] == "Content in progress"
     assert menu.auto_scroll is None
 
     menu._running = False

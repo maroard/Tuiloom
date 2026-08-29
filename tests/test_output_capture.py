@@ -1,10 +1,21 @@
 import io
 import sys
+from collections.abc import Generator
 from threading import Event, Thread
+from typing import get_type_hints
 
 import pytest
 
 from tuiloom.output_capture import OutputCapture
+
+
+@pytest.mark.parametrize("method_name", ["install", "route_background_output"])
+def test_context_managers_use_generator_return_annotations(
+    method_name: str,
+) -> None:
+    method = getattr(OutputCapture, method_name)
+
+    assert get_type_hints(method)["return"] == Generator[None, None, None]
 
 
 def test_capture_routes_background_stdout_and_stderr_but_not_ui_output(

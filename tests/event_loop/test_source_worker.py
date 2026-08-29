@@ -5,6 +5,7 @@ from typing import cast
 
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
+from tuiloom.output_task import OutputTaskSession
 
 
 def test_iterator_worker_publishes_data_and_completion() -> None:
@@ -114,3 +115,48 @@ def test_request_dynamic_update_is_ignored_for_iterator() -> None:
     events: Queue[SourceEvent] = Queue(maxsize=8)
     worker = SourceWorker(1, iter([]), events, lambda: None)
     worker.request_dynamic_update()
+
+
+def test_source_worker_exposes_non_daemon_background_work_contract() -> None:
+    release = Event()
+
+    def blocked() -> Iterator[str]:
+        release.wait()
+        yield "done"
+
+    worker = SourceWorker(
+        1,
+        blocked(),
+        Queue(maxsize=8),
+        lambda: None,
+        description="Generating",
+    )
+
+    worker.start()
+
+    assert worker.description == "Generating"
+    assert worker.is_alive()
+    assert not worker._thread.daemon
+
+    worker.cancel()
+    release.set()
+    assert worker.join(timeout=1)
+    assert not worker.is_alive()
+
+
+def test_cancelling_output_view_wakes_source_worker_without_finishing_task() -> None:
+    session = OutputTaskSession()
+    worker = SourceWorker(
+        1,
+        session.iter_output(),
+        Queue(maxsize=8),
+        lambda: None,
+    )
+    worker.start()
+
+    worker.cancel()
+    stopped_without_outcome = worker.join(timeout=0.1)
+    session.finish_success(None)
+    worker.join(timeout=1)
+
+    assert stopped_without_outcome

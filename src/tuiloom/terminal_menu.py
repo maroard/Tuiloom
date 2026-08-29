@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from wcwidth import iter_graphemes
 
 from tuiloom._message_registry import MessageKey
+from tuiloom.background_work import BackgroundWork
 from tuiloom.command import (
     CommandBehavior,
     CommandContext,
@@ -54,6 +55,7 @@ class TerminalMenu:
         self._content_source = (
             content_source if content_source is not None else app.global_content_source
         )
+        self._content_description = "Content in progress"
         self._content_spacing = content_spacing
         if not isinstance(show, bool):
             raise TypeError("TerminalMenu.show must be a bool")
@@ -77,7 +79,8 @@ class TerminalMenu:
         self._disabled_messages: set[str] = set()
         self._disabled_global_commands: set[GlobalCommand] = set()
         self._global_overrides: dict[GlobalCommand, CommandBehavior] = {}
-        self._exit_mode: Literal["choice", "waiting"] | None = None
+        self._exit_mode: Literal["choice", "waiting", "stopping"] | None = None
+        self._exit_work: tuple[BackgroundWork, ...] = ()
         self._exit_previous_message: str | None = None
         self._wait_started_at = 0.0
         self._wait_phase = -1
@@ -243,15 +246,21 @@ class TerminalMenu:
         self.app._require_global(command)
         self._disabled_global_commands.discard(command)
 
-    def set_content_source(self, content_source: ContentSource) -> None:
+    def set_content_source(
+        self,
+        content_source: ContentSource,
+        *,
+        description: str = "Content in progress",
+    ) -> None:
         """Replace content with static text, lines, an iterator, or callable."""
         self._content_source = content_source
+        self._content_description = description
         if (
             self._running
             and self._event_loop is not None
             and self._output_task_session is None
         ):
-            self._event_loop.install_source(content_source)
+            self._event_loop.install_source(content_source, description=description)
 
     def run_with_output[T](
         self,
@@ -265,7 +274,7 @@ class TerminalMenu:
 
         Capture covers ``print`` and Python writes to ``sys.stdout`` and
         ``sys.stderr``. It cannot capture subprocess output or direct POSIX file
-        descriptor writes. Root-menu exit offers force, wait, and cancel modes.
+        descriptor writes. Root-menu exit offers stop, wait, and cancel modes.
         """
         if not self._running or self._event_loop is None:
             raise RuntimeError("Output tasks can only run while the menu is active")
@@ -283,7 +292,10 @@ class TerminalMenu:
                 self, action, complete, on_error, description
             )
             self._output_task_session = session
-            self._event_loop.install_source(session.iter_output())
+            self._event_loop.install_source(
+                session.iter_output(),
+                description=description,
+            )
         except BaseException:
             self._output_task_previous_auto_scroll = None
             self.auto_scroll = previous_auto_scroll
@@ -402,8 +414,8 @@ class TerminalMenu:
             self._event_loop = None
 
     def stop(self) -> None:
-        """Request Back/Quit, presenting task choices when root work is active."""
-        if self.is_main and self.app._active_output_task is not None:
+        """Request Back/Quit, presenting choices while background work is active."""
+        if self.is_main and self._current_exit_work():
             self._begin_task_exit_choice()
             return
         self._stop_immediately()
@@ -577,7 +589,10 @@ class TerminalMenu:
         self.auto_scroll = previous
         if self._running and self._event_loop is not None:
             source = self._content_source
-            self._event_loop.install_source(source if source is not None else "")
+            self._event_loop.install_source(
+                source if source is not None else "",
+                description=self._content_description,
+            )
 
     def _abandon_output_task(self, session: OutputTaskSession) -> None:
         if session is self._output_task_session:
@@ -601,14 +616,22 @@ class TerminalMenu:
         self._show_automatic_message(MessageKey.TASK_EXIT_CHOICES)
 
     def _handle_task_exit_event(self, event: InputEvent) -> None:
-        if event.text == "0":
+        if event.text == "0" and self._exit_mode != "stopping":
             self._cancel_task_exit()
         elif self._exit_mode == "choice" and event.text == "1":
-            self.app._force_quit_output_task(self)
+            self._exit_mode = "stopping"
+            self._wait_started_at = monotonic()
+            self._wait_phase = -1
+            self._exit_work = self._current_exit_work()
+            for work in self._exit_work:
+                work.cancel()
+            self.app._stop_and_quit_output_task(self)
+            self._show_automatic_message(MessageKey.TASK_STOPPING)
         elif self._exit_mode == "choice" and event.text == "2":
             self._exit_mode = "waiting"
             self._wait_started_at = monotonic()
             self._wait_phase = -1
+            self._exit_work = self._current_exit_work()
             self.app._begin_wait_and_quit(self)
 
     def _cancel_task_exit(self) -> None:
@@ -617,22 +640,63 @@ class TerminalMenu:
             registration.exit_when_complete = False
             registration.exit_menu = None
         self._exit_mode = None
+        self._exit_work = ()
         self.screen_context.message = self._exit_previous_message
         self._exit_previous_message = None
 
     def _tick_task_exit(self, now: float) -> bool:
+        if self._exit_mode == "stopping":
+            if any(work.is_alive() for work in self._exit_work):
+                return False
+            for work in self._exit_work:
+                work.join()
+            self._exit_work = ()
+            self._stop_immediately()
+            return True
+
         if self._exit_mode != "waiting":
             return False
+
+        registration = self.app._active_output_task
+        active_source = (
+            self._event_loop.active_work if self._event_loop is not None else None
+        )
+        if registration is None and active_source is None:
+            for work in self._exit_work:
+                if work.is_alive():
+                    work.cancel()
+                work.join()
+            self._exit_work = ()
+            self._stop_immediately()
+            return True
+
         phase = int((now - self._wait_started_at) / 0.4) % 3 + 1
         if phase == self._wait_phase:
             return False
         self._wait_phase = phase
         registration = self.app._active_output_task
+        waiting_message = self.app._get_message(MessageKey.TASK_WAITING)
         description = (
-            registration.description if registration is not None else "Task in progress"
+            registration.description
+            if registration is not None
+            else active_source.description
+            if active_source is not None
+            else waiting_message or "Task in progress"
         )
         self.screen_context.message = f"{description}{'.' * phase}\n0: Cancel"
         return True
+
+    def _current_exit_work(self) -> tuple[BackgroundWork, ...]:
+        """Return unique task and source workers relevant to root exit."""
+        work: list[BackgroundWork] = []
+        registration = self.app._active_output_task
+        if registration is not None:
+            work.append(registration.session)
+        if self._event_loop is not None:
+            source_work = self._event_loop.active_work
+            if source_work is not None and source_work not in work:
+                work.append(source_work)
+        return tuple(work)
 
     def _invalidate_renderer(self) -> None:
         if self._terminal_renderer is not None:

@@ -1,5 +1,5 @@
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from threading import RLock, get_ident
 from typing import TextIO, cast
@@ -70,7 +70,7 @@ class OutputCapture:
         self._deferred_uninstall = False
 
     @contextmanager
-    def install(self) -> Iterator[None]:
+    def install(self) -> Generator[None, None, None]:
         """Install routed stdout and stderr until the context exits."""
         with self._lock:
             if self._installed:
@@ -102,7 +102,7 @@ class OutputCapture:
     def route_background_output(
         self,
         writer: OutputWriter,
-    ) -> Iterator[None]:
+    ) -> Generator[None, None, None]:
         """Route non-UI thread writes to ``writer`` for one task."""
         with self._lock:
             if not self._installed:

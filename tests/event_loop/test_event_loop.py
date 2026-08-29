@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from selectors import BaseSelector, SelectorKey
+from threading import Event, Thread
 from typing import cast
 
 import pytest
@@ -177,3 +178,110 @@ def test_wakeup_socket_is_drained_without_blocking() -> None:
     loop._drain_wakeup()
     loop._drain_source_events()
     loop.close()
+
+
+def test_source_replacement_waits_and_only_starts_latest_request() -> None:
+    _, loop, _, _ = make_loop([None])
+    old_started = Event()
+    old_release = Event()
+    second_started = Event()
+    latest_started = Event()
+    latest_release = Event()
+
+    def old_source() -> Iterator[str]:
+        old_started.set()
+        old_release.wait()
+        yield "old"
+
+    def second_source() -> Iterator[str]:
+        second_started.set()
+        yield "second"
+
+    def latest_source() -> Iterator[str]:
+        latest_started.set()
+        latest_release.wait()
+        yield "latest"
+
+    loop.install_source(old_source(), description="Old")
+    assert old_started.wait(1)
+
+    loop.install_source(
+        second_source(),
+        description="Second",
+    )
+    loop.install_source(
+        latest_source(),
+        description="Latest",
+    )
+
+    assert not second_started.is_set()
+    assert not latest_started.is_set()
+    old_release.set()
+    assert loop._source_worker is not None
+    assert loop._source_worker.join(1)
+
+    loop._progress_source_replacement()
+
+    assert latest_started.wait(1)
+    assert not second_started.is_set()
+    assert loop.active_work is not None
+    assert loop.active_work.description == "Latest"
+    latest_release.set()
+    loop.close()
+    assert loop._source_worker is not None
+    assert not loop._source_worker.is_alive()
+
+
+def test_close_waits_for_cancelled_iterator_before_closing_resources() -> None:
+    _, loop, selector, _ = make_loop([None])
+    started = Event()
+    release = Event()
+
+    def blocked() -> Iterator[str]:
+        started.set()
+        release.wait()
+        yield "late"
+
+    loop.install_source(blocked())
+    assert started.wait(1)
+    worker = loop._source_worker
+    assert worker is not None
+    closer = Thread(target=loop.close)
+    closer.start()
+
+    assert closer.is_alive()
+    assert not selector.closed
+    release.set()
+    closer.join(1)
+
+    assert not closer.is_alive()
+    assert not worker.is_alive()
+    assert selector.closed
+
+
+def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() -> None:
+    _, loop, _, _ = make_loop([None])
+    started = Event()
+    release = Event()
+
+    def dynamic() -> str:
+        started.set()
+        release.wait()
+        return "done"
+
+    loop.install_source(dynamic, description="Refreshing")
+    assert loop.active_work is None
+    loop._request_dynamic_update()
+    assert started.wait(1)
+    assert loop.active_work is not None
+    assert loop.active_work.description == "Refreshing"
+
+    closer = Thread(target=loop.close)
+    closer.start()
+    assert closer.is_alive()
+    release.set()
+    closer.join(1)
+
+    assert not closer.is_alive()
+    assert loop._source_worker is not None
+    assert not loop._source_worker.is_alive()

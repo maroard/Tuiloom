@@ -1,4 +1,4 @@
-from threading import Thread
+from threading import Event, Thread
 
 from tuiloom.output_capture import OutputCapture
 from tuiloom.output_task import OutputTaskSession
@@ -90,3 +90,24 @@ def test_session_keeps_ordinary_action_exception() -> None:
     assert session.outcome is not None
     assert session.outcome.error is error
     assert published == [session]
+
+
+def test_output_session_exposes_non_daemon_cancellable_work_contract() -> None:
+    session = OutputTaskSession(description="Computing")
+    capture = OutputCapture()
+    release = Event()
+
+    with capture.install():
+        session.start(lambda: release.wait(), capture, lambda completed: None)
+
+        assert session.description == "Computing"
+        assert session.is_alive()
+        assert session._worker is not None
+        assert not session._worker.daemon
+
+        session.cancel()
+        assert list(session.iter_output()) == []
+        release.set()
+        assert session.join(timeout=1)
+
+    assert not session.is_alive()

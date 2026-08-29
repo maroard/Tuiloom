@@ -75,12 +75,16 @@ def refreshed() -> str | list[str]:
 
 menu.set_content_source(static_text)
 menu.set_content_source(static_lines)
-menu.set_content_source(stream())
+menu.set_content_source(stream(), description="Loading records")
 menu.set_content_source(refreshed)
 ```
 
 An omitted menu source inherits `TerminalApp.global_content_source`. A content
-box is rendered only when a source exists.
+box is rendered only when a source exists. Iterators count as active work until
+they finish. Dynamic callables count as active only while an evaluation is in
+progress. Replacing an active source cancels it cooperatively; the UI stays
+responsive, waits for that worker to stop, then starts only the latest requested
+replacement.
 
 ## Stable command handles
 
@@ -229,15 +233,26 @@ Only one application task may run at a time. Its callback runs on the UI thread.
 Capture covers `print` and Python writes to `sys.stdout`/`sys.stderr`; subprocess
 output and direct POSIX file-descriptor writes are not captured.
 
-Quitting the root menu during a task displays:
+Quitting the root menu during a captured task, an iterator, or an in-progress
+dynamic evaluation displays:
 
-- `1`: force quit, abandon callbacks, and discard the task's later Python output;
+- `1`: stop and quit, request cooperative cancellation, discard later results,
+  errors, output, and callbacks, then keep showing `Stopping…` until every worker
+  has really stopped;
 - `2`: wait and quit, animate the description, run the completion callback, then
   restore the terminal and quit even if the callback changes menus;
 - `0`: cancel the exit request and restore the previous footer.
 
-While waiting, `0` remains available. Terminal restoration is guaranteed when a
-completion callback raises.
+While waiting normally, `0` remains available. Once stop has been requested it
+is irreversible. `TASK_STOPPING` is a registered message key and can be disabled
+like the other built-in messages.
+
+Python cannot safely kill an arbitrary thread. Tuiloom therefore uses
+cooperative cancellation and waits without a timeout before closing sockets,
+restoring the terminal, or returning from the application. Native code that
+never returns can consequently leave `Stopping…` visible indefinitely; use a
+separate process when forceful termination is required. Terminal restoration is
+also delayed until workers finish when a callback or renderer raises.
 
 ## Terminal hyperlinks
 

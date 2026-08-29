@@ -13,15 +13,55 @@ class OutputTaskOutcome:
     error: Exception | None = None
 
 
+class _OutputView(Iterator[str]):
+    """Read one replayable session stream with independent cancellation."""
+
+    def __init__(self, session: "OutputTaskSession") -> None:
+        self._session = session
+        self._cursor = 0
+        self._cancelled = False
+
+    def __next__(self) -> str:
+        session = self._session
+        with session._condition:
+            while (
+                self._cursor >= len(session._chunks)
+                and session._outcome is None
+                and not session._cancelled
+                and not self._cancelled
+            ):
+                session._condition.wait()
+
+            if self._cancelled:
+                raise StopIteration
+            if self._cursor < len(session._chunks):
+                chunk = session._chunks[self._cursor]
+                self._cursor += 1
+                return chunk
+            raise StopIteration
+
+    def cancel(self) -> None:
+        """Stop this view and wake its possibly waiting consumer."""
+        with self._session._condition:
+            self._cancelled = True
+            self._session._condition.notify_all()
+
+    def close(self) -> None:
+        """Support the close convention used by iterator consumers."""
+        self.cancel()
+
+
 class OutputTaskSession:
     """Accumulate replayable output and the eventual task outcome."""
 
-    def __init__(self) -> None:
+    def __init__(self, description: str = "Task in progress") -> None:
         """Create an unfinished session with no captured output."""
+        self.description = description
         self._chunks: list[str] = []
         self._outcome: OutputTaskOutcome | None = None
         self._condition = Condition()
         self._worker: Thread | None = None
+        self._cancelled = False
 
     @property
     def outcome(self) -> OutputTaskOutcome | None:
@@ -35,7 +75,7 @@ class OutputTaskSession:
             return
 
         with self._condition:
-            if self._outcome is not None:
+            if self._outcome is not None or self._cancelled:
                 return
             self._chunks.append(text)
             self._condition.notify_all()
@@ -46,14 +86,13 @@ class OutputTaskSession:
         capture: OutputCapture,
         publish_outcome: Callable[["OutputTaskSession"], object],
     ) -> None:
-        """Start one captured action in a daemon worker thread."""
+        """Start one captured action in a non-daemon worker thread."""
         with self._condition:
             if self._worker is not None:
                 raise RuntimeError("Output task session is already started")
             self._worker = Thread(
                 target=self._run,
                 args=(action, capture, publish_outcome),
-                daemon=True,
             )
             worker = self._worker
 
@@ -70,22 +109,21 @@ class OutputTaskSession:
         worker.join(timeout)
         return not worker.is_alive()
 
+    def is_alive(self) -> bool:
+        """Return whether the action thread is still executing."""
+        with self._condition:
+            worker = self._worker
+        return worker is not None and worker.is_alive()
+
+    def cancel(self) -> None:
+        """Discard future output and wake attached views cooperatively."""
+        with self._condition:
+            self._cancelled = True
+            self._condition.notify_all()
+
     def iter_output(self) -> Iterator[str]:
-        """Yield all stored output, then wait for new fragments until done."""
-        cursor = 0
-
-        while True:
-            with self._condition:
-                while cursor >= len(self._chunks) and self._outcome is None:
-                    self._condition.wait()
-                chunks = self._chunks[cursor:]
-                cursor += len(chunks)
-                complete = self._outcome is not None
-
-            yield from chunks
-
-            if complete:
-                return
+        """Return a replayable, independently cancellable output view."""
+        return _OutputView(self)
 
     def finish_success(self, result: object) -> None:
         """Finish successfully and wake every attached output view."""

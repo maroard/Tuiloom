@@ -138,6 +138,7 @@ def test_registered_messages_validate_and_combine_suppression() -> None:
     with pytest.raises(KeyError):
         menu.show_message("missing")
     assert MessageKey.TASK_EXIT_CHOICES.value == "task_exit_choices"
+    assert MessageKey.TASK_STOPPING.value == "task_stopping"
 
 
 @pytest.mark.parametrize("width", [True, False, 0, -1, 1.5])
@@ -172,6 +173,29 @@ def test_auto_scroll_validation_and_content_replacement() -> None:
         menu.auto_scroll = "bottom"  # type: ignore[assignment]
     menu.set_content_source("new")
     assert menu._content_source == "new"
+
+
+def test_active_content_replacement_forwards_its_description() -> None:
+    _, menu = make_menu(content="old")
+    installed: list[tuple[object, str]] = []
+
+    class Loop:
+        def install_source(
+            self,
+            source: object,
+            *,
+            description: str = "Content in progress",
+        ) -> None:
+            installed.append((source, description))
+
+    menu._running = True
+    menu._event_loop = Loop()  # type: ignore[assignment]
+    source = iter(["new"])
+
+    menu.set_content_source(source, description="Generating")
+
+    assert menu._content_source is source
+    assert installed == [(source, "Generating")]
 
 
 def test_menu_run_builds_resources_shows_no_content_and_closes_loop(

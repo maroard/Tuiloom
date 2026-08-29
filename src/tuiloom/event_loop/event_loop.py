@@ -8,6 +8,7 @@ from socket import socketpair
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from tuiloom.background_work import BackgroundWork
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_handler import InputHandler
@@ -54,6 +55,7 @@ class EventLoop:
         self._source_events: Queue[SourceEvent] = Queue(maxsize=self._SOURCE_QUEUE_SIZE)
         self._generation = 0
         self._source_worker: SourceWorker | None = None
+        self._pending_source: tuple[ContentSource, str] | None = None
         self._dirty = True
         now = self._clock()
         self._next_frame_at = now
@@ -63,7 +65,10 @@ class EventLoop:
         self._terminal_size = get_terminal_size()
         self._closed = False
 
-        self._install_worker(content_renderer)
+        self._install_worker(
+            content_renderer,
+            getattr(menu, "_content_description", "Content in progress"),
+        )
 
     def run(self) -> None:
         """Process events until the owning menu stops."""
@@ -72,6 +77,7 @@ class EventLoop:
 
     def run_once(self) -> None:
         """Process one selectable event-loop turn."""
+        self._progress_source_replacement()
         ready = self._selector.select(self._get_wait_timeout())
 
         for key, _ in ready:
@@ -96,34 +102,70 @@ class EventLoop:
         if immediate:
             self._next_frame_at = self._clock()
 
-    def install_source(self, source: ContentSource) -> None:
-        """Replace the active source and discard every stale source event."""
+    @property
+    def active_work(self) -> BackgroundWork | None:
+        """Return source work that currently prevents a safe menu exit."""
+        worker = self._source_worker
+        if worker is None or not worker.is_alive():
+            return None
+        if self._content_renderer.state == "streaming" or self._dynamic_in_flight:
+            return worker
+        return None
+
+    def install_source(
+        self,
+        source: ContentSource,
+        *,
+        description: str = "Content in progress",
+    ) -> None:
+        """Schedule replacement after the previous source has really stopped."""
+        worker = self._source_worker
+        if worker is not None and worker.is_alive():
+            self._pending_source = (source, description)
+            self._generation += 1
+            self._clear_source_events()
+            self._dynamic_in_flight = False
+            worker.cancel()
+            self._notify_source()
+            return
+
+        if worker is not None:
+            worker.join()
+
+        self._pending_source = None
+        self._apply_source(source, description)
+
+    def _apply_source(self, source: ContentSource, description: str) -> None:
+        """Install a source once no previous worker can still execute."""
         content_renderer = ContentRenderer(source)
         self._content_renderer = content_renderer
         self._menu._content_renderer = content_renderer
         self._terminal_renderer.set_content_renderer(content_renderer)
-        self._install_worker(content_renderer)
+        self._install_worker(content_renderer, description)
         self.request_render(immediate=True)
 
     def close(self) -> None:
-        """Release event-loop resources without waiting on blocked source code."""
+        """Cancel and join source work before releasing selectable resources."""
         if self._closed:
             return
 
         self._closed = True
+        self._pending_source = None
 
         if self._source_worker is not None:
             self._source_worker.cancel()
+            self._source_worker.join()
 
         self._selector.close()
         self._wakeup_reader.close()
         self._wakeup_writer.close()
 
-    def _install_worker(self, content_renderer: ContentRenderer) -> None:
-        """Cancel the old generation and start the new source when required."""
-        if self._source_worker is not None:
-            self._source_worker.cancel()
-
+    def _install_worker(
+        self,
+        content_renderer: ContentRenderer,
+        description: str,
+    ) -> None:
+        """Start the worker for an already-safe source installation."""
         self._generation += 1
         self._clear_source_events()
         self._source_worker = None
@@ -142,8 +184,24 @@ class EventLoop:
             source=source,
             events=self._source_events,
             notify=self._notify_source,
+            description=description,
         )
         self._source_worker.start()
+
+    def _progress_source_replacement(self) -> None:
+        """Install only the latest request after the cancelled worker exits."""
+        pending = self._pending_source
+        if pending is None:
+            return
+
+        worker = self._source_worker
+        if worker is not None and worker.is_alive():
+            return
+        if worker is not None:
+            worker.join()
+
+        self._pending_source = None
+        self._apply_source(*pending)
 
     def _clear_source_events(self) -> None:
         """Discard queued results belonging to a replaced source."""

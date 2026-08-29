@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import sys
-from threading import Thread
+from threading import Event, Thread
 
 import pytest
 
 from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom.output_task import OutputTaskSession
 
 
 def test_content_sources_are_read_only_and_local_source_wins() -> None:
@@ -79,3 +80,58 @@ def test_terminal_escape_sequences_enter_and_leave_screen(
     app._leave_terminal_screen()
     assert "\033[?1049h" in "".join(writes)
     assert "\033[?1049l" in "".join(writes)
+
+
+def test_run_joins_output_worker_before_restoring_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeInputHandler:
+        def close(self) -> None:
+            calls.append("input closed")
+
+    app = TerminalApp("App")
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    app.set_main_menu(menu)
+    started = Event()
+    release = Event()
+    checked = Event()
+    calls: list[str] = []
+    sessions: list[OutputTaskSession] = []
+
+    def action() -> None:
+        started.set()
+        release.wait()
+
+    def run_menu() -> None:
+        session = app._start_output_task(
+            menu,
+            action,
+            lambda result: None,
+            lambda error: None,
+            "Work",
+        )
+        menu._output_task_session = session
+        sessions.append(session)
+
+    def allow_shutdown() -> None:
+        assert started.wait(1)
+        assert "leave" not in calls
+        checked.set()
+        release.set()
+
+    monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
+    monkeypatch.setattr(app, "_enter_terminal_screen", lambda: calls.append("enter"))
+    monkeypatch.setattr(app, "_leave_terminal_screen", lambda: calls.append("leave"))
+    monkeypatch.setattr(menu, "run", run_menu)
+    releaser = Thread(target=allow_shutdown)
+    releaser.start()
+
+    app.run()
+    releaser.join(1)
+
+    assert checked.is_set()
+    assert calls == ["enter", "input closed", "leave"]
+    assert len(sessions) == 1
+    session = sessions[0]
+    assert not session.is_alive()
+    assert app._active_output_task is None

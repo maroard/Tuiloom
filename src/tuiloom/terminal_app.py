@@ -27,6 +27,7 @@ class _OutputTaskRegistration:
     description: str
     exit_when_complete: bool = False
     exit_menu: TerminalMenu | None = None
+    abandoned: bool = False
 
 
 class TerminalApp:
@@ -213,16 +214,20 @@ class TerminalApp:
     ) -> OutputTaskSession:
         if self._active_output_task is not None:
             raise RuntimeError("Another output task is already running")
-        session = OutputTaskSession()
+        session = OutputTaskSession(description)
         registration = _OutputTaskRegistration(
             menu, session, on_success, on_error, description
         )
         self._active_output_task = registration
-        session.start(
-            action,
-            self._output_capture,
-            lambda completed: self._output_task_outcomes.put(registration),
-        )
+        try:
+            session.start(
+                action,
+                self._output_capture,
+                lambda completed: self._output_task_outcomes.put(registration),
+            )
+        except BaseException:
+            self._active_output_task = None
+            raise
         return session
 
     def _dispatch_output_task_outcome(self) -> TerminalMenu | None:
@@ -233,7 +238,11 @@ class TerminalApp:
         if registration is not self._active_output_task:
             return None
 
+        registration.session.join()
         self._active_output_task = None
+        if registration.abandoned:
+            registration.menu._abandon_output_task(registration.session)
+            return registration.menu
         registration.menu._detach_output_task(registration.session)
         outcome = registration.session.outcome
         if outcome is None:
@@ -254,22 +263,31 @@ class TerminalApp:
     def _begin_wait_and_quit(self, menu: TerminalMenu) -> None:
         registration = self._active_output_task
         if registration is None:
-            menu._stop_immediately()
             return
         registration.exit_when_complete = True
         registration.exit_menu = menu
 
-    def _force_quit_output_task(self, menu: TerminalMenu) -> None:
+    def _stop_and_quit_output_task(self, menu: TerminalMenu) -> None:
         registration = self._active_output_task
         if registration is None:
-            menu._stop_immediately()
+            return
+        registration.on_success = None
+        registration.on_error = None
+        registration.abandoned = True
+        registration.session.cancel()
+        registration.menu._abandon_output_task(registration.session)
+
+    def _shutdown_output_task(self) -> None:
+        """Cancel and join any task before terminal and capture restoration."""
+        registration = self._active_output_task
+        if registration is None:
             return
         registration.on_success = None
         registration.on_error = None
         self._active_output_task = None
-        self._output_capture.detach_background_output()
+        registration.session.cancel()
         registration.menu._abandon_output_task(registration.session)
-        menu._stop_immediately()
+        registration.session.join()
 
     def run(self) -> None:
         """Run the main menu as a blocking interactive main-thread call.
@@ -290,6 +308,7 @@ class TerminalApp:
                 self._enter_terminal_screen()
                 main_menu.run()
             finally:
+                self._shutdown_output_task()
                 self._input_handler.close()
                 self._input_handler = None
                 self._leave_terminal_screen()

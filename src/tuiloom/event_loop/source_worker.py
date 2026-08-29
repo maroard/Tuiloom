@@ -16,28 +16,39 @@ class SourceWorker:
         source: WorkerSource,
         events: Queue[SourceEvent],
         notify: Callable[[], None],
+        *,
+        description: str = "Content in progress",
     ) -> None:
         """Store one source and its generation-tagged output channel."""
         self.generation = generation
         self.source = source
         self.events = events
+        self.description = description
         self._notify = notify
         self._cancelled = Event()
         self._dynamic_requested = Event()
-        self._thread = Thread(target=self._run, daemon=True)
+        self._thread = Thread(target=self._run)
 
     def start(self) -> None:
-        """Start consuming the source in a daemon thread."""
+        """Start consuming the source in a non-daemon thread."""
         self._thread.start()
 
-    def join(self, timeout: float | None = None) -> None:
-        """Wait at most ``timeout`` seconds for the worker to finish."""
+    def join(self, timeout: float | None = None) -> bool:
+        """Wait at most ``timeout`` seconds and report whether work stopped."""
         self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def is_alive(self) -> bool:
+        """Return whether the source thread is still executing."""
+        return self._thread.is_alive()
 
     def cancel(self) -> None:
         """Stop publishing and wake a waiting dynamic worker."""
         self._cancelled.set()
         self._dynamic_requested.set()
+        cancel_source = getattr(self.source, "cancel", None)
+        if callable(cancel_source):
+            cancel_source()
 
     def request_dynamic_update(self) -> None:
         """Schedule one dynamic-source evaluation when supported."""

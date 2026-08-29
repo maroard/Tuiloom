@@ -117,9 +117,10 @@ While a menu is running:
   restoring terminal resources.
 
 A completed source keeps its last content but no longer counts as an active
-operation. A dynamic callable counts as active for as long as it is installed.
-The producer and output-consumer worker used by `run_with_output()` belong to
-one logical panel and count as one operation.
+operation. For compatibility, a dynamic callable counts as active only while
+one of its evaluations is in flight; remaining installed between evaluations
+does not block exit. The producer and output-consumer worker used by
+`run_with_output()` belong to one logical panel and count as one operation.
 
 If a source raises, the first error is propagated with its traceback after all
 other workers have been cancelled and joined.

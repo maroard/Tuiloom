@@ -186,10 +186,10 @@ class TerminalMenu:
     ) -> None:
         """Replace one owned panel's source without changing its identity."""
         self._require_content_panel(panel)
-        panel._source = content_source
         if self._running and self._event_loop is not None:
             self._event_loop.replace_content_panel(panel, content_source)
         else:
+            panel._source = content_source
             panel._renderer = ContentRenderer(content_source)
             panel._viewport = None
         if panel is self._primary_content_panel:

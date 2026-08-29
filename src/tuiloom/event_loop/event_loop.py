@@ -9,6 +9,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 from tuiloom.background_work import BackgroundWork
+from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_handler import InputHandler
@@ -56,6 +57,7 @@ class EventLoop:
         self._generation = 0
         self._source_worker: SourceWorker | None = None
         self._pending_source: tuple[ContentSource, str] | None = None
+        self._retiring_panels: list[ContentPanel] = []
         self._dirty = True
         now = self._clock()
         self._next_frame_at = now
@@ -65,10 +67,12 @@ class EventLoop:
         self._terminal_size = get_terminal_size()
         self._closed = False
 
-        self._install_worker(
-            content_renderer,
-            getattr(menu, "_content_description", "Content in progress"),
-        )
+        primary = menu._primary_content_panel
+        if primary is not None:
+            primary._renderer = content_renderer
+        for panel in menu.content_panels:
+            self._install_panel_worker(panel)
+        self._sync_primary_aliases()
 
     def run(self) -> None:
         """Process events until the owning menu stops."""
@@ -77,7 +81,7 @@ class EventLoop:
 
     def run_once(self) -> None:
         """Process one selectable event-loop turn."""
-        self._progress_source_replacement()
+        self._progress_panel_transitions()
         ready = self._selector.select(self._get_wait_timeout())
 
         for key, _ in ready:
@@ -86,7 +90,7 @@ class EventLoop:
                 self._drain_source_events()
 
         self._drain_input()
-        self._request_dynamic_update()
+        self._request_dynamic_updates()
         completed_menu = self._menu.app._dispatch_output_task_outcome()
 
         if completed_menu is self._menu:
@@ -105,12 +109,67 @@ class EventLoop:
     @property
     def active_work(self) -> BackgroundWork | None:
         """Return source work that currently prevents a safe menu exit."""
-        worker = self._source_worker
-        if worker is None or not worker.is_alive():
-            return None
-        if self._content_renderer.state == "streaming" or self._dynamic_in_flight:
-            return worker
-        return None
+        active = self.active_panels
+        return active[0]._worker if active else None
+
+    @property
+    def active_panels(self) -> tuple[ContentPanel, ...]:
+        """Return logical panels whose work currently blocks safe exit."""
+        active: list[ContentPanel] = []
+        for panel in (*self._menu.content_panels, *self._retiring_panels):
+            worker = panel._worker
+            if worker is None or not worker.is_alive():
+                continue
+            if panel._renderer.state == "streaming" or panel._dynamic_in_flight:
+                active.append(panel)
+        return tuple(dict.fromkeys(active))
+
+    @property
+    def retiring_panels(self) -> tuple[ContentPanel, ...]:
+        """Return removed panels whose workers have not terminated yet."""
+        return tuple(self._retiring_panels)
+
+    def add_content_panel(self, panel: ContentPanel) -> None:
+        """Start runtime work for a panel added while the loop is active."""
+        self._install_panel_worker(panel)
+        self._sync_primary_aliases()
+        self.request_render(immediate=True)
+
+    def replace_content_panel(
+        self,
+        panel: ContentPanel,
+        source: ContentSource,
+    ) -> None:
+        """Replace one panel only after its previous worker terminates."""
+        panel._pending_source = source
+        self._generation += 1
+        panel._generation = self._generation
+        panel._dynamic_in_flight = False
+        worker = panel._worker
+        if worker is not None and worker.is_alive():
+            worker.cancel()
+            self._notify_source()
+        else:
+            if worker is not None:
+                worker.join()
+            self._apply_panel_source(panel, source)
+        self._sync_primary_aliases()
+        self.request_render(immediate=True)
+
+    def retire_content_panel(self, panel: ContentPanel) -> None:
+        """Cancel and track a removed panel until its worker stops."""
+        panel._retiring = True
+        panel._pending_source = None
+        worker = panel._worker
+        if worker is not None and worker.is_alive():
+            worker.cancel()
+            if panel not in self._retiring_panels:
+                self._retiring_panels.append(panel)
+        elif worker is not None:
+            worker.join()
+            panel._retiring = False
+        self._sync_primary_aliases()
+        self.request_render(immediate=True)
 
     def install_source(
         self,
@@ -119,30 +178,24 @@ class EventLoop:
         description: str = "Content in progress",
     ) -> None:
         """Schedule replacement after the previous source has really stopped."""
-        worker = self._source_worker
-        if worker is not None and worker.is_alive():
-            self._pending_source = (source, description)
-            self._generation += 1
-            self._clear_source_events()
-            self._dynamic_in_flight = False
-            worker.cancel()
-            self._notify_source()
+        panel = self._menu._primary_content_panel
+        if panel is None:
+            panel = self._menu.add_content_source(source, description=description)
+            self._menu._primary_content_panel = panel
             return
-
-        if worker is not None:
-            worker.join()
-
-        self._pending_source = None
-        self._apply_source(source, description)
+        self._menu.set_content_panel_description(panel, description)
+        self.replace_content_panel(panel, source)
+        self._pending_source = (source, description)
 
     def _apply_source(self, source: ContentSource, description: str) -> None:
         """Install a source once no previous worker can still execute."""
-        content_renderer = ContentRenderer(source)
-        self._content_renderer = content_renderer
-        self._menu._content_renderer = content_renderer
-        self._terminal_renderer.set_content_renderer(content_renderer)
-        self._install_worker(content_renderer, description)
-        self.request_render(immediate=True)
+        panel = self._menu._primary_content_panel
+        if panel is None:
+            panel = self._menu.add_content_source(source, description=description)
+            self._menu._primary_content_panel = panel
+            return
+        panel._description = description
+        self._apply_panel_source(panel, source)
 
     def close(self) -> None:
         """Cancel and join source work before releasing selectable resources."""
@@ -151,57 +204,100 @@ class EventLoop:
 
         self._closed = True
         self._pending_source = None
-
-        if self._source_worker is not None:
-            self._source_worker.cancel()
-            self._source_worker.join()
+        panels = tuple(
+            dict.fromkeys((*self._menu.content_panels, *self._retiring_panels))
+        )
+        for panel in panels:
+            if panel._worker is not None:
+                panel._worker.cancel()
+        for panel in panels:
+            if panel._worker is not None:
+                panel._worker.join()
 
         self._selector.close()
         self._wakeup_reader.close()
         self._wakeup_writer.close()
 
-    def _install_worker(
-        self,
-        content_renderer: ContentRenderer,
-        description: str,
-    ) -> None:
-        """Start the worker for an already-safe source installation."""
+    def _install_panel_worker(self, panel: ContentPanel) -> None:
+        """Start the worker for one already-safe panel source."""
         self._generation += 1
-        self._clear_source_events()
-        self._source_worker = None
-        self._dynamic_in_flight = False
+        panel._generation = self._generation
+        panel._worker = None
+        panel._dynamic_in_flight = False
+        panel._next_dynamic_at = self._clock()
 
-        if content_renderer.state == "static":
+        if panel._renderer.state == "static":
             return
 
-        source = content_renderer.source
+        source = panel._renderer.source
 
         if not callable(source) and not hasattr(source, "__next__"):
             raise RuntimeError("Non-static content source cannot be consumed")
 
-        self._source_worker = SourceWorker(
+        panel._worker = SourceWorker(
+            panel=panel,
             generation=self._generation,
             source=source,
             events=self._source_events,
             notify=self._notify_source,
-            description=description,
+            description=panel.description,
         )
-        self._source_worker.start()
+        panel._worker.start()
+
+    def _apply_panel_source(
+        self,
+        panel: ContentPanel,
+        source: ContentSource,
+    ) -> None:
+        panel._source = source
+        panel._pending_source = None
+        panel._renderer = ContentRenderer(source)
+        panel._viewport = None
+        self._install_panel_worker(panel)
+        if panel is self._menu._primary_content_panel:
+            self._content_renderer = panel._renderer
+            self._menu._content_renderer = panel._renderer
+            self._terminal_renderer.set_content_renderer(panel._renderer)
+        self._sync_primary_aliases()
+        self.request_render(immediate=True)
 
     def _progress_source_replacement(self) -> None:
         """Install only the latest request after the cancelled worker exits."""
-        pending = self._pending_source
-        if pending is None:
-            return
+        self._progress_panel_transitions()
 
-        worker = self._source_worker
-        if worker is not None and worker.is_alive():
-            return
-        if worker is not None:
-            worker.join()
+    def _progress_panel_transitions(self) -> None:
+        for panel in tuple(self._retiring_panels):
+            worker = panel._worker
+            if worker is not None and worker.is_alive():
+                continue
+            if worker is not None:
+                worker.join()
+            panel._retiring = False
+            self._retiring_panels.remove(panel)
 
+        for panel in self._menu.content_panels:
+            source = panel._pending_source
+            if source is None:
+                continue
+            worker = panel._worker
+            if worker is not None and worker.is_alive():
+                continue
+            if worker is not None:
+                worker.join()
+            self._apply_panel_source(panel, source)
         self._pending_source = None
-        self._apply_source(*pending)
+        self._sync_primary_aliases()
+
+    def _sync_primary_aliases(self) -> None:
+        panel = self._menu._primary_content_panel
+        if panel is None:
+            self._source_worker = None
+            self._dynamic_in_flight = False
+            return
+        self._content_renderer = panel._renderer
+        self._source_worker = panel._worker
+        self._dynamic_in_flight = panel._dynamic_in_flight
+        self._next_dynamic_at = panel._next_dynamic_at
 
     def _clear_source_events(self) -> None:
         """Discard queued results belonging to a replaced source."""
@@ -226,8 +322,9 @@ class EventLoop:
                 return
 
     def _drain_source_events(self) -> None:
-        """Apply every current generation event as one content update batch."""
-        events: list[SourceEvent] = []
+        """Apply current-generation events to their corresponding panels."""
+        grouped: dict[ContentPanel, list[SourceEvent]] = {}
+        known = {*self._menu.content_panels, *self._retiring_panels}
 
         while True:
             try:
@@ -235,45 +332,45 @@ class EventLoop:
             except Empty:
                 break
 
-            if event.generation == self._generation:
-                events.append(event)
+            if event.panel in known and event.generation == event.panel._generation:
+                grouped.setdefault(event.panel, []).append(event)
 
-        if not events:
+        if not grouped:
             return
 
-        if self._content_renderer.state == "streaming":
-            chunks = [
-                event.value
-                for event in events
-                if event.kind == "data" and isinstance(event.value, str)
-            ]
+        for panel, events in grouped.items():
+            renderer = panel._renderer
+            if renderer.state == "streaming":
+                chunks = [
+                    event.value
+                    for event in events
+                    if event.kind == "data" and isinstance(event.value, str)
+                ]
+                if chunks:
+                    renderer.append_stream_batch(chunks)
+                    if panel is self._menu._primary_content_panel:
+                        self._terminal_renderer.apply_stream_auto_scroll(
+                            panel.auto_scroll
+                        )
+                    self.request_render()
+            elif renderer.state == "dynamic":
+                values = [event.value for event in events if event.kind == "data"]
+                if values:
+                    value = values[-1]
+                    if not isinstance(value, (str, list)):
+                        raise RuntimeError("Dynamic worker returned invalid content")
+                    renderer.replace_dynamic_content(value)
+                    self.request_render()
+                panel._dynamic_in_flight = False
 
-            if chunks:
-                self._content_renderer.append_stream_batch(chunks)
-                self._terminal_renderer.apply_stream_auto_scroll(self._menu.auto_scroll)
-                self.request_render()
-
-        elif self._content_renderer.state == "dynamic":
-            values = [event.value for event in events if event.kind == "data"]
-
-            if values:
-                value = values[-1]
-
-                if not isinstance(value, (str, list)):
-                    raise RuntimeError("Dynamic worker returned invalid content")
-
-                self._content_renderer.replace_dynamic_content(value)
-                self.request_render()
-
-            self._dynamic_in_flight = False
-
-        for event in events:
-            self._handle_source_event(event)
+            for event in events:
+                self._handle_source_event(event)
+        self._sync_primary_aliases()
 
     def _handle_source_event(self, event: SourceEvent) -> None:
         """Handle completion and failures after applying source data."""
         if event.kind == "complete":
-            self._content_renderer.finish_stream()
+            event.panel._renderer.finish_stream()
             self.request_render()
             return
 
@@ -285,17 +382,24 @@ class EventLoop:
 
     def _request_dynamic_update(self) -> None:
         """Request one dynamic result when no evaluation is in flight."""
-        if (
-            self._content_renderer.state != "dynamic"
-            or self._source_worker is None
-            or self._dynamic_in_flight
-            or self._clock() < self._next_dynamic_at
-        ):
-            return
+        self._request_dynamic_updates()
 
-        self._dynamic_in_flight = True
-        self._next_dynamic_at = self._clock() + self._FRAME_INTERVAL
-        self._source_worker.request_dynamic_update()
+    def _request_dynamic_updates(self) -> None:
+        """Request due evaluations independently for every dynamic panel."""
+        now = self._clock()
+        for panel in self._menu.content_panels:
+            worker = panel._worker
+            if (
+                panel._renderer.state != "dynamic"
+                or worker is None
+                or panel._dynamic_in_flight
+                or now < panel._next_dynamic_at
+            ):
+                continue
+            panel._dynamic_in_flight = True
+            panel._next_dynamic_at = now + self._FRAME_INTERVAL
+            worker.request_dynamic_update()
+        self._sync_primary_aliases()
 
     def _render_if_due(self) -> None:
         """Render dirty state no faster than the configured frame interval."""
@@ -322,8 +426,12 @@ class EventLoop:
         if input_timeout is not None:
             deadlines.append(now + input_timeout)
 
-        if self._content_renderer.state == "dynamic" and not self._dynamic_in_flight:
-            deadlines.append(self._next_dynamic_at)
+        deadlines.extend(
+            panel._next_dynamic_at
+            for panel in self._menu.content_panels
+            if panel._renderer.state == "dynamic"
+            and not panel._dynamic_in_flight
+        )
 
         return max(0.0, min(deadlines) - now)
 

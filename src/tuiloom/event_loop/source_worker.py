@@ -2,6 +2,7 @@ from collections.abc import Callable, Iterator
 from queue import Full, Queue
 from threading import Event, Thread
 
+from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 
 type WorkerSource = Iterator[str] | Callable[[], str | list[str]]
@@ -12,6 +13,7 @@ class SourceWorker:
 
     def __init__(
         self,
+        panel: ContentPanel,
         generation: int,
         source: WorkerSource,
         events: Queue[SourceEvent],
@@ -20,6 +22,7 @@ class SourceWorker:
         description: str = "Content in progress",
     ) -> None:
         """Store one source and its generation-tagged output channel."""
+        self.panel = panel
         self.generation = generation
         self.source = source
         self.events = events
@@ -66,6 +69,7 @@ class SourceWorker:
         except BaseException as error:
             self._publish(
                 SourceEvent(
+                    panel=self.panel,
                     generation=self.generation,
                     kind="error",
                     error=error,
@@ -80,7 +84,7 @@ class SourceWorker:
                 try:
                     chunk = next(source)
                 except StopIteration:
-                    self._publish(SourceEvent(self.generation, "complete"))
+                    self._publish(SourceEvent(self.panel, self.generation, "complete"))
                     return
 
                 if self._cancelled.is_set():
@@ -92,7 +96,9 @@ class SourceWorker:
                         f"got {type(chunk).__name__}"
                     )
 
-                if not self._publish(SourceEvent(self.generation, "data", chunk)):
+                if not self._publish(
+                    SourceEvent(self.panel, self.generation, "data", chunk)
+                ):
                     return
 
         finally:
@@ -124,7 +130,9 @@ class SourceWorker:
                     f"got {type(content).__name__}"
                 )
 
-            if not self._publish(SourceEvent(self.generation, "data", content)):
+            if not self._publish(
+                SourceEvent(self.panel, self.generation, "data", content)
+            ):
                 return
 
     def _publish(self, event: SourceEvent) -> bool:

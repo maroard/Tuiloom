@@ -3,12 +3,16 @@ from __future__ import annotations
 import io
 import sys
 from threading import Event, get_ident
+from typing import cast
 
 import pytest
 
 from tuiloom import ContentPanel, KeyBinding, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom.event_loop.event_loop import EventLoop
+from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.output_task import OutputTaskSession
+from tuiloom.render.menu_renderer import MenuRenderer
 
 
 def make_main() -> tuple[TerminalApp, TerminalMenu]:
@@ -21,6 +25,154 @@ def make_main() -> tuple[TerminalApp, TerminalMenu]:
 
 def number(menu: TerminalMenu, value: str) -> None:
     menu._handle_event(InputEvent(KeyBinding(value), value))
+
+
+def press(menu: TerminalMenu, key: str, text: str | None = None) -> None:
+    menu._handle_event(InputEvent(KeyBinding(key), text))
+
+
+class FakeWork:
+    def __init__(self, description: str) -> None:
+        self.description = description
+        self.alive = True
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float | None = None) -> bool:
+        return not self.alive
+
+
+class FakePanelLoop:
+    def __init__(self) -> None:
+        self.work: dict[ContentPanel, FakeWork] = {}
+
+    @property
+    def active_panels(self) -> tuple[ContentPanel, ...]:
+        return tuple(panel for panel, work in self.work.items() if work.alive)
+
+    @property
+    def retiring_panels(self) -> tuple[ContentPanel, ...]:
+        return ()
+
+    def add_content_panel(self, panel: ContentPanel) -> None:
+        return
+
+    def attach(self, panel: ContentPanel, work: FakeWork) -> None:
+        self.work[panel] = work
+        panel._worker = cast(SourceWorker, work)
+
+
+def install_fake_operations(
+    menu: TerminalMenu,
+    *descriptions: str,
+) -> tuple[FakePanelLoop, tuple[FakeWork, ...]]:
+    loop = FakePanelLoop()
+    work: list[FakeWork] = []
+    for description in descriptions:
+        panel = menu.add_content_source("last output", description=description)
+        operation = FakeWork(description)
+        loop.attach(panel, operation)
+        work.append(operation)
+    menu._event_loop = loop  # type: ignore[assignment]
+    return loop, tuple(work)
+
+
+def attach_output_task(
+    app: TerminalApp,
+    menu: TerminalMenu,
+    session: OutputTaskSession,
+    description: str,
+) -> ContentPanel:
+    panel = menu.add_content_source(
+        session.iter_output(),
+        description=description,
+        auto_scroll="strict",
+    )
+    menu._output_task_session = session
+    menu._output_task_panel = panel
+    app._attach_output_panel(session, panel)
+
+    class Loop:
+        @property
+        def active_panels(self) -> tuple[ContentPanel, ...]:
+            return (panel,) if session.is_alive() else ()
+
+        @property
+        def retiring_panels(self) -> tuple[ContentPanel, ...]:
+            return ()
+
+    menu._event_loop = cast(EventLoop, Loop())
+    return panel
+
+
+def test_exit_view_uses_normal_rows_without_mutating_screen_context() -> None:
+    _, menu = make_main()
+    install_fake_operations(menu, "Streaming")
+    menu.screen_context.message = "Previous"
+
+    menu.stop()
+
+    rendered = MenuRenderer(menu).render()
+    assert menu._task_exit is not None
+    assert "Operation in progress" in rendered
+    assert "> Force quit" in rendered
+    assert "  Wait and quit" in rendered
+    assert "  Cancel" in rendered
+    assert menu.screen_context.title == "Main"
+    assert menu.screen_context.message == "Previous"
+
+
+def test_exit_view_uses_arrows_enter_and_ignores_numbers() -> None:
+    _, menu = make_main()
+    install_fake_operations(menu, "Work")
+    menu.stop()
+
+    for value in ("1", "2", "0"):
+        number(menu, value)
+    assert menu._task_exit is not None
+    assert menu._task_exit.mode == "choice"
+
+    press(menu, "down")
+    press(menu, "enter")
+    assert menu._task_exit.mode == "waiting"
+    assert menu._task_exit.rows == ("Cancel",)
+
+
+def test_exit_choice_tracks_plural_completion_and_quits_at_zero() -> None:
+    _, menu = make_main()
+    _, (first, second) = install_fake_operations(menu, "First", "Second")
+    menu.stop()
+    assert menu._task_exit is not None
+    assert menu._task_exit.visible_title(2) == "Operations in progress"
+
+    second.alive = False
+    assert menu._tick_task_exit(0.0)
+    assert menu._task_exit.visible_title(1) == "Operation in progress"
+    assert menu._task_exit.visible_panels == (menu.content_panels[1],)
+    assert menu._running
+
+    first.alive = False
+    assert menu._tick_task_exit(0.1)
+    assert not menu._running
+
+
+def test_back_cancels_exit_view_and_restores_navigation() -> None:
+    _, menu = make_main()
+    install_fake_operations(menu, "Work")
+    menu._selected_index = len(menu.commands)
+    menu.stop()
+
+    press(menu, "escape")
+
+    assert menu._task_exit is None
+    assert menu._selected_index == len(menu.commands)
+    assert menu._focused_panel is None
+    assert menu._running
 
 
 def test_wait_and_quit_runs_callback_on_ui_thread_then_stops() -> None:
@@ -41,16 +193,18 @@ def test_wait_and_quit_runs_callback_on_ui_thread_then_stops() -> None:
             lambda error: pytest.fail(str(error)),
             "Downloading",
         )
-        menu._output_task_session = session
+        panel = attach_output_task(app, menu, session, "Downloading")
         menu.stop()
-        assert "Stop and quit" in (menu.screen_context.message or "")
-        number(menu, "2")
-        assert menu._exit_mode == "waiting"
-        assert menu._tick_task_exit(menu._wait_started_at + 0.41)
-        assert "Downloading" in (menu.screen_context.message or "")
+        press(menu, "down")
+        press(menu, "enter")
+        assert menu._task_exit is not None
+        assert menu._task_exit.mode == "waiting"
+        assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
+        assert menu._visible_panel_description(panel) == "Downloading.."
         release.set()
         assert session.join(1)
         assert app._dispatch_output_task_outcome() is menu
+        assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.81)
     assert callbacks == [(42, ui_thread)]
     assert not menu._running
 
@@ -67,10 +221,10 @@ def test_cancel_exit_restores_previous_message_and_normal_state() -> None:
             lambda error: None,
             "Work",
         )
-        menu._output_task_session = session
+        attach_output_task(app, menu, session, "Work")
         menu.stop()
-        number(menu, "0")
-        assert menu._exit_mode is None
+        press(menu, "escape")
+        assert menu._task_exit is None
         assert menu.screen_context.message == "Previous"
         assert menu._running
         release.set()
@@ -80,20 +234,25 @@ def test_cancel_exit_restores_previous_message_and_normal_state() -> None:
 
 def test_wait_callback_exception_still_stops_menu_and_propagates() -> None:
     app, menu = make_main()
+    release = Event()
 
     def fail(result: object) -> None:
         raise RuntimeError("callback failed")
 
     with app._output_capture.install():
         session = app._start_output_task(
-            menu, lambda: 1, fail, lambda error: None, "Work"
+            menu, lambda: release.wait(1), fail, lambda error: None, "Work"
         )
-        menu._output_task_session = session
+        attach_output_task(app, menu, session, "Work")
         menu.stop()
-        number(menu, "2")
+        press(menu, "down")
+        press(menu, "enter")
+        release.set()
         assert session.join(1)
         with pytest.raises(RuntimeError, match="callback failed"):
             app._dispatch_output_task_outcome()
+        assert menu._task_exit is not None
+        menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
     assert not menu._running
 
 
@@ -122,18 +281,20 @@ def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
             lambda error: callbacks.append("error"),
             "Work",
         )
-        menu._output_task_session = session
+        attach_output_task(app, menu, session, "Work")
         assert started.wait(1)
         menu.stop()
-        number(menu, "1")
+        press(menu, "enter")
         assert menu._running
-        assert menu.screen_context.message == "Stopping…"
+        assert menu._task_exit is not None
+        assert menu._task_exit.mode == "stopping"
+        assert "Stopping operation" in MenuRenderer(menu).render()
         assert sys.stdout is not original_stdout
         print("ui remains visible")
         release.set()
         assert session.join(1)
         assert app._dispatch_output_task_outcome() is menu
-        assert menu._tick_task_exit(menu._wait_started_at + 0.41)
+        assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
         assert not menu._running
     assert sys.stdout is original_stdout
     assert "late" not in original_stdout.getvalue()
@@ -143,94 +304,69 @@ def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
 
 def test_source_work_offers_exit_choices_and_stop_waits_for_real_termination() -> None:
     _, menu = make_main()
-
-    class Work:
-        description = "Generating function calls"
-
-        def __init__(self) -> None:
-            self.alive = True
-            self.cancelled = False
-            self.joined = False
-
-        def cancel(self) -> None:
-            self.cancelled = True
-
-        def is_alive(self) -> bool:
-            return self.alive
-
-        def join(self, timeout: float | None = None) -> bool:
-            self.joined = True
-            return not self.alive
-
-    work = Work()
-
-    class Loop:
-        @property
-        def active_work(self) -> Work:
-            return work
-
-    menu._event_loop = Loop()  # type: ignore[assignment]
+    _, (work,) = install_fake_operations(menu, "Generating function calls")
 
     menu.stop()
     assert menu._running
-    assert "Stop and quit" in (menu.screen_context.message or "")
+    assert "Operation in progress" in MenuRenderer(menu).render()
 
-    number(menu, "1")
+    press(menu, "enter")
     assert work.cancelled
     assert menu._running
-    assert menu.screen_context.message == "Stopping…"
+    assert menu._task_exit is not None
+    assert menu._task_exit.mode == "stopping"
 
     number(menu, "0")
-    assert menu._exit_mode == "stopping"
+    assert menu._task_exit.mode == "stopping"
     assert menu._running
 
     work.alive = False
-    assert menu._tick_task_exit(menu._wait_started_at + 0.41)
-    assert work.joined
+    assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
+    assert not menu._running
+
+
+def test_force_quit_cancels_operations_that_appear_while_stopping() -> None:
+    _, menu = make_main()
+    loop, (first,) = install_fake_operations(menu, "First")
+    menu.stop()
+    press(menu, "enter")
+    assert first.cancelled
+
+    second_panel = menu.add_content_source("late output", description="Second")
+    second = FakeWork("Second")
+    loop.attach(second_panel, second)
+
+    assert menu._tick_task_exit(0.1)
+    assert second.cancelled
+    assert menu._task_exit is not None
+    assert menu._task_exit.visible_panels == (
+        menu.content_panels[1],
+        second_panel,
+    )
+
+    first.alive = False
+    second.alive = False
+    assert menu._tick_task_exit(0.2)
     assert not menu._running
 
 
 def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:
     _, menu = make_main()
-
-    class Work:
-        description = "Streaming"
-
-        def __init__(self) -> None:
-            self.alive = True
-            self.cancelled = False
-            self.joined = False
-
-        def cancel(self) -> None:
-            self.cancelled = True
-
-        def is_alive(self) -> bool:
-            return self.alive
-
-        def join(self, timeout: float | None = None) -> bool:
-            self.joined = True
-            return not self.alive
-
-    work = Work()
-
-    class Loop:
-        @property
-        def active_work(self) -> Work | None:
-            return work if work.alive else None
-
-    menu._event_loop = Loop()  # type: ignore[assignment]
+    _, (work,) = install_fake_operations(menu, "Streaming")
     menu.stop()
-    number(menu, "2")
+    press(menu, "down")
+    press(menu, "enter")
 
-    assert menu._exit_mode == "waiting"
+    assert menu._task_exit is not None
+    assert menu._task_exit.mode == "waiting"
     assert not work.cancelled
     assert menu._running
-    assert menu._tick_task_exit(menu._wait_started_at + 0.41)
-    assert "Streaming" in (menu.screen_context.message or "")
+    assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
+    panel = menu._task_exit.visible_panels[0]
+    assert menu._visible_panel_description(panel) == "Streaming.."
 
     work.alive = False
-    assert menu._tick_task_exit(menu._wait_started_at + 0.81)
-    assert work.joined
+    assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.81)
     assert not menu._running
 
 

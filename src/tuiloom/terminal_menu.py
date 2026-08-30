@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Literal, cast
 from wcwidth import iter_graphemes
 
 from tuiloom._message_registry import MessageKey
-from tuiloom.background_work import BackgroundWork
 from tuiloom.command import (
     CommandBehavior,
     CommandContext,
@@ -25,6 +24,7 @@ from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import AutoScrollMode, TerminalRenderer
 from tuiloom.screen_context.screen_context import ScreenContext
+from tuiloom.task_exit import TaskExitView
 
 if TYPE_CHECKING:
     from tuiloom.terminal_app import TerminalApp
@@ -78,11 +78,7 @@ class TerminalMenu:
         self._disabled_messages: set[str] = set()
         self._disabled_global_commands: set[GlobalCommand] = set()
         self._global_overrides: dict[GlobalCommand, CommandBehavior] = {}
-        self._exit_mode: Literal["choice", "waiting", "stopping"] | None = None
-        self._exit_work: tuple[BackgroundWork, ...] = ()
-        self._exit_previous_message: str | None = None
-        self._wait_started_at = 0.0
-        self._wait_phase = -1
+        self._task_exit: TaskExitView | None = None
 
         self._content_renderer: ContentRenderer | None = None
         self._menu_renderer: MenuRenderer | None = None
@@ -539,7 +535,7 @@ class TerminalMenu:
 
     def stop(self) -> None:
         """Request Back/Quit, presenting choices while background work is active."""
-        if self.is_main and self._current_exit_work():
+        if self.is_main and self._current_exit_panels():
             self._begin_task_exit_choice()
             return
         self._stop_immediately()
@@ -623,7 +619,15 @@ class TerminalMenu:
 
     def _visible_content_panels(self) -> tuple[ContentPanel, ...]:
         """Return panels currently projected into the terminal frame."""
+        if self._task_exit is not None:
+            return self._current_exit_panels()
         return self.content_panels
+
+    def _visible_panel_description(self, panel: ContentPanel) -> str:
+        view = self._task_exit
+        if view is None or view.mode != "waiting" or view.wait_phase < 1:
+            return panel.description
+        return f"{panel.description}{'.' * view.wait_phase}"
 
     def _normalize_focus(self) -> None:
         if self._focused_panel not in self._visible_content_panels():
@@ -658,7 +662,7 @@ class TerminalMenu:
 
     def _handle_event(self, event: InputEvent) -> None:
         binding = event.binding
-        if self._exit_mode is not None:
+        if self._task_exit is not None:
             self._handle_task_exit_event(event)
             return
         if not self.show:
@@ -787,94 +791,122 @@ class TerminalMenu:
         return True
 
     def _begin_task_exit_choice(self) -> None:
-        if self._exit_mode is not None:
+        if self._task_exit is not None:
             return
-        self._exit_mode = "choice"
-        self._exit_previous_message = self.screen_context.message
-        self._show_automatic_message(MessageKey.TASK_EXIT_CHOICES)
+        panels = self._current_exit_panels()
+        if not panels:
+            self._stop_immediately()
+            return
+        self._task_exit = TaskExitView(
+            mode="choice",
+            selected_index=0,
+            previous_focus=self._focused_panel,
+            previous_selected_index=self._selected_index,
+            wait_started_at=monotonic(),
+            visible_panels=panels,
+        )
+        self._focused_panel = None
+        self._invalidate_renderer()
 
     def _handle_task_exit_event(self, event: InputEvent) -> None:
-        if event.text == "0" and self._exit_mode != "stopping":
+        view = self._task_exit
+        if view is None or view.mode == "stopping":
+            return
+        binding = event.binding
+        action = self.app.keymap.action_for(binding) if binding is not None else None
+        if action == "focus" and self._visible_content_panels():
+            self._cycle_focus()
+        elif action == "back":
             self._cancel_task_exit()
-        elif self._exit_mode == "choice" and event.text == "1":
-            self._exit_mode = "stopping"
-            self._wait_started_at = monotonic()
-            self._wait_phase = -1
-            self._exit_work = self._current_exit_work()
-            for work in self._exit_work:
-                work.cancel()
-            self.app._stop_and_quit_output_task(self)
-            self._show_automatic_message(MessageKey.TASK_STOPPING)
-        elif self._exit_mode == "choice" and event.text == "2":
-            self._exit_mode = "waiting"
-            self._wait_started_at = monotonic()
-            self._wait_phase = -1
-            self._exit_work = self._current_exit_work()
-            self.app._begin_wait_and_quit(self)
+        elif self._focused_panel is not None:
+            if action in {"up", "down", "left", "right"}:
+                self._scroll_content(
+                    cast(Literal["up", "down", "left", "right"], action)
+                )
+        elif action == "up":
+            view.move(-1)
+        elif action == "down":
+            view.move(1)
+        elif action == "activate" and view.rows:
+            self._activate_task_exit_row(view.rows[view.selected_index])
+        self._invalidate_renderer()
+
+    def _activate_task_exit_row(self, row: str) -> None:
+        view = self._task_exit
+        if view is None:
+            return
+        if row == "Cancel":
+            self._cancel_task_exit()
+            return
+        if row == "Wait and quit":
+            view.mode = "waiting"
+            view.selected_index = 0
+            view.wait_started_at = monotonic()
+            view.wait_phase = -1
+            return
+        if row == "Force quit":
+            view.mode = "stopping"
+            view.selected_index = 0
+            view.wait_started_at = monotonic()
+            view.wait_phase = -1
+            for panel in self._current_exit_panels():
+                self._cancel_panel_operation(panel)
 
     def _cancel_task_exit(self) -> None:
-        registration = self.app._active_output_task
-        if registration is not None:
-            registration.exit_when_complete = False
-            registration.exit_menu = None
-        self._exit_mode = None
-        self._exit_work = ()
-        self.screen_context.message = self._exit_previous_message
-        self._exit_previous_message = None
+        view = self._task_exit
+        if view is None:
+            return
+        self._task_exit = None
+        self._selected_index = view.previous_selected_index
+        self._focused_panel = view.previous_focus
+        self._normalize_selection()
+        self._normalize_focus()
+        self._invalidate_renderer()
 
     def _tick_task_exit(self, now: float) -> bool:
-        if self._exit_mode == "stopping":
-            if any(work.is_alive() for work in self._exit_work):
-                return False
-            for work in self._exit_work:
-                work.join()
-            self._exit_work = ()
+        view = self._task_exit
+        if view is None:
+            return False
+        active = self._current_exit_panels()
+        changed = active != view.visible_panels
+        view.visible_panels = active
+        if not active:
+            self._task_exit = None
             self._stop_immediately()
             return True
+        if view.mode == "stopping":
+            for panel in active:
+                self._cancel_panel_operation(panel)
+            return changed
+        if view.mode != "waiting":
+            return changed
+        phase = int((now - view.wait_started_at) / 0.4) % 3 + 1
+        if phase != view.wait_phase:
+            view.wait_phase = phase
+            changed = True
+        return changed
 
-        if self._exit_mode != "waiting":
-            return False
-
-        registration = self.app._active_output_task
-        active_source = (
-            self._event_loop.active_work if self._event_loop is not None else None
-        )
-        if registration is None and active_source is None:
-            for work in self._exit_work:
-                if work.is_alive():
-                    work.cancel()
-                work.join()
-            self._exit_work = ()
-            self._stop_immediately()
-            return True
-
-        phase = int((now - self._wait_started_at) / 0.4) % 3 + 1
-        if phase == self._wait_phase:
-            return False
-        self._wait_phase = phase
-        registration = self.app._active_output_task
-        waiting_message = self.app._get_message(MessageKey.TASK_WAITING)
-        description = (
-            registration.description
-            if registration is not None
-            else active_source.description
-            if active_source is not None
-            else waiting_message or "Task in progress"
-        )
-        self.screen_context.message = f"{description}{'.' * phase}\n0: Cancel"
-        return True
-
-    def _current_exit_work(self) -> tuple[BackgroundWork, ...]:
-        """Return unique task and source workers relevant to root exit."""
-        work: list[BackgroundWork] = []
-        registration = self.app._active_output_task
-        if registration is not None:
-            work.append(registration.session)
+    def _current_exit_panels(self) -> tuple[ContentPanel, ...]:
+        """Return unique logical operations that currently block root exit."""
+        panels: list[ContentPanel] = []
         if self._event_loop is not None:
-            source_work = self._event_loop.active_work
-            if source_work is not None and source_work not in work:
-                work.append(source_work)
-        return tuple(work)
+            panels.extend(self._event_loop.active_panels)
+        registration = self.app._active_output_task
+        if (
+            registration is not None
+            and registration.panel is not None
+            and registration.session.is_alive()
+        ):
+            panels.append(registration.panel)
+        return tuple(dict.fromkeys(panels))
+
+    def _cancel_panel_operation(self, panel: ContentPanel) -> None:
+        worker = panel._worker
+        if worker is not None and worker.is_alive():
+            worker.cancel()
+        registration = self.app._active_output_task
+        if registration is not None and registration.panel is panel:
+            self.app._stop_and_quit_output_task(self)
 
     def _invalidate_renderer(self) -> None:
         if self._terminal_renderer is not None:

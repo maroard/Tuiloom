@@ -110,7 +110,7 @@ class TerminalRenderer:
             base_height + (1 if index < remainder else 0)
             for index in range(len(panels))
         ]
-        show_labels = len(panels) > 1
+        show_labels = len(panels) > 1 or self._menu._task_exit is not None
         content_lines: list[str] = []
         for panel, height in zip(panels, heights, strict=True):
             self._update_viewport(panel, viewport_width, height)
@@ -123,7 +123,9 @@ class TerminalRenderer:
                 self._panel_top_border(
                     viewport_width,
                     horizontal,
-                    panel.description if show_labels else None,
+                    self._menu._visible_panel_description(panel)
+                    if show_labels
+                    else None,
                 )
             )
             viewport = panel._viewport

@@ -27,8 +27,6 @@ class _OutputTaskRegistration:
     on_error: Callable[[Exception], None] | None
     description: str
     panel: ContentPanel | None = None
-    exit_when_complete: bool = False
-    exit_menu: TerminalMenu | None = None
     abandoned: bool = False
 
 
@@ -260,24 +258,12 @@ class TerminalApp:
         if outcome is None:
             raise RuntimeError("Completed output task has no outcome")
 
-        try:
-            if outcome.error is None:
-                if registration.on_success is not None:
-                    registration.on_success(outcome.result)
-            elif registration.on_error is not None:
-                registration.on_error(outcome.error)
-        finally:
-            if registration.exit_when_complete:
-                exit_menu = registration.exit_menu or registration.menu
-                exit_menu._stop_immediately()
+        if outcome.error is None:
+            if registration.on_success is not None:
+                registration.on_success(outcome.result)
+        elif registration.on_error is not None:
+            registration.on_error(outcome.error)
         return registration.menu
-
-    def _begin_wait_and_quit(self, menu: TerminalMenu) -> None:
-        registration = self._active_output_task
-        if registration is None:
-            return
-        registration.exit_when_complete = True
-        registration.exit_menu = menu
 
     def _stop_and_quit_output_task(self, menu: TerminalMenu) -> None:
         registration = self._active_output_task

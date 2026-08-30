@@ -100,3 +100,26 @@ print("RESTORED")
     final = visible + _finish(process, master)
     assert b"Password:" in final
     assert "VALUE='é'".encode() in final
+
+
+def test_pty_renders_two_labeled_content_panels() -> None:
+    script = """
+from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+
+app = TerminalApp("App")
+menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source="alpha")
+menu.set_content_panel_description(menu.content_panels[0], "Alpha")
+menu.add_content_source("beta", description="Beta")
+app.set_main_menu(menu)
+app.run()
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    initial = _read_until(master, process, b"Beta")
+    os.write(master, b"\x1b")
+    final = initial + _finish(process, master)
+    assert b"Alpha" in final
+    assert b"alpha" in final
+    assert b"Beta" in final
+    assert b"beta" in final
+    assert b"Main" in final

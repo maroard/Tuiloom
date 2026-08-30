@@ -134,13 +134,16 @@ def test_exit_view_uses_arrows_enter_and_ignores_numbers() -> None:
 
     for value in ("1", "2", "0"):
         number(menu, value)
-    assert menu._task_exit is not None
-    assert menu._task_exit.mode == "choice"
+    choice_view = menu._task_exit
+    assert choice_view is not None
+    assert choice_view.mode == "choice"
 
     press(menu, "down")
     press(menu, "enter")
-    assert menu._task_exit.mode == "waiting"
-    assert menu._task_exit.rows == ("Cancel",)
+    waiting_view = menu._task_exit
+    assert waiting_view is not None
+    assert waiting_view.mode == "waiting"
+    assert waiting_view.rows == ("Cancel",)
 
 
 def test_exit_choice_tracks_plural_completion_and_quits_at_zero() -> None:

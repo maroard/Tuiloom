@@ -23,11 +23,13 @@ Before terminating the process, Tuiloom performs only bounded cleanup:
 - stop the menu and event loop without joining workers;
 - close Tuiloom-owned input and selector resources when closing them cannot
   wait for application work;
-- restore the cursor, mouse modes, alternate screen, stdout, and stderr;
+- restore the cursor, mouse modes, and alternate screen;
 - terminate the process through `os._exit()`.
 
 The hard-exit path is silent and returns a non-zero process status. It does not
 render `Stopping operation...`, run task callbacks, or attempt further frames.
+Process-local stdout/stderr routing remains installed until process death so a
+still-running worker has no opportunity to print into the restored terminal.
 It may interrupt application writes or leave third-party cache files for the
 third-party library to resume or clean up later. This is intentional for a
 forceful exit.
@@ -76,4 +78,3 @@ Automated tests will prove that:
   existing behavior;
 - a subprocess/PTY integration test observes a clean terminal and prompt-facing
   exit even while a background operation remains blocked.
-

@@ -321,4 +321,3 @@ PY
 - [ ] **Step 3: Stop for user approval before README work**
 
 Present the exact signature output, this usage example, the absence of discarded aliases, and the verified legacy `set_content_source()`/`menu.auto_scroll` behavior. Do not modify `README.md` until the user explicitly approves the implemented API.
-

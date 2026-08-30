@@ -69,6 +69,51 @@ def test_run_installs_capture_and_restores_terminal_on_failure(
     assert sys.stdout is original_stdout
 
 
+def test_hard_exit_restores_terminal_before_terminating_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HardExitObserved(BaseException):
+        pass
+
+    class FakeInputHandler:
+        def close(self) -> None:
+            calls.append("input closed")
+
+    app = TerminalApp("App")
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    app.set_main_menu(menu)
+    calls: list[object] = []
+
+    def run_menu() -> None:
+        menu._hard_exit_requested = True
+
+    def terminate(status: int) -> None:
+        calls.append(("exit", status))
+        raise HardExitObserved
+
+    monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
+    monkeypatch.setattr(app, "_enter_terminal_screen", lambda: calls.append("enter"))
+    monkeypatch.setattr(app, "_leave_terminal_screen", lambda: calls.append("leave"))
+    monkeypatch.setattr(
+        app,
+        "_shutdown_output_task",
+        lambda *, wait_for_worker=True: calls.append(("shutdown", wait_for_worker)),
+    )
+    monkeypatch.setattr(menu, "run", run_menu)
+    monkeypatch.setattr("tuiloom.terminal_app._exit", terminate, raising=False)
+
+    with pytest.raises(HardExitObserved):
+        app.run()
+
+    assert calls == [
+        "enter",
+        ("shutdown", False),
+        "input closed",
+        "leave",
+        ("exit", 1),
+    ]
+
+
 def test_terminal_escape_sequences_enter_and_leave_screen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from os import _exit
 from queue import Empty, Queue
 from sys import stdout
 from threading import current_thread, main_thread
@@ -268,18 +269,8 @@ class TerminalApp:
             registration.on_error(outcome.error)
         return registration.menu
 
-    def _stop_and_quit_output_task(self, menu: TerminalMenu) -> None:
-        registration = self._active_output_task
-        if registration is None:
-            return
-        registration.on_success = None
-        registration.on_error = None
-        registration.abandoned = True
-        registration.session.cancel()
-        registration.menu._abandon_output_task(registration.session)
-
-    def _shutdown_output_task(self) -> None:
-        """Cancel and join any task before terminal and capture restoration."""
+    def _shutdown_output_task(self, *, wait_for_worker: bool = True) -> None:
+        """Abandon an active task, optionally waiting for its worker."""
         registration = self._active_output_task
         if registration is None:
             return
@@ -288,7 +279,8 @@ class TerminalApp:
         self._active_output_task = None
         registration.session.cancel()
         registration.menu._abandon_output_task(registration.session)
-        registration.session.join()
+        if wait_for_worker:
+            registration.session.join()
 
     def run(self) -> None:
         """Run the main menu as a blocking interactive main-thread call.
@@ -309,10 +301,21 @@ class TerminalApp:
                 self._enter_terminal_screen()
                 main_menu.run()
             finally:
-                self._shutdown_output_task()
-                self._input_handler.close()
-                self._input_handler = None
-                self._leave_terminal_screen()
+                hard_exit_requested = main_menu._hard_exit_requested
+                try:
+                    self._shutdown_output_task(
+                        wait_for_worker=not hard_exit_requested,
+                    )
+                finally:
+                    try:
+                        self._input_handler.close()
+                    finally:
+                        self._input_handler = None
+                        try:
+                            self._leave_terminal_screen()
+                        finally:
+                            if hard_exit_requested:
+                                _exit(1)
 
     def _enter_terminal_screen(self) -> None:
         stdout.write("\033[?1049h\033[2J\033[H\033[?25l")

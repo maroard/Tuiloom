@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import sys
 from threading import Event, get_ident
 from typing import cast
 
@@ -272,6 +274,46 @@ def test_force_quit_requests_hard_exit_without_waiting_for_work() -> None:
     assert menu._task_exit is None
     assert work.alive
     assert not work.cancelled
+
+
+def test_hard_output_shutdown_does_not_wait_and_discards_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_stdout = io.StringIO()
+    original_stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", original_stdout)
+    monkeypatch.setattr(sys, "stderr", original_stderr)
+    app, menu = make_main()
+    started = Event()
+    release = Event()
+    callbacks: list[str] = []
+
+    def action() -> None:
+        started.set()
+        release.wait(1)
+        print("late")
+
+    with app._output_capture.install():
+        session = app._start_output_task(
+            menu,
+            action,
+            lambda result: callbacks.append("success"),
+            lambda error: callbacks.append("error"),
+            "Work",
+        )
+        attach_output_task(app, menu, session, "Work")
+        assert started.wait(1)
+
+        app._shutdown_output_task(wait_for_worker=False)
+
+        assert session.is_alive()
+        assert app._active_output_task is None
+        release.set()
+        assert session.join(1)
+        assert app._dispatch_output_task_outcome() is None
+
+    assert "late" not in original_stdout.getvalue()
+    assert callbacks == []
 
 
 def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:

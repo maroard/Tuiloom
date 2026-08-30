@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Literal, cast
 from wcwidth import iter_graphemes
 
 from tuiloom._message_registry import MessageKey
-from tuiloom.background_work import BackgroundWork
 from tuiloom.command import (
     CommandBehavior,
     CommandContext,
@@ -16,6 +15,7 @@ from tuiloom.command import (
     MenuCommand,
     _without_context,
 )
+from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.key_binding import KeyBinding
@@ -24,11 +24,10 @@ from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import AutoScrollMode, TerminalRenderer
 from tuiloom.screen_context.screen_context import ScreenContext
+from tuiloom.task_exit import TaskExitView
 
 if TYPE_CHECKING:
     from tuiloom.terminal_app import TerminalApp
-
-type FocusZone = Literal["menu", "content"]
 
 
 class TerminalMenu:
@@ -63,7 +62,7 @@ class TerminalMenu:
         self._commands: list[MenuCommand] = []
         self._exit_label = "Back"
         self._selected_index = 0
-        self._focus: FocusZone = "menu"
+        self._focused_panel: ContentPanel | None = None
         self._running = False
 
         self._input_buffer = ""
@@ -75,22 +74,28 @@ class TerminalMenu:
         self._alert_prompt: str | None = None
 
         self._output_task_session: OutputTaskSession | None = None
-        self._output_task_previous_auto_scroll: AutoScrollMode | None = None
+        self._output_task_panel: ContentPanel | None = None
         self._disabled_messages: set[str] = set()
         self._disabled_global_commands: set[GlobalCommand] = set()
         self._global_overrides: dict[GlobalCommand, CommandBehavior] = {}
-        self._exit_mode: Literal["choice", "waiting", "stopping"] | None = None
-        self._exit_work: tuple[BackgroundWork, ...] = ()
-        self._exit_previous_message: str | None = None
-        self._wait_started_at = 0.0
-        self._wait_phase = -1
+        self._task_exit: TaskExitView | None = None
 
         self._content_renderer: ContentRenderer | None = None
         self._menu_renderer: MenuRenderer | None = None
         self._terminal_renderer: TerminalRenderer | None = None
         self._event_loop: EventLoop | None = None
         self._auto_scroll: AutoScrollMode | None = None
+        self._content_panels: list[ContentPanel] = []
+        self._primary_content_panel: ContentPanel | None = None
         self.auto_scroll = auto_scroll
+        if self._content_source is not None:
+            self._primary_content_panel = ContentPanel(
+                self,
+                self._content_source,
+                self._content_description,
+                self._auto_scroll,
+            )
+            self._content_panels.append(self._primary_content_panel)
 
     @property
     def app(self) -> TerminalApp:
@@ -106,6 +111,11 @@ class TerminalMenu:
     def commands(self) -> tuple[MenuCommand, ...]:
         """Return an immutable ordered view of user command handles."""
         return tuple(self._commands)
+
+    @property
+    def content_panels(self) -> tuple[ContentPanel, ...]:
+        """Return an immutable ordered view of this menu's content panels."""
+        return tuple(self._content_panels)
 
     @property
     def is_main(self) -> bool:
@@ -137,9 +147,106 @@ class TerminalMenu:
             raise ValueError("auto_scroll must be 'smart', 'strict', or None")
         if mode == self._auto_scroll:
             return
-        self._auto_scroll = mode
+        if self._primary_content_panel is not None:
+            self._primary_content_panel.set_auto_scroll(mode)
+        else:
+            self._auto_scroll = mode
         if self._terminal_renderer is not None:
             self._terminal_renderer.reset_stream_auto_scroll()
+
+    def add_content_panel(
+        self,
+        content_source: ContentSource,
+        *,
+        description: str = "Content in progress",
+        auto_scroll: AutoScrollMode | None = None,
+        position: int | None = None,
+    ) -> ContentPanel:
+        """Add an independently rendered content panel and return its handle."""
+        self._validate_auto_scroll(auto_scroll)
+        insert_at = self._validate_content_position(position, allow_end=True)
+        panel = ContentPanel(self, content_source, description, auto_scroll)
+        self._content_panels.insert(insert_at, panel)
+        if self._running and self._event_loop is not None:
+            self._event_loop.add_content_panel(panel)
+        self._invalidate_renderer()
+        return panel
+
+    def _set_content_panel_source(
+        self,
+        panel: ContentPanel,
+        content_source: ContentSource,
+    ) -> None:
+        """Replace one owned panel's source without changing its identity."""
+        self._require_content_panel(panel)
+        panel._smart_auto_scroll_active = True
+        panel._pending_auto_scroll = None
+        if self._running and self._event_loop is not None:
+            self._event_loop.replace_content_panel(panel, content_source)
+        else:
+            panel._source = content_source
+            panel._renderer = ContentRenderer(content_source)
+            panel._viewport = None
+        if panel is self._primary_content_panel:
+            self._content_source = content_source
+
+    def _set_content_panel_description(
+        self,
+        panel: ContentPanel,
+        description: str,
+    ) -> None:
+        """Replace the visible and shutdown description of one panel."""
+        self._require_content_panel(panel)
+        panel._description = description
+        if panel._worker is not None:
+            panel._worker.description = description
+        if panel is self._primary_content_panel:
+            self._content_description = description
+        self._invalidate_renderer()
+
+    def _set_content_panel_auto_scroll(
+        self,
+        panel: ContentPanel,
+        mode: AutoScrollMode | None,
+    ) -> None:
+        """Set one panel's iterator auto-scroll policy."""
+        self._require_content_panel(panel)
+        self._validate_auto_scroll(mode)
+        panel._auto_scroll = mode
+        panel._smart_auto_scroll_active = True
+        panel._pending_auto_scroll = None
+        if panel is self._primary_content_panel:
+            self._auto_scroll = mode
+
+    def _move_content_panel(self, panel: ContentPanel, position: int) -> None:
+        """Move one owned panel to a zero-based position."""
+        self._require_content_panel(panel)
+        target = self._validate_content_position(position, allow_end=False)
+        self._content_panels.remove(panel)
+        self._content_panels.insert(target, panel)
+        self._invalidate_renderer()
+
+    def _remove_content_panel(self, panel: ContentPanel) -> None:
+        """Remove one owned panel and cooperatively retire its worker."""
+        self._require_content_panel(panel)
+        removed_position = self._content_panels.index(panel)
+        was_focused = panel is self._focused_panel
+        self._content_panels.remove(panel)
+        if panel is self._primary_content_panel:
+            self._primary_content_panel = None
+            self._content_source = None
+        panel._removed = True
+        if self._running and self._event_loop is not None:
+            self._event_loop.retire_content_panel(panel)
+        if was_focused:
+            self._focused_panel = (
+                self._content_panels[removed_position]
+                if removed_position < len(self._content_panels)
+                else None
+            )
+        else:
+            self._normalize_focus()
+        self._invalidate_renderer()
 
     def add_command(
         self,
@@ -253,14 +360,20 @@ class TerminalMenu:
         description: str = "Content in progress",
     ) -> None:
         """Replace content with static text, lines, an iterator, or callable."""
-        self._content_source = content_source
-        self._content_description = description
-        if (
-            self._running
-            and self._event_loop is not None
-            and self._output_task_session is None
-        ):
-            self._event_loop.install_source(content_source, description=description)
+        panel = self._primary_content_panel
+        if panel is None:
+            panel = self.add_content_panel(
+                content_source,
+                description=description,
+                auto_scroll=self._auto_scroll,
+                position=0,
+            )
+            self._primary_content_panel = panel
+            self._content_source = content_source
+            self._content_description = description
+            return
+        panel.set_description(description)
+        panel.set_source(content_source)
 
     def run_with_output[T](
         self,
@@ -280,25 +393,25 @@ class TerminalMenu:
             raise RuntimeError("Output tasks can only run while the menu is active")
         if self._output_task_session is not None:
             raise RuntimeError("Another output task is already running")
-        previous_auto_scroll = self.auto_scroll
 
         def complete(result: object) -> None:
             on_success(cast(T, result))
 
-        self._output_task_previous_auto_scroll = previous_auto_scroll
-        self.auto_scroll = "strict"
         try:
             session = self.app._start_output_task(
                 self, action, complete, on_error, description
             )
             self._output_task_session = session
-            self._event_loop.install_source(
+            panel = self.add_content_panel(
                 session.iter_output(),
                 description=description,
+                auto_scroll="strict",
             )
+            self._output_task_panel = panel
+            self.app._attach_output_panel(session, panel)
         except BaseException:
-            self._output_task_previous_auto_scroll = None
-            self.auto_scroll = previous_auto_scroll
+            self._output_task_session = None
+            self._output_task_panel = None
             raise
 
     def enter_input_mode(
@@ -390,11 +503,16 @@ class TerminalMenu:
             raise RuntimeError("Cannot run TerminalMenu outside TerminalApp.run()")
         self._running = True
         self._input_buffer = ""
-        self._focus = "menu"
+        self._focused_panel = None
         self._normalize_selection()
         source = self._resolve_content_source()
-        self._content_renderer = ContentRenderer(source if source is not None else "")
-        if source is None:
+        primary = self._primary_content_panel
+        self._content_renderer = (
+            primary._renderer
+            if primary is not None
+            else ContentRenderer(source if source is not None else "")
+        )
+        if not self._content_panels:
             self._show_automatic_message(
                 MessageKey.NO_CONTENT_SOURCE,
                 menu_name=self.screen_context.menu_name,
@@ -415,7 +533,7 @@ class TerminalMenu:
 
     def stop(self) -> None:
         """Request Back/Quit, presenting choices while background work is active."""
-        if self.is_main and self._current_exit_work():
+        if self.is_main and self._current_exit_panels():
             self._begin_task_exit_choice()
             return
         self._stop_immediately()
@@ -430,6 +548,41 @@ class TerminalMenu:
     def _require_command(self, command: MenuCommand) -> None:
         if not isinstance(command, MenuCommand) or command._menu is not self:
             raise ValueError("Menu command does not belong to this menu")
+
+    def _position_of_content_panel(self, panel: ContentPanel) -> int:
+        self._require_content_panel(panel)
+        return self._content_panels.index(panel)
+
+    def _require_content_panel(self, panel: ContentPanel) -> None:
+        if (
+            not isinstance(panel, ContentPanel)
+            or panel._menu is not self
+            or panel._removed
+            or panel not in self._content_panels
+        ):
+            raise ValueError("Content panel does not belong to this menu")
+
+    def _validate_content_position(
+        self,
+        position: int | None,
+        *,
+        allow_end: bool,
+    ) -> int:
+        if position is None:
+            return len(self._content_panels)
+        if isinstance(position, bool) or not isinstance(position, int):
+            raise TypeError("Content panel position must be an integer or None")
+        upper = (
+            len(self._content_panels) if allow_end else len(self._content_panels) - 1
+        )
+        if position < 0 or position > upper:
+            raise ValueError("Content panel position is outside the menu")
+        return position
+
+    @staticmethod
+    def _validate_auto_scroll(mode: AutoScrollMode | None) -> None:
+        if mode not in (None, "smart", "strict"):
+            raise ValueError("auto_scroll must be 'smart', 'strict', or None")
 
     def _validate_position(self, position: int | None, *, allow_end: bool) -> int:
         if position is None:
@@ -457,13 +610,38 @@ class TerminalMenu:
         self._selected_index = selectable[(current + delta) % len(selectable)]
 
     def _resolve_content_source(self) -> ContentSource | None:
-        if self._output_task_session is not None:
-            return self._output_task_session.iter_output()
         return self._content_source
 
     def _has_content(self) -> bool:
         """Return whether the content box currently has a source."""
-        return self._content_source is not None or self._output_task_session is not None
+        return bool(self._content_panels) or self._output_task_session is not None
+
+    def _visible_content_panels(self) -> tuple[ContentPanel, ...]:
+        """Return panels currently projected into the terminal frame."""
+        if self._task_exit is not None:
+            return self._current_exit_panels()
+        return self.content_panels
+
+    def _visible_panel_description(self, panel: ContentPanel) -> str:
+        view = self._task_exit
+        if view is None or view.mode != "waiting" or view.wait_phase < 1:
+            return panel.description
+        return f"{panel.description}{'.' * view.wait_phase}"
+
+    def _normalize_focus(self) -> None:
+        if self._focused_panel not in self._visible_content_panels():
+            self._focused_panel = None
+
+    def _cycle_focus(self) -> None:
+        focusable: list[ContentPanel | None] = [
+            None,
+            *self._visible_content_panels(),
+        ]
+        try:
+            current = focusable.index(self._focused_panel)
+        except ValueError:
+            current = 0
+        self._focused_panel = focusable[(current + 1) % len(focusable)]
 
     def _create_event_loop(self) -> EventLoop:
         if (
@@ -483,7 +661,7 @@ class TerminalMenu:
 
     def _handle_event(self, event: InputEvent) -> None:
         binding = event.binding
-        if self._exit_mode is not None:
+        if self._task_exit is not None:
             self._handle_task_exit_event(event)
             return
         if not self.show:
@@ -514,10 +692,10 @@ class TerminalMenu:
                 self.stop()
             return
         if action == "focus" and self._has_content():
-            self._focus = "content" if self._focus == "menu" else "menu"
+            self._cycle_focus()
         elif action == "back":
             self.stop()
-        elif self._focus == "menu":
+        elif self._focused_panel is None:
             if action == "up":
                 self._move_selection(-1)
             elif action == "down":
@@ -565,9 +743,10 @@ class TerminalMenu:
         self, direction: Literal["up", "down", "left", "right"]
     ) -> None:
         renderer = self._terminal_renderer
-        if renderer is None:
+        panel = self._focused_panel
+        if renderer is None or panel is None:
             return
-        getattr(renderer, f"scroll_{direction}")()
+        renderer.scroll_panel(panel, direction)
 
     def _display_input_buffer(self) -> str:
         if not self._input_hidden:
@@ -584,20 +763,22 @@ class TerminalMenu:
         if session is not self._output_task_session:
             return
         self._output_task_session = None
-        previous = self._output_task_previous_auto_scroll
-        self._output_task_previous_auto_scroll = None
-        self.auto_scroll = previous
-        if self._running and self._event_loop is not None:
-            source = self._content_source
-            self._event_loop.install_source(
-                source if source is not None else "",
-                description=self._content_description,
-            )
+        panel = self._output_task_panel
+        self._output_task_panel = None
+        if panel is None or panel._removed:
+            return
+        if panel._renderer.rendered_content.finished:
+            panel.remove()
+        else:
+            panel._remove_when_finished = True
 
     def _abandon_output_task(self, session: OutputTaskSession) -> None:
         if session is self._output_task_session:
             self._output_task_session = None
-            self._output_task_previous_auto_scroll = None
+            panel = self._output_task_panel
+            self._output_task_panel = None
+            if panel is not None:
+                panel._remove_when_finished = True
 
     def _show_automatic_message(self, key: str, **context: object) -> bool:
         if not self.is_message_enabled(key):
@@ -609,94 +790,122 @@ class TerminalMenu:
         return True
 
     def _begin_task_exit_choice(self) -> None:
-        if self._exit_mode is not None:
+        if self._task_exit is not None:
             return
-        self._exit_mode = "choice"
-        self._exit_previous_message = self.screen_context.message
-        self._show_automatic_message(MessageKey.TASK_EXIT_CHOICES)
+        panels = self._current_exit_panels()
+        if not panels:
+            self._stop_immediately()
+            return
+        self._task_exit = TaskExitView(
+            mode="choice",
+            selected_index=0,
+            previous_focus=self._focused_panel,
+            previous_selected_index=self._selected_index,
+            wait_started_at=monotonic(),
+            visible_panels=panels,
+        )
+        self._focused_panel = None
+        self._invalidate_renderer()
 
     def _handle_task_exit_event(self, event: InputEvent) -> None:
-        if event.text == "0" and self._exit_mode != "stopping":
+        view = self._task_exit
+        if view is None or view.mode == "stopping":
+            return
+        binding = event.binding
+        action = self.app.keymap.action_for(binding) if binding is not None else None
+        if action == "focus" and self._visible_content_panels():
+            self._cycle_focus()
+        elif action == "back":
             self._cancel_task_exit()
-        elif self._exit_mode == "choice" and event.text == "1":
-            self._exit_mode = "stopping"
-            self._wait_started_at = monotonic()
-            self._wait_phase = -1
-            self._exit_work = self._current_exit_work()
-            for work in self._exit_work:
-                work.cancel()
-            self.app._stop_and_quit_output_task(self)
-            self._show_automatic_message(MessageKey.TASK_STOPPING)
-        elif self._exit_mode == "choice" and event.text == "2":
-            self._exit_mode = "waiting"
-            self._wait_started_at = monotonic()
-            self._wait_phase = -1
-            self._exit_work = self._current_exit_work()
-            self.app._begin_wait_and_quit(self)
+        elif self._focused_panel is not None:
+            if action in {"up", "down", "left", "right"}:
+                self._scroll_content(
+                    cast(Literal["up", "down", "left", "right"], action)
+                )
+        elif action == "up":
+            view.move(-1)
+        elif action == "down":
+            view.move(1)
+        elif action == "activate" and view.rows:
+            self._activate_task_exit_row(view.rows[view.selected_index])
+        self._invalidate_renderer()
+
+    def _activate_task_exit_row(self, row: str) -> None:
+        view = self._task_exit
+        if view is None:
+            return
+        if row == "Cancel":
+            self._cancel_task_exit()
+            return
+        if row == "Wait and quit":
+            view.mode = "waiting"
+            view.selected_index = 0
+            view.wait_started_at = monotonic()
+            view.wait_phase = -1
+            return
+        if row == "Force quit":
+            view.mode = "stopping"
+            view.selected_index = 0
+            view.wait_started_at = monotonic()
+            view.wait_phase = -1
+            for panel in self._current_exit_panels():
+                self._cancel_panel_operation(panel)
 
     def _cancel_task_exit(self) -> None:
-        registration = self.app._active_output_task
-        if registration is not None:
-            registration.exit_when_complete = False
-            registration.exit_menu = None
-        self._exit_mode = None
-        self._exit_work = ()
-        self.screen_context.message = self._exit_previous_message
-        self._exit_previous_message = None
+        view = self._task_exit
+        if view is None:
+            return
+        self._task_exit = None
+        self._selected_index = view.previous_selected_index
+        self._focused_panel = view.previous_focus
+        self._normalize_selection()
+        self._normalize_focus()
+        self._invalidate_renderer()
 
     def _tick_task_exit(self, now: float) -> bool:
-        if self._exit_mode == "stopping":
-            if any(work.is_alive() for work in self._exit_work):
-                return False
-            for work in self._exit_work:
-                work.join()
-            self._exit_work = ()
+        view = self._task_exit
+        if view is None:
+            return False
+        active = self._current_exit_panels()
+        changed = active != view.visible_panels
+        view.visible_panels = active
+        if not active:
+            self._task_exit = None
             self._stop_immediately()
             return True
+        if view.mode == "stopping":
+            for panel in active:
+                self._cancel_panel_operation(panel)
+            return changed
+        if view.mode != "waiting":
+            return changed
+        phase = int((now - view.wait_started_at) / 0.4) % 3 + 1
+        if phase != view.wait_phase:
+            view.wait_phase = phase
+            changed = True
+        return changed
 
-        if self._exit_mode != "waiting":
-            return False
-
-        registration = self.app._active_output_task
-        active_source = (
-            self._event_loop.active_work if self._event_loop is not None else None
-        )
-        if registration is None and active_source is None:
-            for work in self._exit_work:
-                if work.is_alive():
-                    work.cancel()
-                work.join()
-            self._exit_work = ()
-            self._stop_immediately()
-            return True
-
-        phase = int((now - self._wait_started_at) / 0.4) % 3 + 1
-        if phase == self._wait_phase:
-            return False
-        self._wait_phase = phase
-        registration = self.app._active_output_task
-        waiting_message = self.app._get_message(MessageKey.TASK_WAITING)
-        description = (
-            registration.description
-            if registration is not None
-            else active_source.description
-            if active_source is not None
-            else waiting_message or "Task in progress"
-        )
-        self.screen_context.message = f"{description}{'.' * phase}\n0: Cancel"
-        return True
-
-    def _current_exit_work(self) -> tuple[BackgroundWork, ...]:
-        """Return unique task and source workers relevant to root exit."""
-        work: list[BackgroundWork] = []
-        registration = self.app._active_output_task
-        if registration is not None:
-            work.append(registration.session)
+    def _current_exit_panels(self) -> tuple[ContentPanel, ...]:
+        """Return unique logical operations that currently block root exit."""
+        panels: list[ContentPanel] = []
         if self._event_loop is not None:
-            source_work = self._event_loop.active_work
-            if source_work is not None and source_work not in work:
-                work.append(source_work)
-        return tuple(work)
+            panels.extend(self._event_loop.active_panels)
+        registration = self.app._active_output_task
+        if (
+            registration is not None
+            and registration.panel is not None
+            and registration.session.is_alive()
+        ):
+            panels.append(registration.panel)
+        return tuple(dict.fromkeys(panels))
+
+    def _cancel_panel_operation(self, panel: ContentPanel) -> None:
+        worker = panel._worker
+        if worker is not None and worker.is_alive():
+            worker.cancel()
+        registration = self.app._active_output_task
+        if registration is not None and registration.panel is panel:
+            self.app._stop_and_quit_output_task(self)
 
     def _invalidate_renderer(self) -> None:
         if self._terminal_renderer is not None:

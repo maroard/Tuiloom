@@ -26,7 +26,7 @@ class _MenuState:
     text: str | None
     message: str | None
     commands: tuple[tuple[str, bool], ...]
-    exit_label: str
+    exit_label: str | None
     selected_index: int
     focus: str
     has_content: bool
@@ -74,7 +74,8 @@ class MenuRenderer:
                     display_width(line) + 2 for line in normalize_text_lines(content)
                 )
         requirements.extend(display_width(f"> {label}") for label, _ in state.commands)
-        requirements.append(display_width(f"> {state.exit_label}"))
+        if state.exit_label is not None:
+            requirements.append(display_width(f"> {state.exit_label}"))
         if state.input_prompt is not None:
             requirements.append(
                 display_width(f"{state.input_prompt}{state.input_text}") + 2
@@ -85,24 +86,45 @@ class MenuRenderer:
         """Refresh the cached snapshot from the owning menu."""
         menu = self._menu
         context = menu.screen_context
+        exit_view = menu._task_exit
+        if exit_view is None:
+            title = context.title
+            text = context.text
+            message = context.message
+            commands = tuple(
+                (command.label, command.enabled) for command in menu.commands
+            )
+            exit_label: str | None = menu._exit_label
+            selected_index = menu._selected_index
+            alert = menu._alert_text
+            alert_prompt = menu._alert_prompt
+            input_prompt = menu._input_prompt if menu._alert_text is None else None
+        else:
+            title = exit_view.visible_title(len(menu._current_exit_panels()))
+            text = None
+            message = None
+            commands = tuple((row, True) for row in exit_view.rows)
+            exit_label = None
+            selected_index = exit_view.selected_index
+            alert = None
+            alert_prompt = None
+            input_prompt = None
         state = _MenuState(
             app_name=menu.app.name,
-            title=context.title,
+            title=title,
             menu_name=context.menu_name,
             requested_width=context.width,
-            text=context.text,
-            message=context.message,
-            commands=tuple(
-                (command.label, command.enabled) for command in menu.commands
-            ),
-            exit_label=menu._exit_label,
-            selected_index=menu._selected_index,
-            focus=menu._focus,
-            has_content=menu._has_content(),
+            text=text,
+            message=message,
+            commands=commands,
+            exit_label=exit_label,
+            selected_index=selected_index,
+            focus="menu" if menu._focused_panel is None else "content",
+            has_content=bool(menu._visible_content_panels()),
             show=menu.show,
-            alert=menu._alert_text,
-            alert_prompt=menu._alert_prompt,
-            input_prompt=menu._input_prompt if menu._alert_text is None else None,
+            alert=alert,
+            alert_prompt=alert_prompt,
+            input_prompt=input_prompt,
             input_text=menu._display_input_buffer(),
         )
         if state == self._state:
@@ -149,9 +171,12 @@ class MenuRenderer:
                 suffix = " (disabled)" if not enabled else ""
                 row = ljust_display(f"{marker} {label}{suffix}", width)
                 lines.append(f"{vertical}{row}{vertical}")
-            exit_marker = ">" if state.selected_index == len(state.commands) else " "
-            exit_row = ljust_display(f"{exit_marker} {state.exit_label}", width)
-            lines.append(f"{vertical}{exit_row}{vertical}")
+            if state.exit_label is not None:
+                exit_marker = (
+                    ">" if state.selected_index == len(state.commands) else " "
+                )
+                exit_row = ljust_display(f"{exit_marker} {state.exit_label}", width)
+                lines.append(f"{vertical}{exit_row}{vertical}")
             if state.input_prompt is not None:
                 lines.append(f"{vertical}{'':{width}}{vertical}")
                 lines.extend(

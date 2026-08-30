@@ -1,6 +1,10 @@
+from typing import cast
+
 from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_text import display_width
+from tuiloom.task_exit import TaskExitView
 
 
 def make_renderer(
@@ -33,15 +37,39 @@ def test_menu_render_uses_name_title_text_and_selected_indicator() -> None:
 def test_menu_border_reflects_focus_and_single_zone_is_solid() -> None:
     menu, renderer = make_renderer()
     assert "─" in renderer.render()
-    menu._focus = "content"
+    menu._focused_panel = menu.content_panels[0]
     renderer.update()
     assert "┄" in renderer.render()
 
     single, single_renderer = make_renderer(content=None)
-    single._focus = "content"
+    single._focused_panel = None
     single_renderer.update()
     assert "─" in single_renderer.render()
     assert "┄" not in single_renderer.render()
+
+
+def test_exit_view_treats_a_retiring_panel_as_focusable_content() -> None:
+    menu, renderer = make_renderer()
+    panel = menu.content_panels[0]
+    panel.remove()
+
+    class Loop:
+        active_panels = (panel,)
+
+    menu._event_loop = cast(EventLoop, Loop())
+    menu._task_exit = TaskExitView(
+        mode="choice",
+        selected_index=0,
+        previous_focus=None,
+        previous_selected_index=0,
+        wait_started_at=0.0,
+        visible_panels=(panel,),
+    )
+    menu._focused_panel = panel
+
+    renderer.update()
+
+    assert renderer.render().startswith("╭┄")
 
 
 def test_disabled_command_stays_visible_but_selection_skips_it() -> None:

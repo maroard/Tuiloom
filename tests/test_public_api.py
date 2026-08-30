@@ -4,6 +4,7 @@ from inspect import getdoc
 import tuiloom
 from tuiloom import (
     CommandContext,
+    ContentPanel,
     GlobalCommand,
     KeyBinding,
     KeyMap,
@@ -19,6 +20,7 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "AutoScrollMode",
         "CommandBehavior",
         "CommandContext",
+        "ContentPanel",
         "ContentSource",
         "GlobalCommand",
         "InputBehavior",
@@ -45,6 +47,7 @@ def test_package_declares_inline_typing() -> None:
 def test_public_classes_and_methods_have_documentation() -> None:
     classes = (
         CommandContext,
+        ContentPanel,
         GlobalCommand,
         KeyBinding,
         KeyMap,
@@ -82,6 +85,8 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "is_main",
             "show",
             "auto_scroll",
+            "content_panels",
+            "add_content_panel",
             "add_command",
             "add_menu",
             "set_command_label",
@@ -108,6 +113,16 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "run",
             "stop",
         ),
+        ContentPanel: (
+            "description",
+            "position",
+            "auto_scroll",
+            "set_source",
+            "set_description",
+            "set_auto_scroll",
+            "move",
+            "remove",
+        ),
         KeyMap: ("bindings", "set_binding", "action_for"),
     }
     for public_type, names in methods.items():
@@ -116,6 +131,28 @@ def test_public_classes_and_methods_have_documentation() -> None:
             if isinstance(member, property):
                 member = member.fget
             assert getdoc(member), f"{public_type.__name__}.{name}"
+
+
+def test_discarded_content_panel_aliases_are_absent() -> None:
+    assert hasattr(TerminalMenu, "add_content_panel")
+    for removed_name in (
+        "add_content_source",
+        "set_content_panel_source",
+        "set_content_panel_description",
+        "set_content_panel_auto_scroll",
+        "move_content_panel",
+        "remove_content_panel",
+    ):
+        assert not hasattr(TerminalMenu, removed_name)
+
+    for method_name in (
+        "set_source",
+        "set_description",
+        "set_auto_scroll",
+        "move",
+        "remove",
+    ):
+        assert callable(getattr(ContentPanel, method_name))
 
 
 def test_accidental_runtime_state_is_not_public() -> None:

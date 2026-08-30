@@ -3,15 +3,24 @@ from queue import Queue
 from threading import Event
 from typing import cast
 
+from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.output_task import OutputTaskSession
+
+
+def make_panel() -> ContentPanel:
+    app = TerminalApp("App")
+    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source="")
+    return menu.content_panels[0]
 
 
 def test_iterator_worker_publishes_data_and_completion() -> None:
     events: Queue[SourceEvent] = Queue(maxsize=8)
     wakeups: list[None] = []
     worker = SourceWorker(
+        panel=make_panel(),
         generation=4,
         source=iter(["first", "second"]),
         events=events,
@@ -28,6 +37,7 @@ def test_iterator_worker_publishes_data_and_completion() -> None:
         ("complete", None),
     ]
     assert all(event.generation == 4 for event in received)
+    assert all(event.panel is worker.panel for event in received)
     assert len(wakeups) == 3
 
 
@@ -37,7 +47,7 @@ def test_worker_transports_failure_with_traceback() -> None:
         raise ValueError("broken source")
 
     events: Queue[SourceEvent] = Queue(maxsize=8)
-    worker = SourceWorker(1, fail(), events, lambda: None)
+    worker = SourceWorker(make_panel(), 1, fail(), events, lambda: None)
 
     worker.start()
     worker.join(timeout=1)
@@ -59,7 +69,7 @@ def test_cancelled_worker_stops_publishing_after_blocked_next_returns() -> None:
         yield "stale"
 
     events: Queue[SourceEvent] = Queue(maxsize=8)
-    worker = SourceWorker(1, blocked(), events, lambda: None)
+    worker = SourceWorker(make_panel(), 1, blocked(), events, lambda: None)
     worker.start()
     assert entered.wait(timeout=1)
 
@@ -73,7 +83,7 @@ def test_cancelled_worker_stops_publishing_after_blocked_next_returns() -> None:
 def test_dynamic_worker_evaluates_requests_and_cancels_cleanly() -> None:
     events: Queue[SourceEvent] = Queue(maxsize=8)
     values: Iterator[str | list[str]] = iter(["first", ["second"]])
-    worker = SourceWorker(2, lambda: next(values), events, lambda: None)
+    worker = SourceWorker(make_panel(), 2, lambda: next(values), events, lambda: None)
     worker.start()
     worker.request_dynamic_update()
     first = events.get(timeout=1)
@@ -88,6 +98,7 @@ def test_dynamic_worker_evaluates_requests_and_cancels_cleanly() -> None:
 def test_worker_reports_invalid_iterator_and_dynamic_values() -> None:
     iterator_events: Queue[SourceEvent] = Queue(maxsize=8)
     iterator = SourceWorker(
+        make_panel(),
         1,
         cast(Iterator[str], iter([3])),
         iterator_events,
@@ -99,6 +110,7 @@ def test_worker_reports_invalid_iterator_and_dynamic_values() -> None:
 
     dynamic_events: Queue[SourceEvent] = Queue(maxsize=8)
     dynamic = SourceWorker(
+        make_panel(),
         1,
         cast(Callable[[], str | list[str]], lambda: 3),
         dynamic_events,
@@ -113,7 +125,7 @@ def test_worker_reports_invalid_iterator_and_dynamic_values() -> None:
 
 def test_request_dynamic_update_is_ignored_for_iterator() -> None:
     events: Queue[SourceEvent] = Queue(maxsize=8)
-    worker = SourceWorker(1, iter([]), events, lambda: None)
+    worker = SourceWorker(make_panel(), 1, iter([]), events, lambda: None)
     worker.request_dynamic_update()
 
 
@@ -125,6 +137,7 @@ def test_source_worker_exposes_non_daemon_background_work_contract() -> None:
         yield "done"
 
     worker = SourceWorker(
+        make_panel(),
         1,
         blocked(),
         Queue(maxsize=8),
@@ -147,6 +160,7 @@ def test_source_worker_exposes_non_daemon_background_work_contract() -> None:
 def test_cancelling_output_view_wakes_source_worker_without_finishing_task() -> None:
     session = OutputTaskSession()
     worker = SourceWorker(
+        make_panel(),
         1,
         session.iter_output(),
         Queue(maxsize=8),

@@ -8,6 +8,7 @@ from threading import current_thread, main_thread
 
 from tuiloom._message_registry import MessageRegistry
 from tuiloom.command import CommandBehavior, CommandContext, GlobalCommand
+from tuiloom.content_panel import ContentPanel
 from tuiloom.input_handler.input_handler import InputHandler
 from tuiloom.key_binding import KeyBinding, KeyMap
 from tuiloom.output_capture import OutputCapture
@@ -25,8 +26,7 @@ class _OutputTaskRegistration:
     on_success: Callable[[object], None] | None
     on_error: Callable[[Exception], None] | None
     description: str
-    exit_when_complete: bool = False
-    exit_menu: TerminalMenu | None = None
+    panel: ContentPanel | None = None
     abandoned: bool = False
 
 
@@ -230,6 +230,16 @@ class TerminalApp:
             raise
         return session
 
+    def _attach_output_panel(
+        self,
+        session: OutputTaskSession,
+        panel: ContentPanel,
+    ) -> None:
+        registration = self._active_output_task
+        if registration is None or registration.session is not session:
+            raise RuntimeError("Output task registration is no longer active")
+        registration.panel = panel
+
     def _dispatch_output_task_outcome(self) -> TerminalMenu | None:
         try:
             registration = self._output_task_outcomes.get_nowait()
@@ -242,30 +252,21 @@ class TerminalApp:
         self._active_output_task = None
         if registration.abandoned:
             registration.menu._abandon_output_task(registration.session)
+            panel = registration.panel
+            if panel is not None and not panel._removed:
+                panel.remove()
             return registration.menu
         registration.menu._detach_output_task(registration.session)
         outcome = registration.session.outcome
         if outcome is None:
             raise RuntimeError("Completed output task has no outcome")
 
-        try:
-            if outcome.error is None:
-                if registration.on_success is not None:
-                    registration.on_success(outcome.result)
-            elif registration.on_error is not None:
-                registration.on_error(outcome.error)
-        finally:
-            if registration.exit_when_complete:
-                exit_menu = registration.exit_menu or registration.menu
-                exit_menu._stop_immediately()
+        if outcome.error is None:
+            if registration.on_success is not None:
+                registration.on_success(outcome.result)
+        elif registration.on_error is not None:
+            registration.on_error(outcome.error)
         return registration.menu
-
-    def _begin_wait_and_quit(self, menu: TerminalMenu) -> None:
-        registration = self._active_output_task
-        if registration is None:
-            return
-        registration.exit_when_complete = True
-        registration.exit_menu = menu
 
     def _stop_and_quit_output_task(self, menu: TerminalMenu) -> None:
         registration = self._active_output_task

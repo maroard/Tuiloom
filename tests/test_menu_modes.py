@@ -180,13 +180,12 @@ def test_active_content_replacement_forwards_its_description() -> None:
     installed: list[tuple[object, str]] = []
 
     class Loop:
-        def install_source(
+        def replace_content_panel(
             self,
+            panel: object,
             source: object,
-            *,
-            description: str = "Content in progress",
         ) -> None:
-            installed.append((source, description))
+            installed.append((source, menu.content_panels[0].description))
 
     menu._running = True
     menu._event_loop = Loop()  # type: ignore[assignment]
@@ -244,5 +243,32 @@ def test_exit_selection_and_content_scroll_without_renderer() -> None:
     menu._selected_index = len(menu.commands)
     menu._handle_event(event("enter"))
     assert not menu._running
-    menu._focus = "content"
+    menu._focused_panel = menu.content_panels[0]
     menu._handle_event(event("left"))
+
+
+def test_focus_cycles_through_each_content_panel_and_back_to_menu() -> None:
+    _, menu = make_menu(content="\n".join(str(index) for index in range(30)))
+    first = menu.content_panels[0]
+    second = menu.add_content_panel(
+        "\n".join(f"b{index}" for index in range(30)),
+        description="Second",
+    )
+
+    menu._handle_event(event("tab"))
+    assert menu._focused_panel is first
+    menu._handle_event(event("tab"))
+    assert menu._focused_panel is second
+    menu._handle_event(event("tab"))
+    assert menu._focused_panel is None
+
+
+def test_removing_focused_panel_advances_to_next_panel() -> None:
+    _, menu = make_menu(content="first")
+    focused = menu.add_content_panel("second", description="Second")
+    following = menu.add_content_panel("third", description="Third")
+    menu._focused_panel = focused
+
+    focused.remove()
+
+    assert menu._focused_panel is following

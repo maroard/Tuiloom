@@ -8,6 +8,7 @@ from tuiloom.command import (
     InputBehavior,
     MenuCommand,
 )
+from tuiloom.content_panel import ContentPanel
 from tuiloom.formatting import hyperlink
 from tuiloom.key_binding import KeyBinding, KeyMap
 from tuiloom.render.content_renderer import ContentSource
@@ -20,6 +21,7 @@ __all__ = [
     "AutoScrollMode",
     "CommandBehavior",
     "CommandContext",
+    "ContentPanel",
     "GlobalCommand",
     "InputBehavior",
     "KeyBinding",

@@ -12,7 +12,7 @@ from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.input_handler.input_handler import InputHandler
-from tuiloom.render.content_renderer import ContentRenderer
+from tuiloom.render.content_renderer import ContentRenderer, ContentSource
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
 
@@ -50,14 +50,39 @@ class FakeInput:
         return None
 
 
+class BlockingIterator:
+    def __init__(self) -> None:
+        self.started = Event()
+        self.release = Event()
+        self.finished = False
+
+    def __iter__(self) -> BlockingIterator:
+        return self
+
+    def __next__(self) -> str:
+        if self.finished:
+            raise StopIteration
+        self.started.set()
+        self.release.wait(1)
+        self.finished = True
+        raise StopIteration
+
+    def cancel(self) -> None:
+        self.release.set()
+
+
 def make_loop(
     events: list[InputEvent | None],
     *,
-    content: str = "content",
+    content: ContentSource = "content",
     clock: Callable[[], float] = lambda: 0.0,
 ) -> tuple[TerminalMenu, EventLoop, FakeSelector, TerminalRenderer]:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source=content)
+    menu = TerminalMenu(
+        app,
+        ScreenContext("main", "Main"),
+        content_source=content,
+    )
     menu._running = True
     menu.add_command("Stop", lambda context: menu._stop_immediately())
     content_renderer = ContentRenderer(content)
@@ -78,6 +103,7 @@ def make_loop(
         clock=clock,
         selector_factory=lambda: cast(BaseSelector, selector),
     )
+    menu._event_loop = loop
     return menu, loop, selector, terminal_renderer
 
 
@@ -110,12 +136,14 @@ def test_install_source_replaces_menu_and_terminal_renderers() -> None:
 def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
     menu, loop, _, renderer = make_loop([None])
     streaming = ContentRenderer(iter([]))
+    panel = menu.content_panels[0]
+    panel._renderer = streaming
     loop._content_renderer = streaming
     menu._content_renderer = streaming
     renderer.set_content_renderer(streaming)
-    loop._source_events.put(SourceEvent(loop._generation - 1, "data", "stale"))
-    loop._source_events.put(SourceEvent(loop._generation, "data", "fresh\n"))
-    loop._source_events.put(SourceEvent(loop._generation, "complete"))
+    loop._source_events.put(SourceEvent(panel, loop._generation - 1, "data", "stale"))
+    loop._source_events.put(SourceEvent(panel, loop._generation, "data", "fresh\n"))
+    loop._source_events.put(SourceEvent(panel, loop._generation, "complete"))
     loop._drain_source_events()
     assert streaming.rendered_content.lines == ["fresh"]
     assert streaming.rendered_content.finished
@@ -125,18 +153,21 @@ def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
 def test_dynamic_events_keep_latest_value_and_validate_results() -> None:
     menu, loop, _, renderer = make_loop([None])
     dynamic = ContentRenderer(lambda: "first")
+    panel = menu.content_panels[0]
+    panel._renderer = dynamic
+    panel._dynamic_in_flight = True
     loop._content_renderer = dynamic
     menu._content_renderer = dynamic
     renderer.set_content_renderer(dynamic)
     loop._dynamic_in_flight = True
-    loop._source_events.put(SourceEvent(loop._generation, "data", "old"))
-    loop._source_events.put(SourceEvent(loop._generation, "data", ["new"]))
+    loop._source_events.put(SourceEvent(panel, loop._generation, "data", "old"))
+    loop._source_events.put(SourceEvent(panel, loop._generation, "data", ["new"]))
     loop._drain_source_events()
     assert dynamic.rendered_content.lines == ["new"]
     assert not loop._dynamic_in_flight
 
     loop._source_events.put(
-        SourceEvent(loop._generation, "data", 3)  # type: ignore[arg-type]
+        SourceEvent(panel, loop._generation, "data", 3)  # type: ignore[arg-type]
     )
     with pytest.raises(RuntimeError, match="invalid"):
         loop._drain_source_events()
@@ -144,12 +175,107 @@ def test_dynamic_events_keep_latest_value_and_validate_results() -> None:
 
 
 def test_source_errors_are_raised_with_validation() -> None:
-    _, loop, _, _ = make_loop([None])
+    menu, loop, _, _ = make_loop([None])
+    panel = menu.content_panels[0]
     error = ValueError("source failed")
     with pytest.raises(ValueError, match="source failed"):
-        loop._handle_source_event(SourceEvent(loop._generation, "error", error=error))
+        loop._handle_source_event(
+            SourceEvent(panel, loop._generation, "error", error=error)
+        )
     with pytest.raises(RuntimeError, match="no exception"):
-        loop._handle_source_event(SourceEvent(loop._generation, "error"))
+        loop._handle_source_event(SourceEvent(panel, loop._generation, "error"))
+    loop.close()
+
+
+def test_events_are_routed_to_their_own_panels() -> None:
+    menu, loop, _, _ = make_loop([None], content=iter(()))
+    first = menu.content_panels[0]
+    second = menu.add_content_panel(iter(()), description="Second")
+
+    loop._source_events.put(SourceEvent(first, first._generation, "data", "first\n"))
+    loop._source_events.put(SourceEvent(second, second._generation, "data", "second\n"))
+    loop._drain_source_events()
+
+    assert first._renderer.rendered_content.lines == ["first"]
+    assert second._renderer.rendered_content.lines == ["second"]
+    loop.close()
+
+
+def test_active_removal_hides_panel_but_tracks_worker_until_termination() -> None:
+    menu, loop, _, _ = make_loop([None], content="primary")
+    source = BlockingIterator()
+    panel = menu.add_content_panel(source, description="Blocking")
+    assert source.started.wait(1)
+
+    panel.remove()
+
+    assert panel not in menu.content_panels
+    assert panel in loop.retiring_panels
+    assert panel._worker is not None
+    assert panel._worker.join(1)
+    loop._progress_panel_transitions()
+    assert panel not in loop.retiring_panels
+    loop.close()
+
+
+def test_active_replacement_waits_for_old_worker_before_starting_new() -> None:
+    menu, loop, _, _ = make_loop([None], content="primary")
+    old = BlockingIterator()
+    panel = menu.add_content_panel(old, description="Work")
+    assert old.started.wait(1)
+    replacement = iter(["new\n"])
+
+    panel.set_source(replacement)
+
+    assert panel._pending_source is replacement
+    assert panel._renderer.source is old
+    assert panel._worker is not None
+    assert panel._worker.join(1)
+    panel._smart_auto_scroll_active = False
+    panel._pending_auto_scroll = "strict"
+    loop._progress_panel_transitions()
+    assert panel._renderer.source is replacement
+    assert panel._smart_auto_scroll_active
+    assert panel._pending_auto_scroll is None
+    loop.close()
+
+
+def test_panel_error_is_propagated_and_close_joins_other_workers() -> None:
+    menu, loop, _, _ = make_loop([None], content="primary")
+    blocking = BlockingIterator()
+    other = menu.add_content_panel(blocking, description="Other")
+    assert blocking.started.wait(1)
+    failed = menu.add_content_panel("failed", description="Failed")
+    error = ValueError("panel failed")
+    loop._source_events.put(
+        SourceEvent(
+            failed,
+            failed._generation,
+            "error",
+            error=error,
+            traceback=error.__traceback__,
+        )
+    )
+
+    with pytest.raises(ValueError, match="panel failed"):
+        loop._drain_source_events()
+    loop.close()
+
+    assert other._worker is not None
+    assert not other._worker.is_alive()
+
+
+def test_completed_temporary_output_panel_is_removed_after_final_chunks() -> None:
+    menu, loop, _, _ = make_loop([None], content="primary")
+    panel = menu.add_content_panel(iter(()), description="Output")
+    panel._remove_when_finished = True
+    panel._renderer.append_stream_batch(["final\n"])
+    loop._source_events.put(SourceEvent(panel, panel._generation, "complete"))
+
+    loop._drain_source_events()
+
+    assert panel._renderer.rendered_content.lines == ["final"]
+    assert panel not in menu.content_panels
     loop.close()
 
 

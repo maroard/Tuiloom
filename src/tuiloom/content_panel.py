@@ -71,3 +71,23 @@ class ContentPanel:
     def auto_scroll(self) -> AutoScrollMode | None:
         """Return this panel's iterator auto-scroll policy."""
         return self._auto_scroll
+
+    def set_source(self, content_source: ContentSource) -> None:
+        """Replace this panel's source without changing its identity."""
+        self._menu._set_content_panel_source(self, content_source)
+
+    def set_description(self, description: str) -> None:
+        """Replace this panel's visible and shutdown description."""
+        self._menu._set_content_panel_description(self, description)
+
+    def set_auto_scroll(self, mode: AutoScrollMode | None) -> None:
+        """Set this panel's iterator auto-scroll policy."""
+        self._menu._set_content_panel_auto_scroll(self, mode)
+
+    def move(self, position: int) -> None:
+        """Move this panel to a zero-based position in its owning menu."""
+        self._menu._move_content_panel(self, position)
+
+    def remove(self) -> None:
+        """Remove this panel and cooperatively retire its worker."""
+        self._menu._remove_content_panel(self)

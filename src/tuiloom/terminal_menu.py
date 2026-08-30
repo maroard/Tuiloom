@@ -147,15 +147,14 @@ class TerminalMenu:
             raise ValueError("auto_scroll must be 'smart', 'strict', or None")
         if mode == self._auto_scroll:
             return
-        self._auto_scroll = mode
         if self._primary_content_panel is not None:
-            self._primary_content_panel._auto_scroll = mode
-            self._primary_content_panel._smart_auto_scroll_active = True
-            self._primary_content_panel._pending_auto_scroll = None
+            self._primary_content_panel.set_auto_scroll(mode)
+        else:
+            self._auto_scroll = mode
         if self._terminal_renderer is not None:
             self._terminal_renderer.reset_stream_auto_scroll()
 
-    def add_content_source(
+    def add_content_panel(
         self,
         content_source: ContentSource,
         *,
@@ -163,7 +162,7 @@ class TerminalMenu:
         auto_scroll: AutoScrollMode | None = None,
         position: int | None = None,
     ) -> ContentPanel:
-        """Add an independently rendered content source and return its handle."""
+        """Add an independently rendered content panel and return its handle."""
         self._validate_auto_scroll(auto_scroll)
         insert_at = self._validate_content_position(position, allow_end=True)
         panel = ContentPanel(self, content_source, description, auto_scroll)
@@ -173,7 +172,7 @@ class TerminalMenu:
         self._invalidate_renderer()
         return panel
 
-    def set_content_panel_source(
+    def _set_content_panel_source(
         self,
         panel: ContentPanel,
         content_source: ContentSource,
@@ -189,7 +188,7 @@ class TerminalMenu:
         if panel is self._primary_content_panel:
             self._content_source = content_source
 
-    def set_content_panel_description(
+    def _set_content_panel_description(
         self,
         panel: ContentPanel,
         description: str,
@@ -203,7 +202,7 @@ class TerminalMenu:
             self._content_description = description
         self._invalidate_renderer()
 
-    def set_content_panel_auto_scroll(
+    def _set_content_panel_auto_scroll(
         self,
         panel: ContentPanel,
         mode: AutoScrollMode | None,
@@ -217,7 +216,7 @@ class TerminalMenu:
         if panel is self._primary_content_panel:
             self._auto_scroll = mode
 
-    def move_content_panel(self, panel: ContentPanel, position: int) -> None:
+    def _move_content_panel(self, panel: ContentPanel, position: int) -> None:
         """Move one owned panel to a zero-based position."""
         self._require_content_panel(panel)
         target = self._validate_content_position(position, allow_end=False)
@@ -225,7 +224,7 @@ class TerminalMenu:
         self._content_panels.insert(target, panel)
         self._invalidate_renderer()
 
-    def remove_content_panel(self, panel: ContentPanel) -> None:
+    def _remove_content_panel(self, panel: ContentPanel) -> None:
         """Remove one owned panel and cooperatively retire its worker."""
         self._require_content_panel(panel)
         removed_position = self._content_panels.index(panel)
@@ -361,21 +360,18 @@ class TerminalMenu:
         """Replace content with static text, lines, an iterator, or callable."""
         panel = self._primary_content_panel
         if panel is None:
-            panel = ContentPanel(
-                self,
+            panel = self.add_content_panel(
                 content_source,
-                description,
-                self._auto_scroll,
+                description=description,
+                auto_scroll=self._auto_scroll,
+                position=0,
             )
-            self._content_panels.insert(0, panel)
             self._primary_content_panel = panel
             self._content_source = content_source
             self._content_description = description
-            if self._running and self._event_loop is not None:
-                self._event_loop.add_content_panel(panel)
             return
-        self.set_content_panel_description(panel, description)
-        self.set_content_panel_source(panel, content_source)
+        panel.set_description(description)
+        panel.set_source(content_source)
 
     def run_with_output[T](
         self,

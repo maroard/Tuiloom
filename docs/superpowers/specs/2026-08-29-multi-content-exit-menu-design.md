@@ -15,37 +15,56 @@ Introduce an exported `ContentPanel` handle. Applications obtain handles from
 the owning menu rather than constructing them directly:
 
 ```python
-logs = menu.add_content_source(
+logs = menu.add_content_panel(
     log_stream,
     description="Downloading",
     auto_scroll="strict",
 )
-metrics = menu.add_content_source(
+metrics = menu.add_content_panel(
     get_metrics,
     description="Indexing",
 )
+
+logs.set_source(new_log_stream)
+logs.set_description("Downloading model")
+logs.set_auto_scroll("smart")
+metrics.move(0)
+metrics.remove()
 ```
 
-`TerminalMenu` exposes an immutable ordered view and handle-based mutations:
+`TerminalMenu` exposes an immutable ordered view and creates panels:
 
 ```python
 menu.content_panels -> tuple[ContentPanel, ...]
 
-menu.add_content_source(...) -> ContentPanel
-menu.set_content_panel_source(panel, source)
-menu.set_content_panel_description(panel, description)
-menu.set_content_panel_auto_scroll(panel, mode)
-menu.move_content_panel(panel, position)
-menu.remove_content_panel(panel)
+menu.add_content_panel(
+    content_source,
+    *,
+    description="Content in progress",
+    auto_scroll=None,
+    position=None,
+) -> ContentPanel
 ```
 
-`ContentPanel` has read-only `description`, `position`, and `auto_scroll`
-properties. Its identity remains stable when its source, description, scroll
-mode, or position changes. Mutation methods reject a foreign or removed handle.
+`ContentPanel` owns the explicit mutation API:
 
-The exact names and signatures above are provisional until the required API
-review checkpoint described below. Their responsibilities and ownership model
-are part of the approved design.
+```python
+panel.set_source(content_source) -> None
+panel.set_description(description) -> None
+panel.set_auto_scroll(mode) -> None
+panel.move(position) -> None
+panel.remove() -> None
+```
+
+It also has read-only `description`, `position`, and `auto_scroll` properties.
+Its identity remains stable when its source, description, scroll mode, or
+position changes. Mutation methods delegate lifecycle and ordering changes to
+the owning menu and reject a removed handle.
+
+There are deliberately no `TerminalMenu.add_content_source()`,
+`set_content_panel_*()`, `move_content_panel()`, or `remove_content_panel()`
+aliases. This avoids two public ways to perform the same panel operation. The
+names and ownership model were approved at the required API review checkpoint.
 
 ## Backward compatibility
 
@@ -104,7 +123,8 @@ the replaced generation.
 
 While a menu is running:
 
-- Adding a panel starts its worker immediately when the source is non-static.
+- Adding a panel with `add_content_panel()` starts its worker immediately when
+  the source is non-static.
 - Replacing a source requests cooperative cancellation of the old worker,
   retains its last render, and installs the replacement only after the old
   worker really terminates.

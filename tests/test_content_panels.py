@@ -1,3 +1,5 @@
+from collections.abc import Callable
+
 import pytest
 
 from tuiloom import ContentPanel, ScreenContext, TerminalApp, TerminalMenu
@@ -55,7 +57,7 @@ def test_removed_panel_rejects_every_explicit_mutation() -> None:
     panel = make_menu().content_panels[0]
     panel.remove()
 
-    operations = (
+    operations: tuple[Callable[[], None], ...] = (
         lambda: panel.set_source("new"),
         lambda: panel.set_description("New"),
         lambda: panel.set_auto_scroll("smart"),

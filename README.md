@@ -117,7 +117,7 @@ The menu has focus initially. The default controls are:
 
 | Key | Action |
 | --- | --- |
-| Tab | Alternate between menu and content focus |
+| Tab | Cycle through the menu and each content panel |
 | Up / Down | Move the selected command, or scroll focused content vertically |
 | Left / Right | Scroll focused content horizontally |
 | Enter | Activate the selected command or confirm an alert |
@@ -127,8 +127,9 @@ Command selection loops and skips disabled commands. The automatic `Back` or
 `Quit` row is always selectable and always follows user commands. The selected
 row contains `>`, so it remains visible without ANSI color support.
 
-Tab changes focus only when the menu has content. Focused boxes use solid
-borders; unfocused boxes use dotted borders. Moving upward while
+Tab changes focus only when the menu has content. It cycles through
+`menu -> panel 1 -> panel 2 -> ... -> menu`. Focused boxes use solid borders;
+unfocused boxes use dotted borders. Moving upward while
 `auto_scroll="smart"` suspends automatic following, and reaching the bottom
 enables it again.
 
@@ -251,6 +252,39 @@ Unsafe terminal controls are removed from rendered content. Unicode graphemes,
 cell widths, safe SGR styling, tabs, and line boundaries are normalized for the
 terminal.
 
+### Multiple content panels
+
+`add_content_panel()` creates an independently managed content box and returns
+a stable `ContentPanel` handle:
+
+```python
+logs = menu.add_content_panel(
+    log_stream,
+    description="Downloading",
+    auto_scroll="strict",
+)
+metrics = menu.add_content_panel(
+    get_metrics,
+    description="Indexing",
+)
+
+logs.set_source(new_log_stream)
+logs.set_description("Downloading model")
+logs.set_auto_scroll("smart")
+metrics.move(0)
+metrics.remove()
+```
+
+`menu.content_panels` exposes the handles in display order as an immutable
+tuple. Visible panels are stacked vertically at equal height and labeled when
+more than one is present. Each panel owns its source worker, viewport, scroll
+position, and auto-scroll mode. Panels can be added, reordered, replaced, or
+removed while the menu is running.
+
+The constructor's `content_source`, `set_content_source()`, and
+`menu.auto_scroll` remain the compatibility API for the primary panel. A menu
+with only that panel keeps the original unlabeled content-box appearance.
+
 ### Inherited and local content
 
 ```python
@@ -270,9 +304,10 @@ the menu starts.
 
 ### Replacing active content
 
-`set_content_source(source, description=...)` changes stored content
-immediately. If the menu is running and is not currently displaying a captured
-task, Tuiloom installs it through the active event loop.
+`set_content_source(source, description=...)` changes the primary panel.
+`panel.set_source(source)` applies the same replacement semantics to any panel.
+If the menu is running, Tuiloom installs the source through the active event
+loop.
 
 Replacing an iterator or an in-flight dynamic evaluation requests cooperative
 cancellation of the old source. The UI remains responsive, waits for the old
@@ -302,6 +337,8 @@ menu = TerminalMenu(
 
 menu.auto_scroll = "strict"
 menu.auto_scroll = None
+
+logs.set_auto_scroll("smart")
 ```
 
 - `"smart"` follows new iterator content until the user scrolls upward, then
@@ -309,8 +346,8 @@ menu.auto_scroll = None
 - `"strict"` always follows the newest iterator content.
 - `None` disables automatic following.
 
-Changing the mode or replacing content resets smart-scroll state. Invalid modes
-raise `ValueError`.
+Changing a panel's mode or replacing its content resets its smart-scroll state.
+Invalid modes raise `ValueError`.
 
 ## Captured task output
 
@@ -339,47 +376,52 @@ The call itself starts the work and returns immediately. It is valid only while
 the menu is active, and only one captured task may run in the application at a
 time. A second task raises `RuntimeError`.
 
-During the task, auto-scroll is temporarily `"strict"`. On normal completion,
-Tuiloom restores the menu's previous content source and auto-scroll mode, then
-runs `on_success(result)` or `on_error(exception)` on the UI thread.
+During the task, output appears in a temporary panel with strict auto-scroll;
+the menu's other panels remain visible and unchanged. On normal completion,
+Tuiloom removes the temporary panel after its output is consumed, then runs
+`on_success(result)` or `on_error(exception)` on the UI thread.
 
 Capture includes `print()` and Python writes to `sys.stdout` and `sys.stderr`.
 It cannot capture subprocess output or direct POSIX file-descriptor writes.
-Tuiloom does not inject a cancellation token into `action`: Stop and quit
+Tuiloom does not inject a cancellation token into `action`: Force quit
 discards its remaining output and outcome, but the action itself must return or
 use application-owned cancellation state before its worker can terminate.
 
 ## Safe shutdown
 
-Quitting the root menu while a captured task, iterator, or dynamic evaluation is
-active displays:
+Quitting the root menu while one operation is active opens a normal menu titled
+`Operation in progress`; multiple operations use `Operations in progress`:
 
 ```text
-1: Stop and quit
-2: Wait and quit
-0: Cancel
+Force quit
+Wait and quit
+Cancel
 ```
 
-- **Stop and quit** requests cooperative cancellation, discards later results,
-  errors, output, and callbacks, and displays `Stopping…`. The menu closes only
-  after every worker has really terminated.
+- **Force quit** requests cooperative cancellation, discards later results,
+  errors, output, and callbacks, and displays `Stopping operation...` or
+  `Stopping operations...`. This state is non-interactive, and the menu closes
+  only after every worker has really terminated.
 - **Wait and quit** lets work finish normally, animates its description, runs a
-  captured task's completion callback, and then quits even if that callback
-  changes menus.
-- **Cancel** restores the previous footer and keeps the menu running.
+  captured task's completion callback, and exposes only a selectable `Cancel`
+  row while waiting.
+- **Cancel** restores the previous menu, focus, and selection. The configured
+  Back action is equivalent to Cancel in both interactive exit states.
 
-`0` remains available during normal waiting. Once Stop and quit has been chosen,
-cancellation is irreversible and further `0` input cannot restore the menu.
+Navigate with the configured Up/Down actions and activate with Enter. The former
+numeric shortcuts `1`, `2`, and `0` are not accepted.
 
 Iterator sources count as active work until they finish. Dynamic sources count
 as active only while an evaluation is in progress. Static content does not block
-exit. `description` from `set_content_source()` or `run_with_output()` labels
-normal waiting; `TASK_STOPPING` controls the stopping footer.
+exit. Every active operation is displayed in its own labeled panel. The list is
+live in every mode: completed panels disappear immediately, singular/plural
+titles update, and newly started operations are included. The application exits
+automatically when no blocking operation remains, even before a choice is made.
 
 Python cannot safely kill an arbitrary thread. Tuiloom therefore uses
 cooperative cancellation and waits without a timeout before closing sockets,
 restoring the terminal, or returning from the application. Native code that
-never returns can leave `Stopping…` visible indefinitely. Use a separate process
+never returns can leave the stopping view visible indefinitely. Use a separate process
 when forceful termination is required.
 
 The same guarantee applies when a callback, source, or renderer raises: Tuiloom
@@ -464,9 +506,9 @@ The built-in keys are:
 | --- | --- | --- |
 | `NO_CONTENT_SOURCE` | `"no_content_source"` | Explain a missing content source |
 | `UNKNOWN_COMMAND` | `"unknown_command"` | Report discarded textual command input |
-| `TASK_EXIT_CHOICES` | `"task_exit_choices"` | Show Stop, Wait, and Cancel choices |
-| `TASK_WAITING` | `"task_waiting"` | Label animated normal waiting |
-| `TASK_STOPPING` | `"task_stopping"` | Show irreversible cooperative stopping |
+| `TASK_EXIT_CHOICES` | `"task_exit_choices"` | Compatibility key for the former numeric exit prompt |
+| `TASK_WAITING` | `"task_waiting"` | Compatibility key for the former waiting footer |
+| `TASK_STOPPING` | `"task_stopping"` | Compatibility key for the former stopping footer |
 
 `show_message()` validates the key and returns `False` without changing the
 footer when the message is suppressed. Otherwise it displays the message and
@@ -476,6 +518,8 @@ returns `True`. Local and application-wide suppression combine;
 keys.
 
 Automatic messages use the same registry and respect suppression.
+The three `TASK_*` compatibility keys remain available to application code but
+no longer control Tuiloom's automatic task-exit menu.
 
 ## Key bindings and global commands
 
@@ -578,6 +622,7 @@ from tuiloom import (
     AutoScrollMode,
     CommandBehavior,
     CommandContext,
+    ContentPanel,
     ContentSource,
     GlobalCommand,
     InputBehavior,
@@ -722,6 +767,34 @@ menu's global-command methods for local behavior and enablement.
 of each member are listed in [Messages](#messages). Enum members can be passed
 where a message key string is accepted.
 
+The three task-related members are retained for compatibility. The automatic
+safe-shutdown interface is rendered as a temporary menu and does not read these
+message values.
+
+### `ContentPanel`
+
+Applications obtain `ContentPanel` handles from
+`TerminalMenu.add_content_panel()` rather than constructing them directly.
+
+Read-only properties:
+
+- `description -> str`: current visible and shutdown label;
+- `position -> int`: current zero-based display position;
+- `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy.
+
+Explicit mutation methods:
+
+```text
+set_source(content_source: ContentSource) -> None
+set_description(description: str) -> None
+set_auto_scroll(mode: AutoScrollMode | None) -> None
+move(position: int) -> None
+remove() -> None
+```
+
+The handle keeps its identity across source, label, mode, and position changes.
+Calling a mutation method after removal raises `ValueError`.
+
 ### `TerminalApp`
 
 ```text
@@ -823,7 +896,9 @@ Properties:
 - `is_main -> bool`: whether this is the registered root;
 - `show -> bool`: readable and writable visibility state;
 - `auto_scroll -> AutoScrollMode | None`: readable and writable iterator-follow
-  policy.
+  policy for the primary panel;
+- `content_panels -> tuple[ContentPanel, ...]`: immutable ordered panel-handle
+  view.
 
 #### Command methods
 
@@ -879,6 +954,20 @@ only. Foreign handles raise `ValueError`.
 #### Content and task methods
 
 ```text
+add_content_panel(
+    content_source: ContentSource,
+    *,
+    description: str = "Content in progress",
+    auto_scroll: AutoScrollMode | None = None,
+    position: int | None = None,
+) -> ContentPanel
+```
+
+Add an independently rendered panel and return its stable handle. `position`
+is zero-based; invalid positions or auto-scroll modes raise `TypeError` or
+`ValueError`.
+
+```text
 set_content_source(
     content_source: ContentSource,
     *,
@@ -886,8 +975,9 @@ set_content_source(
 ) -> None
 ```
 
-Store and, while active, safely install a content source. Replacement semantics
-are described in [Replacing active content](#replacing-active-content).
+Store and, while active, safely install the primary panel's content source.
+Replacement semantics are described in
+[Replacing active content](#replacing-active-content).
 
 ```text
 run_with_output[T](

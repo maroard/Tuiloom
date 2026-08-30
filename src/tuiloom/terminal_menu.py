@@ -529,7 +529,10 @@ class TerminalMenu:
         try:
             self._event_loop.run()
         finally:
-            self._event_loop.close()
+            if self._hard_exit_requested:
+                self._event_loop.abandon()
+            else:
+                self._event_loop.close()
             self._event_loop = None
 
     def stop(self) -> None:

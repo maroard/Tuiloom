@@ -8,6 +8,7 @@ from tuiloom import ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
+from tuiloom.task_exit import TaskExitView
 
 
 def make_renderer(
@@ -165,3 +166,75 @@ def test_render_writes_full_then_differential_frames(
     assert writes
     renderer.invalidate()
     assert renderer._previous_lines is None
+
+
+def test_wait_animation_changes_the_cached_terminal_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, renderer = make_renderer(content="working")
+    panel = menu.content_panels[0]
+    menu._task_exit = TaskExitView(
+        mode="waiting",
+        selected_index=0,
+        previous_focus=None,
+        previous_selected_index=0,
+        wait_started_at=0.0,
+        visible_panels=(panel,),
+        wait_phase=1,
+    )
+    monkeypatch.setattr(
+        TerminalMenu,
+        "_current_exit_panels",
+        lambda self: (panel,),
+    )
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size",
+        lambda: terminal_size((30, 16)),
+    )
+    writes: list[str] = []
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+
+    renderer.render()
+    writes.clear()
+    menu._task_exit.wait_phase = 2
+    renderer.render()
+
+    assert writes
+    assert "." in "".join(writes)
+
+
+def test_same_count_operation_swap_changes_the_cached_terminal_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, renderer = make_renderer(content="first")
+    first = menu.content_panels[0]
+    second = menu.add_content_panel("second")
+    active = [first]
+    menu._task_exit = TaskExitView(
+        mode="choice",
+        selected_index=0,
+        previous_focus=None,
+        previous_selected_index=0,
+        wait_started_at=0.0,
+        visible_panels=(first,),
+    )
+    monkeypatch.setattr(
+        TerminalMenu,
+        "_current_exit_panels",
+        lambda self: tuple(active),
+    )
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size",
+        lambda: terminal_size((30, 16)),
+    )
+    writes: list[str] = []
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+
+    renderer.render()
+    writes.clear()
+    active[0] = second
+    renderer.render()
+
+    assert writes

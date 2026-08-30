@@ -231,8 +231,12 @@ def test_active_replacement_waits_for_old_worker_before_starting_new() -> None:
     assert panel._renderer.source is old
     assert panel._worker is not None
     assert panel._worker.join(1)
+    panel._smart_auto_scroll_active = False
+    panel._pending_auto_scroll = "strict"
     loop._progress_panel_transitions()
     assert panel._renderer.source is replacement
+    assert panel._smart_auto_scroll_active
+    assert panel._pending_auto_scroll is None
     loop.close()
 
 

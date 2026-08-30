@@ -85,9 +85,9 @@ class TerminalMenu:
         self._terminal_renderer: TerminalRenderer | None = None
         self._event_loop: EventLoop | None = None
         self._auto_scroll: AutoScrollMode | None = None
-        self.auto_scroll = auto_scroll
         self._content_panels: list[ContentPanel] = []
         self._primary_content_panel: ContentPanel | None = None
+        self.auto_scroll = auto_scroll
         if self._content_source is not None:
             self._primary_content_panel = ContentPanel(
                 self,
@@ -179,6 +179,8 @@ class TerminalMenu:
     ) -> None:
         """Replace one owned panel's source without changing its identity."""
         self._require_content_panel(panel)
+        panel._smart_auto_scroll_active = True
+        panel._pending_auto_scroll = None
         if self._running and self._event_loop is not None:
             self._event_loop.replace_content_panel(panel, content_source)
         else:
@@ -556,6 +558,7 @@ class TerminalMenu:
             not isinstance(panel, ContentPanel)
             or panel._menu is not self
             or panel._removed
+            or panel not in self._content_panels
         ):
             raise ValueError("Content panel does not belong to this menu")
 

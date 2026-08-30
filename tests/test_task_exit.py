@@ -106,6 +106,9 @@ def attach_output_task(
         def retiring_panels(self) -> tuple[ContentPanel, ...]:
             return ()
 
+        def retire_content_panel(self, retiring: ContentPanel) -> None:
+            return
+
     menu._event_loop = cast(EventLoop, Loop())
     return panel
 
@@ -284,7 +287,7 @@ def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
             lambda error: callbacks.append("error"),
             "Work",
         )
-        attach_output_task(app, menu, session, "Work")
+        panel = attach_output_task(app, menu, session, "Work")
         assert started.wait(1)
         menu.stop()
         press(menu, "enter")
@@ -297,6 +300,7 @@ def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
         release.set()
         assert session.join(1)
         assert app._dispatch_output_task_outcome() is menu
+        assert panel not in menu.content_panels
         assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
         assert not menu._running
     assert sys.stdout is original_stdout

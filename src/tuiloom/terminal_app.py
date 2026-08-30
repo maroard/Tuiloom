@@ -252,6 +252,9 @@ class TerminalApp:
         self._active_output_task = None
         if registration.abandoned:
             registration.menu._abandon_output_task(registration.session)
+            panel = registration.panel
+            if panel is not None and not panel._removed:
+                panel.remove()
             return registration.menu
         registration.menu._detach_output_task(registration.session)
         outcome = registration.session.outcome

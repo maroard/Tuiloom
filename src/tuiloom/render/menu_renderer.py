@@ -120,7 +120,7 @@ class MenuRenderer:
             exit_label=exit_label,
             selected_index=selected_index,
             focus="menu" if menu._focused_panel is None else "content",
-            has_content=menu._has_content(),
+            has_content=bool(menu._visible_content_panels()),
             show=menu.show,
             alert=alert,
             alert_prompt=alert_prompt,

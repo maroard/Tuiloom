@@ -253,6 +253,8 @@ class EventLoop:
         panel._pending_source = None
         panel._renderer = ContentRenderer(source)
         panel._viewport = None
+        panel._smart_auto_scroll_active = True
+        panel._pending_auto_scroll = None
         self._install_panel_worker(panel)
         if panel is self._menu._primary_content_panel:
             self._content_renderer = panel._renderer

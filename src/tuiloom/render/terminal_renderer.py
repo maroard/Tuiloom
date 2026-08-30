@@ -78,6 +78,8 @@ class TerminalRenderer:
             current_size,
             tuple(
                 (
+                    panel,
+                    self._menu._visible_panel_description(panel),
                     panel._renderer.rendered_content.revision,
                     panel._viewport.offset_x if panel._viewport is not None else 0,
                     panel._viewport.offset_y if panel._viewport is not None else 0,

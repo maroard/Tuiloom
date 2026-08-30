@@ -65,8 +65,8 @@ def test_content_viewport_fills_available_inner_geometry() -> None:
 def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
     menu, renderer = make_renderer(content="first")
     first = menu.content_panels[0]
-    menu.set_content_panel_description(first, "First")
-    second = menu.add_content_source("second", description="Second")
+    first.set_description("First")
+    second = menu.add_content_panel("second", description="Second")
 
     lines = renderer._compose_frame(32, 20)
     top_indices = [index for index, line in enumerate(lines) if line.startswith("╭")]
@@ -84,14 +84,14 @@ def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
 
 def test_multiple_panels_require_one_inner_row_each() -> None:
     menu, renderer = make_renderer(content="first")
-    menu.add_content_source("second", description="Second")
+    menu.add_content_panel("second", description="Second")
     assert renderer._compose_frame(30, 10) == ["Terminal window is too small."]
 
 
 def test_scrolling_changes_only_the_target_panel_viewport() -> None:
     menu, renderer = make_renderer(content="\n".join(str(index) for index in range(30)))
     first = menu.content_panels[0]
-    second = menu.add_content_source(
+    second = menu.add_content_panel(
         "\n".join(f"b{index}" for index in range(30)),
         description="Second",
     )

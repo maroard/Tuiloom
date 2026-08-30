@@ -74,7 +74,7 @@ def install_fake_operations(
     loop = FakePanelLoop()
     work: list[FakeWork] = []
     for description in descriptions:
-        panel = menu.add_content_source("last output", description=description)
+        panel = menu.add_content_panel("last output", description=description)
         operation = FakeWork(description)
         loop.attach(panel, operation)
         work.append(operation)
@@ -88,7 +88,7 @@ def attach_output_task(
     session: OutputTaskSession,
     description: str,
 ) -> ContentPanel:
-    panel = menu.add_content_source(
+    panel = menu.add_content_panel(
         session.iter_output(),
         description=description,
         auto_scroll="strict",
@@ -335,7 +335,7 @@ def test_force_quit_cancels_operations_that_appear_while_stopping() -> None:
     press(menu, "enter")
     assert first.cancelled
 
-    second_panel = menu.add_content_source("late output", description="Second")
+    second_panel = menu.add_content_panel("late output", description="Second")
     second = FakeWork("Second")
     loop.attach(second_panel, second)
 

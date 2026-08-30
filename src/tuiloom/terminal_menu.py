@@ -400,7 +400,7 @@ class TerminalMenu:
                 self, action, complete, on_error, description
             )
             self._output_task_session = session
-            panel = self.add_content_source(
+            panel = self.add_content_panel(
                 session.iter_output(),
                 description=description,
                 auto_scroll="strict",
@@ -765,7 +765,7 @@ class TerminalMenu:
         if panel is None or panel._removed:
             return
         if panel._renderer.rendered_content.finished:
-            self.remove_content_panel(panel)
+            panel.remove()
         else:
             panel._remove_when_finished = True
 

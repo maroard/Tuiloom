@@ -190,7 +190,7 @@ def test_source_errors_are_raised_with_validation() -> None:
 def test_events_are_routed_to_their_own_panels() -> None:
     menu, loop, _, _ = make_loop([None], content=iter(()))
     first = menu.content_panels[0]
-    second = menu.add_content_source(iter(()), description="Second")
+    second = menu.add_content_panel(iter(()), description="Second")
 
     loop._source_events.put(SourceEvent(first, first._generation, "data", "first\n"))
     loop._source_events.put(SourceEvent(second, second._generation, "data", "second\n"))
@@ -204,10 +204,10 @@ def test_events_are_routed_to_their_own_panels() -> None:
 def test_active_removal_hides_panel_but_tracks_worker_until_termination() -> None:
     menu, loop, _, _ = make_loop([None], content="primary")
     source = BlockingIterator()
-    panel = menu.add_content_source(source, description="Blocking")
+    panel = menu.add_content_panel(source, description="Blocking")
     assert source.started.wait(1)
 
-    menu.remove_content_panel(panel)
+    panel.remove()
 
     assert panel not in menu.content_panels
     assert panel in loop.retiring_panels
@@ -221,11 +221,11 @@ def test_active_removal_hides_panel_but_tracks_worker_until_termination() -> Non
 def test_active_replacement_waits_for_old_worker_before_starting_new() -> None:
     menu, loop, _, _ = make_loop([None], content="primary")
     old = BlockingIterator()
-    panel = menu.add_content_source(old, description="Work")
+    panel = menu.add_content_panel(old, description="Work")
     assert old.started.wait(1)
     replacement = iter(["new\n"])
 
-    menu.set_content_panel_source(panel, replacement)
+    panel.set_source(replacement)
 
     assert panel._pending_source is replacement
     assert panel._renderer.source is old
@@ -239,9 +239,9 @@ def test_active_replacement_waits_for_old_worker_before_starting_new() -> None:
 def test_panel_error_is_propagated_and_close_joins_other_workers() -> None:
     menu, loop, _, _ = make_loop([None], content="primary")
     blocking = BlockingIterator()
-    other = menu.add_content_source(blocking, description="Other")
+    other = menu.add_content_panel(blocking, description="Other")
     assert blocking.started.wait(1)
-    failed = menu.add_content_source("failed", description="Failed")
+    failed = menu.add_content_panel("failed", description="Failed")
     error = ValueError("panel failed")
     loop._source_events.put(
         SourceEvent(
@@ -263,7 +263,7 @@ def test_panel_error_is_propagated_and_close_joins_other_workers() -> None:
 
 def test_completed_temporary_output_panel_is_removed_after_final_chunks() -> None:
     menu, loop, _, _ = make_loop([None], content="primary")
-    panel = menu.add_content_source(iter(()), description="Output")
+    panel = menu.add_content_panel(iter(()), description="Output")
     panel._remove_when_finished = True
     panel._renderer.append_stream_batch(["final\n"])
     loop._source_events.put(SourceEvent(panel, panel._generation, "complete"))

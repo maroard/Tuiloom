@@ -180,10 +180,10 @@ class EventLoop:
         """Schedule replacement after the previous source has really stopped."""
         panel = self._menu._primary_content_panel
         if panel is None:
-            panel = self._menu.add_content_source(source, description=description)
+            panel = self._menu.add_content_panel(source, description=description)
             self._menu._primary_content_panel = panel
             return
-        self._menu.set_content_panel_description(panel, description)
+        panel.set_description(description)
         self.replace_content_panel(panel, source)
         self._pending_source = (source, description)
 
@@ -191,7 +191,7 @@ class EventLoop:
         """Install a source once no previous worker can still execute."""
         panel = self._menu._primary_content_panel
         if panel is None:
-            panel = self._menu.add_content_source(source, description=description)
+            panel = self._menu.add_content_panel(source, description=description)
             self._menu._primary_content_panel = panel
             return
         panel._description = description
@@ -372,7 +372,7 @@ class EventLoop:
         if event.kind == "complete":
             event.panel._renderer.finish_stream()
             if event.panel._remove_when_finished and not event.panel._removed:
-                self._menu.remove_content_panel(event.panel)
+                event.panel.remove()
             self.request_render()
             return
 

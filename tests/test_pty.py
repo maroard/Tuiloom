@@ -108,8 +108,8 @@ from tuiloom import ScreenContext, TerminalApp, TerminalMenu
 
 app = TerminalApp("App")
 menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source="alpha")
-menu.set_content_panel_description(menu.content_panels[0], "Alpha")
-menu.add_content_source("beta", description="Beta")
+menu.content_panels[0].set_description("Alpha")
+menu.add_content_panel("beta", description="Beta")
 app.set_main_menu(menu)
 app.run()
 print("RESTORED")

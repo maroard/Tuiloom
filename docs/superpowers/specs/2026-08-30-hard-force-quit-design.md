@@ -26,8 +26,10 @@ Before terminating the process, Tuiloom performs only bounded cleanup:
 - restore the cursor, mouse modes, and alternate screen;
 - terminate the process through `os._exit()`.
 
-The hard-exit path is silent and returns a non-zero process status. It does not
-render `Stopping operation...`, run task callbacks, or attempt further frames.
+The hard-exit path is silent and returns process status zero because it is an
+explicit, successfully handled user action rather than an application failure.
+This prevents launchers such as Make from reporting a false task error. It does
+not render `Stopping operation...`, run task callbacks, or attempt further frames.
 Process-local stdout/stderr routing remains installed until process death so a
 still-running worker has no opportunity to print into the restored terminal.
 It may interrupt application writes or leave third-party cache files for the

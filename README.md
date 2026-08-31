@@ -193,6 +193,11 @@ view, and a handle from another menu is rejected.
 The handle exposes read-only `label`, `behavior`, `position`, and `enabled`
 properties. Their current values reflect mutations performed through the menu.
 
+Every time a menu opens, its marker starts on the first enabled command from
+the top. Disabled commands are skipped during initialization and navigation; if
+all commands are disabled, the marker starts on the automatic `Back` or `Quit`
+row.
+
 ### Submenus
 
 ```python

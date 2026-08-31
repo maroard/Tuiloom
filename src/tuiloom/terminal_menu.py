@@ -505,6 +505,7 @@ class TerminalMenu:
         self._running = True
         self._input_buffer = ""
         self._focused_panel = None
+        self._selected_index = 0
         self._normalize_selection()
         source = self._resolve_content_source()
         primary = self._primary_content_panel

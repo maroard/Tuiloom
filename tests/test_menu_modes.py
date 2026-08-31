@@ -23,6 +23,19 @@ def event(key: str, text: str | None = None) -> InputEvent:
     return InputEvent(KeyBinding(key), text)
 
 
+class SelectionLoop:
+    def __init__(self, menu: TerminalMenu, observed: list[int]) -> None:
+        self.menu = menu
+        self.observed = observed
+
+    def run(self) -> None:
+        self.observed.append(self.menu._selected_index)
+        self.menu._stop_immediately()
+
+    def close(self) -> None:
+        pass
+
+
 def test_hidden_input_masks_and_deletes_whole_unicode_graphemes() -> None:
     _, menu = make_menu()
     submitted: list[str] = []
@@ -219,6 +232,61 @@ def test_menu_run_builds_resources_shows_no_content_and_closes_loop(
     assert loop.closed
     assert "No content source" in (menu.screen_context.message or "")
     assert menu._event_loop is None
+
+
+def test_menu_run_resets_selection_on_every_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, menu = make_menu()
+    menu.add_command("First", lambda context: None)
+    second = menu.add_command("Second", lambda context: None)
+    app._input_handler = object()  # type: ignore[assignment]
+    observed: list[int] = []
+    monkeypatch.setattr(
+        menu,
+        "_create_event_loop",
+        lambda: SelectionLoop(menu, observed),
+    )
+
+    menu._selected_index = second.position
+    menu.run()
+    menu._selected_index = second.position
+    menu.run()
+
+    assert observed == [0, 0]
+
+
+@pytest.mark.parametrize(
+    ("disabled_positions", "expected"),
+    [
+        ((0,), 1),
+        ((0, 1), 2),
+    ],
+)
+def test_menu_run_skips_disabled_commands_from_the_top(
+    monkeypatch: pytest.MonkeyPatch,
+    disabled_positions: tuple[int, ...],
+    expected: int,
+) -> None:
+    app, menu = make_menu()
+    commands = (
+        menu.add_command("First", lambda context: None),
+        menu.add_command("Second", lambda context: None),
+    )
+    for position in disabled_positions:
+        menu.disable_command(commands[position])
+    app._input_handler = object()  # type: ignore[assignment]
+    observed: list[int] = []
+    monkeypatch.setattr(
+        menu,
+        "_create_event_loop",
+        lambda: SelectionLoop(menu, observed),
+    )
+
+    menu._selected_index = len(menu.commands)
+    menu.run()
+
+    assert observed == [expected]
 
 
 def test_menu_run_requires_application_lifecycle() -> None:

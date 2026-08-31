@@ -262,7 +262,21 @@ def test_wait_callback_exception_still_stops_menu_and_propagates() -> None:
     assert not menu._running
 
 
-def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
+def test_force_quit_requests_hard_exit_without_waiting_for_work() -> None:
+    _, menu = make_main()
+    _, (work,) = install_fake_operations(menu, "Generating function calls")
+
+    menu.stop()
+    press(menu, "enter")
+
+    assert menu._hard_exit_requested
+    assert not menu._running
+    assert menu._task_exit is None
+    assert work.alive
+    assert not work.cancelled
+
+
+def test_hard_output_shutdown_does_not_wait_and_discards_callbacks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     original_stdout = io.StringIO()
@@ -287,74 +301,19 @@ def test_stop_and_quit_waits_and_discards_future_output_and_callbacks(
             lambda error: callbacks.append("error"),
             "Work",
         )
-        panel = attach_output_task(app, menu, session, "Work")
+        attach_output_task(app, menu, session, "Work")
         assert started.wait(1)
-        menu.stop()
-        press(menu, "enter")
-        assert menu._running
-        assert menu._task_exit is not None
-        assert menu._task_exit.mode == "stopping"
-        assert "Stopping operation" in MenuRenderer(menu).render()
-        assert sys.stdout is not original_stdout
-        print("ui remains visible")
+
+        app._shutdown_output_task(wait_for_worker=False)
+
+        assert session.is_alive()
+        assert app._active_output_task is None
         release.set()
         assert session.join(1)
-        assert app._dispatch_output_task_outcome() is menu
-        assert panel not in menu.content_panels
-        assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
-        assert not menu._running
-    assert sys.stdout is original_stdout
+        assert app._dispatch_output_task_outcome() is None
+
     assert "late" not in original_stdout.getvalue()
-    assert "ui remains visible" in original_stdout.getvalue()
     assert callbacks == []
-
-
-def test_source_work_offers_exit_choices_and_stop_waits_for_real_termination() -> None:
-    _, menu = make_main()
-    _, (work,) = install_fake_operations(menu, "Generating function calls")
-
-    menu.stop()
-    assert menu._running
-    assert "Operation in progress" in MenuRenderer(menu).render()
-
-    press(menu, "enter")
-    assert work.cancelled
-    assert menu._running
-    assert menu._task_exit is not None
-    assert menu._task_exit.mode == "stopping"
-
-    number(menu, "0")
-    assert menu._task_exit.mode == "stopping"
-    assert menu._running
-
-    work.alive = False
-    assert menu._tick_task_exit(menu._task_exit.wait_started_at + 0.41)
-    assert not menu._running
-
-
-def test_force_quit_cancels_operations_that_appear_while_stopping() -> None:
-    _, menu = make_main()
-    loop, (first,) = install_fake_operations(menu, "First")
-    menu.stop()
-    press(menu, "enter")
-    assert first.cancelled
-
-    second_panel = menu.add_content_panel("late output", description="Second")
-    second = FakeWork("Second")
-    loop.attach(second_panel, second)
-
-    assert menu._tick_task_exit(0.1)
-    assert second.cancelled
-    assert menu._task_exit is not None
-    assert menu._task_exit.visible_panels == (
-        menu.content_panels[1],
-        second_panel,
-    )
-
-    first.alive = False
-    second.alive = False
-    assert menu._tick_task_exit(0.2)
-    assert not menu._running
 
 
 def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:

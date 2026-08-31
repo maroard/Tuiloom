@@ -42,6 +42,32 @@ def _spawn(script: str) -> tuple[subprocess.Popen[bytes], int]:
     return process, master
 
 
+def _read_to_exit(
+    master: int,
+    process: subprocess.Popen[bytes],
+    *,
+    timeout: float = 2,
+) -> bytes:
+    output = bytearray()
+    deadline = monotonic() + timeout
+    while monotonic() < deadline and process.poll() is None:
+        readable, _, _ = select.select([master], [], [], 0.1)
+        if readable:
+            try:
+                output.extend(os.read(master, 8192))
+            except OSError:
+                break
+    process.wait(timeout=max(0.1, deadline - monotonic()))
+    while True:
+        readable, _, _ = select.select([master], [], [], 0)
+        if not readable:
+            return bytes(output)
+        try:
+            output.extend(os.read(master, 8192))
+        except OSError:
+            return bytes(output)
+
+
 def _finish(process: subprocess.Popen[bytes], master: int) -> bytes:
     try:
         output = _read_until(master, process, b"RESTORED")
@@ -123,3 +149,45 @@ print("RESTORED")
     assert b"Beta" in final
     assert b"beta" in final
     assert b"Main" in final
+
+
+def test_force_quit_restores_terminal_and_kills_blocked_output_task() -> None:
+    script = """
+from threading import Event
+from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+
+app = TerminalApp("App")
+menu = TerminalMenu(app, ScreenContext("main", "Main"))
+def block_forever():
+    print("TASK_STARTED")
+    Event().wait()
+menu.add_command(
+    "Start",
+    lambda context: menu.run_with_output(
+        block_forever,
+        on_success=lambda result: None,
+        on_error=lambda error: None,
+        description="Blocked",
+    ),
+)
+app.set_main_menu(menu)
+app.run()
+"""
+    process, master = _spawn(script)
+    try:
+        _read_until(master, process, b"Start")
+        os.write(master, b"\r")
+        _read_until(master, process, b"TASK_STARTED")
+        os.write(master, b"\x1b")
+        choice = _read_until(master, process, b"Force quit")
+        os.write(master, b"\r")
+        final = choice + _read_to_exit(master, process)
+
+        assert process.returncode == 0
+        assert b"\x1b[?1049l" in final
+        assert b"Stopping operation" not in final
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)

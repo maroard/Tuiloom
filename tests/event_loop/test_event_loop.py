@@ -10,6 +10,7 @@ import pytest
 from tuiloom import KeyBinding, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_event import SourceEvent
+from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.input_handler.input_handler import InputHandler
 from tuiloom.render.content_renderer import ContentRenderer, ContentSource
@@ -69,6 +70,22 @@ class BlockingIterator:
 
     def cancel(self) -> None:
         self.release.set()
+
+
+class UnstoppableWork:
+    def __init__(self) -> None:
+        self.cancel_calls = 0
+        self.join_calls = 0
+
+    def cancel(self) -> None:
+        self.cancel_calls += 1
+
+    def join(self, timeout: float | None = None) -> bool:
+        self.join_calls += 1
+        return False
+
+    def is_alive(self) -> bool:
+        return True
 
 
 def make_loop(
@@ -383,6 +400,21 @@ def test_close_waits_for_cancelled_iterator_before_closing_resources() -> None:
     assert not closer.is_alive()
     assert not worker.is_alive()
     assert selector.closed
+
+
+def test_abandon_releases_resources_without_touching_workers() -> None:
+    menu, loop, selector, _ = make_loop([None])
+    work = UnstoppableWork()
+    panel = menu.content_panels[0]
+    panel._worker = cast(SourceWorker, work)
+
+    loop.abandon()
+
+    assert work.cancel_calls == 0
+    assert work.join_calls == 0
+    assert selector.closed
+    assert loop._wakeup_reader.fileno() == -1
+    assert loop._wakeup_writer.fileno() == -1
 
 
 def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() -> None:

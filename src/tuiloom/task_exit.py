@@ -5,7 +5,7 @@ from typing import Literal
 
 from tuiloom.content_panel import ContentPanel
 
-type TaskExitMode = Literal["choice", "waiting", "stopping"]
+type TaskExitMode = Literal["choice", "waiting"]
 
 
 @dataclass(slots=True)
@@ -29,10 +29,8 @@ class TaskExitView:
         return ()
 
     def visible_title(self, operation_count: int) -> str:
-        """Return a mode- and count-sensitive temporary menu title."""
+        """Return the count-sensitive temporary menu title."""
         plural = operation_count != 1
-        if self.mode == "stopping":
-            return "Stopping operations..." if plural else "Stopping operation..."
         return "Operations in progress" if plural else "Operation in progress"
 
     def move(self, delta: int) -> None:

@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.1.1.1. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.2.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -44,7 +44,7 @@ python -m pip install tuiloom
 To install the version documented here explicitly:
 
 ```bash
-python -m pip install tuiloom==0.1.1.1
+python -m pip install tuiloom==0.2.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -192,6 +192,11 @@ view, and a handle from another menu is rejected.
 
 The handle exposes read-only `label`, `behavior`, `position`, and `enabled`
 properties. Their current values reflect mutations performed through the menu.
+
+Every time a menu opens, its marker starts on the first enabled command from
+the top. Disabled commands are skipped during initialization and navigation; if
+all commands are disabled, the marker starts on the automatic `Back` or `Quit`
+row.
 
 ### Submenus
 
@@ -383,9 +388,9 @@ Tuiloom removes the temporary panel after its output is consumed, then runs
 
 Capture includes `print()` and Python writes to `sys.stdout` and `sys.stderr`.
 It cannot capture subprocess output or direct POSIX file-descriptor writes.
-Tuiloom does not inject a cancellation token into `action`: Force quit
-discards its remaining output and outcome, but the action itself must return or
-use application-owned cancellation state before its worker can terminate.
+Tuiloom does not inject a cancellation token into `action`. Wait and quit
+therefore requires the action to return, while Force quit terminates the whole
+process without waiting for the action.
 
 ## Safe shutdown
 
@@ -398,10 +403,11 @@ Wait and quit
 Cancel
 ```
 
-- **Force quit** requests cooperative cancellation, discards later results,
-  errors, output, and callbacks, and displays `Stopping operation...` or
-  `Stopping operations...`. This state is non-interactive, and the menu closes
-  only after every worker has really terminated.
+- **Force quit** immediately restores the terminal and terminates the process
+  with status zero because it is an explicitly handled user action. It does not
+  wait for active Python threads or native calls, and it does not run their
+  completion callbacks. Partial third-party writes, such as model cache
+  downloads, may be resumed or cleaned up by that library on the next launch.
 - **Wait and quit** lets work finish normally, animates its description, runs a
   captured task's completion callback, and exposes only a selectable `Cancel`
   row while waiting.
@@ -418,11 +424,10 @@ live in every mode: completed panels disappear immediately, singular/plural
 titles update, and newly started operations are included. The application exits
 automatically when no blocking operation remains, even before a choice is made.
 
-Python cannot safely kill an arbitrary thread. Tuiloom therefore uses
-cooperative cancellation and waits without a timeout before closing sockets,
-restoring the terminal, or returning from the application. Native code that
-never returns can leave the stopping view visible indefinitely. Use a separate process
-when forceful termination is required.
+**Wait and quit** and ordinary shutdown use cooperative cancellation and wait
+without a timeout before restoring the terminal. **Force quit** is the escape
+hatch for native or application code that does not return: it restores terminal
+modes and then terminates the whole process without waiting for workers.
 
 The same guarantee applies when a callback, source, or renderer raises: Tuiloom
 joins active workers before restoring the terminal and propagating the error.
@@ -1060,10 +1065,9 @@ Unsafe or non-HTTP(S) URLs raise `ValueError`.
 - Only one `run_with_output()` task can run per application.
 - Python stdout/stderr capture does not include subprocess or direct
   file-descriptor output.
-- Content and task workers are non-daemon and are always joined before terminal
-  restoration or application return.
-- Cancellation is cooperative. Tuiloom cannot forcibly terminate Python threads
-  or native code that does not return.
+- Normal shutdown joins non-daemon content and task workers before returning.
+  Force quit instead restores terminal modes and terminates the process without
+  joining workers.
 - Terminal protocols may collapse modifier combinations, so not every theoretical
   `KeyBinding` is distinguishable on every terminal.
 - Rendered content is Unicode-cell-aware and sanitizes unsafe terminal control

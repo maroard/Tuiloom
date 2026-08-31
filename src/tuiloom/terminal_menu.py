@@ -64,6 +64,7 @@ class TerminalMenu:
         self._selected_index = 0
         self._focused_panel: ContentPanel | None = None
         self._running = False
+        self._hard_exit_requested = False
 
         self._input_buffer = ""
         self._input_behavior: InputBehavior | None = None
@@ -504,6 +505,7 @@ class TerminalMenu:
         self._running = True
         self._input_buffer = ""
         self._focused_panel = None
+        self._selected_index = 0
         self._normalize_selection()
         source = self._resolve_content_source()
         primary = self._primary_content_panel
@@ -528,7 +530,10 @@ class TerminalMenu:
         try:
             self._event_loop.run()
         finally:
-            self._event_loop.close()
+            if self._hard_exit_requested:
+                self._event_loop.abandon()
+            else:
+                self._event_loop.close()
             self._event_loop = None
 
     def stop(self) -> None:
@@ -809,7 +814,7 @@ class TerminalMenu:
 
     def _handle_task_exit_event(self, event: InputEvent) -> None:
         view = self._task_exit
-        if view is None or view.mode == "stopping":
+        if view is None:
             return
         binding = event.binding
         action = self.app.keymap.action_for(binding) if binding is not None else None
@@ -844,12 +849,9 @@ class TerminalMenu:
             view.wait_phase = -1
             return
         if row == "Force quit":
-            view.mode = "stopping"
-            view.selected_index = 0
-            view.wait_started_at = monotonic()
-            view.wait_phase = -1
-            for panel in self._current_exit_panels():
-                self._cancel_panel_operation(panel)
+            self._hard_exit_requested = True
+            self._task_exit = None
+            self._stop_immediately()
 
     def _cancel_task_exit(self) -> None:
         view = self._task_exit
@@ -873,10 +875,6 @@ class TerminalMenu:
             self._task_exit = None
             self._stop_immediately()
             return True
-        if view.mode == "stopping":
-            for panel in active:
-                self._cancel_panel_operation(panel)
-            return changed
         if view.mode != "waiting":
             return changed
         phase = int((now - view.wait_started_at) / 0.4) % 3 + 1
@@ -898,14 +896,6 @@ class TerminalMenu:
         ):
             panels.append(registration.panel)
         return tuple(dict.fromkeys(panels))
-
-    def _cancel_panel_operation(self, panel: ContentPanel) -> None:
-        worker = panel._worker
-        if worker is not None and worker.is_alive():
-            worker.cancel()
-        registration = self.app._active_output_task
-        if registration is not None and registration.panel is panel:
-            self.app._stop_and_quit_output_task(self)
 
     def _invalidate_renderer(self) -> None:
         if self._terminal_renderer is not None:

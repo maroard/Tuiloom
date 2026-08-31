@@ -214,6 +214,19 @@ class EventLoop:
             if panel._worker is not None:
                 panel._worker.join()
 
+        self._close_resources()
+
+    def abandon(self) -> None:
+        """Release selectable resources without touching application workers."""
+        if self._closed:
+            return
+
+        self._closed = True
+        self._pending_source = None
+        self._close_resources()
+
+    def _close_resources(self) -> None:
+        """Close the selector and wakeup sockets exactly once."""
         self._selector.close()
         self._wakeup_reader.close()
         self._wakeup_writer.close()

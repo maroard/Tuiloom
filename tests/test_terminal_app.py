@@ -110,7 +110,7 @@ def test_hard_exit_restores_terminal_before_terminating_process(
         ("shutdown", False),
         "input closed",
         "leave",
-        ("exit", 1),
+        ("exit", 0),
     ]
 
 

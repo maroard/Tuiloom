@@ -315,7 +315,7 @@ class TerminalApp:
                             self._leave_terminal_screen()
                         finally:
                             if hard_exit_requested:
-                                _exit(1)
+                                _exit(0)
 
     def _enter_terminal_screen(self) -> None:
         stdout.write("\033[?1049h\033[2J\033[H\033[?25l")

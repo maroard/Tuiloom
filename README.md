@@ -399,10 +399,10 @@ Cancel
 ```
 
 - **Force quit** immediately restores the terminal and terminates the process
-  with a non-zero status. It does not wait for active Python threads or native
-  calls, and it does not run their completion callbacks. Partial third-party
-  writes, such as model cache downloads, may be resumed or cleaned up by that
-  library on the next launch.
+  with status zero because it is an explicitly handled user action. It does not
+  wait for active Python threads or native calls, and it does not run their
+  completion callbacks. Partial third-party writes, such as model cache
+  downloads, may be resumed or cleaned up by that library on the next launch.
 - **Wait and quit** lets work finish normally, animates its description, runs a
   captured task's completion callback, and exposes only a selectable `Cancel`
   row while waiting.

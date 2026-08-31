@@ -183,7 +183,7 @@ app.run()
         os.write(master, b"\r")
         final = choice + _read_to_exit(master, process)
 
-        assert process.returncode == 1
+        assert process.returncode == 0
         assert b"\x1b[?1049l" in final
         assert b"Stopping operation" not in final
     finally:

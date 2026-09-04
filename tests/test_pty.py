@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from time import monotonic
 
+import pytest
+
 
 def _read_until(master: int, process: subprocess.Popen[bytes], needle: bytes) -> bytes:
     output = bytearray()
@@ -63,9 +65,12 @@ def _read_to_exit(
         if not readable:
             return bytes(output)
         try:
-            output.extend(os.read(master, 8192))
+            chunk = os.read(master, 8192)
         except OSError:
             return bytes(output)
+        if not chunk:
+            return bytes(output)
+        output.extend(chunk)
 
 
 def _finish(process: subprocess.Popen[bytes], master: int) -> bytes:
@@ -78,6 +83,32 @@ def _finish(process: subprocess.Popen[bytes], master: int) -> bytes:
         if process.poll() is None:
             process.terminate()
             process.wait(timeout=2)
+
+
+def test_read_to_exit_stops_draining_at_pty_eof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reads = 0
+
+    class ExitedProcess:
+        def poll(self) -> int:
+            return 0
+
+        def wait(self, timeout: float) -> int:
+            return 0
+
+    def read_once_then_fail(file_descriptor: int, size: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise AssertionError("PTY was read again after EOF")
+        return b""
+
+    monkeypatch.setattr(select, "select", lambda *args: ([1], [], []))
+    monkeypatch.setattr(os, "read", read_once_then_fail)
+
+    assert _read_to_exit(1, ExitedProcess()) == b""  # type: ignore[arg-type]
+    assert reads == 1
 
 
 def test_pty_unicode_navigation_and_terminal_restoration() -> None:

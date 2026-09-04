@@ -66,6 +66,7 @@ def test_run_installs_capture_and_restores_terminal_on_failure(
     monkeypatch.setattr(menu, "run", fail)
     with pytest.raises(RuntimeError, match="render failed"):
         app.run()
+    assert not app._running
     assert calls == ["enter", "close", "leave"]
     assert sys.stdout is original_stdout
 

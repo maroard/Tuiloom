@@ -935,6 +935,9 @@ class TerminalMenu:
         view = self._task_exit
         if view is None:
             return False
+        if self.app._menu_stack and self.app._menu_stack[-1] is not self:
+            self._cancel_task_exit()
+            return True
         active = self._current_exit_panels()
         changed = active != view.visible_panels
         view.visible_panels = active

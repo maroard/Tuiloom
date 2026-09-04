@@ -215,6 +215,41 @@ def test_wait_and_quit_runs_callback_on_ui_thread_then_stops() -> None:
     assert not menu._running
 
 
+def test_hidden_exit_dialog_cannot_stop_menu_opened_by_completion_callback() -> None:
+    app, root = make_main()
+    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    release = Event()
+    app._menu_stack = [root]
+    app._initialized_menus = [root]
+    app._running = True
+
+    def load_child() -> int:
+        release.wait(1)
+        return 42
+
+    with app._output_capture.install():
+        session = app._start_output_task(
+            root,
+            load_child,
+            lambda result: app.push_menu(child),
+            lambda error: pytest.fail(str(error)),
+            "Loading child",
+        )
+        attach_output_task(app, root, session, "Loading child")
+        root.stop()
+        assert root._task_exit is not None
+        release.set()
+        assert session.join(1)
+
+        assert app._dispatch_output_task_outcome() is root
+        assert app._menu_stack == [root, child]
+        assert root._tick_task_exit(root._task_exit.wait_started_at + 0.1)
+
+    assert app._running
+    assert app._menu_stack == [root, child]
+    assert root._task_exit is None
+
+
 def test_cancel_exit_restores_previous_message_and_normal_state() -> None:
     app, menu = make_main()
     release = Event()

@@ -370,6 +370,7 @@ class TerminalApp:
                 self._enter_terminal_screen()
                 self._run_application_loop()
             finally:
+                self._running = False
                 hard_exit_requested = any(
                     menu._hard_exit_requested
                     for menu in (*self._initialized_menus, *self._menu_stack)

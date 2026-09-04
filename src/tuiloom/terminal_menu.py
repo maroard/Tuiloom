@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from time import monotonic
 from typing import TYPE_CHECKING, Literal, cast
+from warnings import warn
 
 from wcwidth import iter_graphemes
 
@@ -13,7 +14,6 @@ from tuiloom.command import (
     GlobalCommand,
     InputBehavior,
     MenuCommand,
-    _without_context,
 )
 from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.event_loop import EventLoop
@@ -61,6 +61,7 @@ class TerminalMenu:
         self._show = show
         self._commands: list[MenuCommand] = []
         self._exit_label = "Back"
+        self._exit_label_explicit = False
         self._selected_index = 0
         self._focused_panel: ContentPanel | None = None
         self._running = False
@@ -280,12 +281,44 @@ class TerminalMenu:
         """Add an application-owned submenu command and return its handle."""
         if submenu.app is not self.app:
             raise ValueError("Submenu must belong to the same TerminalApp")
-        return self.add_command(label, _without_context(submenu.run), position=position)
+        return self.add_command(
+            label,
+            lambda context: context.app.push_menu(submenu),
+            position=position,
+        )
 
     def set_command_label(self, command: MenuCommand, label: str) -> None:
         """Rename an owned command without changing its identity."""
         self._require_command(command)
         command._label = label
+
+    def delete_command(self, command: MenuCommand) -> None:
+        """Atomically remove an owned command and invalidate its handle."""
+        self._require_command(command)
+        removed_position = self._commands.index(command)
+        selected = (
+            self._commands[self._selected_index]
+            if self._selected_index < len(self._commands)
+            else None
+        )
+        self._commands.pop(removed_position)
+        if selected is not command:
+            self._selected_index = (
+                self._commands.index(selected)
+                if selected is not None
+                else len(self._commands)
+            )
+            return
+
+        for index in range(removed_position, len(self._commands)):
+            if self._commands[index].enabled:
+                self._selected_index = index
+                return
+        for index in range(removed_position - 1, -1, -1):
+            if self._commands[index].enabled:
+                self._selected_index = index
+                return
+        self._selected_index = len(self._commands)
 
     def set_command_behavior(
         self, command: MenuCommand, behavior: CommandBehavior
@@ -331,6 +364,7 @@ class TerminalMenu:
     def set_exit_label(self, label: str) -> None:
         """Rename the automatic final Back/Quit option."""
         self._exit_label = label
+        self._exit_label_explicit = True
 
     def set_global_command_behavior(
         self, command: GlobalCommand, behavior: CommandBehavior
@@ -499,14 +533,46 @@ class TerminalMenu:
         return key not in self._disabled_messages and self.app._is_message_enabled(key)
 
     def run(self) -> None:
-        """Run this menu until Back/Quit is activated."""
+        """Deprecated: request that the running application push this menu.
+
+        Use :meth:`TerminalApp.push_menu` instead. This compatibility method
+        never starts a nested event loop.
+        """
+        warn(
+            "TerminalMenu.run() is deprecated; use TerminalApp.push_menu()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if self.app._running:
+            self.app.push_menu(self)
+            return
         if self.app._input_handler is None:
             raise RuntimeError("Cannot run TerminalMenu outside TerminalApp.run()")
-        self._running = True
+        self._prepare_open()
+        self._initialize_runtime()
+        loop = self._event_loop
+        if loop is None:
+            raise RuntimeError("Menu runtime was not initialized")
+        try:
+            loop.run()
+        finally:
+            if self._hard_exit_requested:
+                loop.abandon()
+            else:
+                loop.close()
+            self._event_loop = None
+
+    def _prepare_open(self) -> None:
+        """Reset transient navigation state whenever this menu becomes visible."""
         self._input_buffer = ""
         self._focused_panel = None
         self._selected_index = 0
         self._normalize_selection()
+        self._invalidate_renderer()
+
+    def _initialize_runtime(self) -> None:
+        """Create renderers and workers the first time this menu is opened."""
+        self._running = True
         source = self._resolve_content_source()
         primary = self._primary_content_panel
         self._content_renderer = (
@@ -522,31 +588,34 @@ class TerminalMenu:
             content_spacing=self._content_spacing,
         )
         self._event_loop = self._create_event_loop()
-        try:
-            self._event_loop.run()
-        finally:
-            if self._hard_exit_requested:
-                self._event_loop.abandon()
-            else:
-                self._event_loop.close()
-            self._event_loop = None
 
     def stop(self) -> None:
         """Request Back/Quit, presenting choices while background work is active."""
-        if self.is_main and self._current_exit_panels():
+        at_root = len(self.app._menu_stack) <= 1 and (
+            self in self.app._menu_stack or not self.app._menu_stack and self.is_main
+        )
+        if at_root and self._current_exit_panels():
             self._begin_task_exit_choice()
             return
-        self._stop_immediately()
+        if self not in self.app._menu_stack:
+            self._stop_immediately()
+            return
+        self.app.pop_menu()
 
     def _stop_immediately(self) -> None:
         self._running = False
+        self.app._running = False
 
     def _position_of(self, command: MenuCommand) -> int:
         self._require_command(command)
         return self._commands.index(command)
 
     def _require_command(self, command: MenuCommand) -> None:
-        if not isinstance(command, MenuCommand) or command._menu is not self:
+        if (
+            not isinstance(command, MenuCommand)
+            or command._menu is not self
+            or command not in self._commands
+        ):
             raise ValueError("Menu command does not belong to this menu")
 
     def _position_of_content_panel(self, panel: ContentPanel) -> int:
@@ -881,8 +950,13 @@ class TerminalMenu:
     def _current_exit_panels(self) -> tuple[ContentPanel, ...]:
         """Return unique logical operations that currently block root exit."""
         panels: list[ContentPanel] = []
-        if self._event_loop is not None:
-            panels.extend(self._event_loop.active_panels)
+        menus = (
+            self,
+            *(menu for menu in self.app._initialized_menus if menu is not self),
+        )
+        for menu in menus:
+            if menu._event_loop is not None:
+                panels.extend(menu._event_loop.active_panels)
         registration = self.app._active_output_task
         if (
             registration is not None

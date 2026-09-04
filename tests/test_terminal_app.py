@@ -180,3 +180,194 @@ def test_run_joins_output_worker_before_restoring_terminal(
     session = sessions[0]
     assert not session.is_alive()
     assert app._active_output_task is None
+
+
+def test_navigation_stack_transitions_and_reopening() -> None:
+    app = TerminalApp("App")
+    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    leaf = TerminalMenu(app, ScreenContext("leaf", "Leaf"))
+
+    app.push_menu(root)
+    app.push_menu(child)
+    app.replace_menu(leaf)
+    assert app._menu_stack == [root, leaf]
+    app.pop_menu()
+    assert app._menu_stack == [root]
+    app.push_menu(child)
+    app.push_menu(leaf)
+    app.reset_to(child)
+    assert app._menu_stack == [root, child]
+    app.reset_to(leaf)
+    assert app._menu_stack == [leaf]
+
+
+def test_navigation_rejects_foreign_and_simultaneous_duplicates_atomically() -> None:
+    app = TerminalApp("App")
+    other = TerminalApp("Other")
+    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    foreign = TerminalMenu(other, ScreenContext("foreign", "Foreign"))
+    app.push_menu(root)
+
+    for operation in (
+        lambda: app.push_menu(foreign),
+        lambda: app.replace_menu(foreign),
+        lambda: app.reset_to(foreign),
+        lambda: app.push_menu(root),
+    ):
+        with pytest.raises(ValueError):
+            operation()
+        assert app._menu_stack == [root]
+
+
+def test_pop_at_root_requests_application_shutdown() -> None:
+    app = TerminalApp("App")
+    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    app.push_menu(root)
+    app._running = True
+
+    app.pop_menu()
+
+    assert not app._running
+    assert app._menu_stack == [root]
+
+
+def test_run_accepts_entry_menu_without_registered_main(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeInputHandler:
+        def close(self) -> None:
+            pass
+
+    app = TerminalApp("App")
+    entry = TerminalMenu(app, ScreenContext("entry", "Entry"))
+    observed: list[TerminalMenu] = []
+    monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
+    monkeypatch.setattr(app, "_enter_terminal_screen", lambda: None)
+    monkeypatch.setattr(app, "_leave_terminal_screen", lambda: None)
+    monkeypatch.setattr(
+        app,
+        "_run_application_loop",
+        lambda: (observed.append(app._menu_stack[-1]), setattr(app, "_running", False)),
+    )
+
+    app.run(entry)
+
+    assert observed == [entry]
+
+
+def test_application_loop_services_hidden_menus_but_inputs_and_renders_only_top(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = TerminalApp("App")
+    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    calls: list[tuple[str, bool, bool, bool]] = []
+
+    class Loop:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def run_once(self, *, process_input: bool, render: bool, block: bool) -> None:
+            calls.append((self.name, process_input, render, block))
+            if self.name == "child":
+                app._running = False
+
+    def initialize(menu: TerminalMenu, name: str) -> None:
+        menu._running = True
+        menu._event_loop = Loop(name)  # type: ignore[assignment]
+
+    monkeypatch.setattr(root, "_initialize_runtime", lambda: initialize(root, "root"))
+    monkeypatch.setattr(
+        child, "_initialize_runtime", lambda: initialize(child, "child")
+    )
+    app.push_menu(root)
+    root._initialize_runtime()
+    app._initialized_menus.append(root)
+    app.push_menu(child)
+    app._running = True
+
+    app._run_application_loop()
+
+    assert calls == [
+        ("root", False, False, False),
+        ("child", True, True, True),
+    ]
+
+
+def test_reopening_retained_menu_resets_navigation_without_reinitializing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = TerminalApp("App")
+    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    initializations: list[TerminalMenu] = []
+
+    class Loop:
+        def run_once(self, **kwargs: object) -> None:
+            if kwargs.get("process_input"):
+                app._running = False
+
+    def initialize() -> None:
+        initializations.append(child)
+        child._running = True
+        child._event_loop = Loop()  # type: ignore[assignment]
+
+    monkeypatch.setattr(child, "_initialize_runtime", initialize)
+    app.push_menu(root)
+    app.push_menu(child)
+    root._event_loop = Loop()  # type: ignore[assignment]
+    app._initialized_menus.append(root)
+    child._selected_index = 3
+    child._focused_panel = object()  # type: ignore[assignment]
+    child._input_buffer = "old"
+    app._running = True
+    app._run_application_loop()
+    app.pop_menu()
+    app.push_menu(child)
+    app._running = True
+    app._run_application_loop()
+
+    assert initializations == [child]
+    assert child._selected_index == 0
+    assert child._focused_panel is None
+    assert child._input_buffer == ""
+
+
+def test_push_is_lazy_and_first_open_starts_source_worker_once() -> None:
+    app = TerminalApp("App")
+    menu = TerminalMenu(
+        app,
+        ScreenContext("stream", "Stream"),
+        content_source=iter(["done"]),
+    )
+
+    app.push_menu(menu)
+
+    assert menu._event_loop is None
+    assert menu.content_panels[0]._worker is None
+
+
+def test_shutdown_closes_every_initialized_menu_runtime_once() -> None:
+    app = TerminalApp("App")
+    first = TerminalMenu(app, ScreenContext("first", "First"))
+    second = TerminalMenu(app, ScreenContext("second", "Second"))
+    calls: list[str] = []
+
+    class Loop:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def close(self) -> None:
+            calls.append(self.name)
+
+    first._event_loop = Loop("first")  # type: ignore[assignment]
+    second._event_loop = Loop("second")  # type: ignore[assignment]
+    app._initialized_menus = [first, second]
+
+    app._shutdown_menu_runtimes()
+    app._shutdown_menu_runtimes()
+
+    assert calls == ["first", "second"]
+    assert first._event_loop is None
+    assert second._event_loop is None

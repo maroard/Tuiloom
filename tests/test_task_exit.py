@@ -336,6 +336,28 @@ def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:
     assert not menu._running
 
 
+def test_root_exit_aggregates_active_panels_from_hidden_initialized_menus() -> None:
+    app, root = make_main()
+    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    root_loop, (root_work,) = install_fake_operations(root, "Root work")
+    child._running = True
+    child_loop, (child_work,) = install_fake_operations(child, "Child work")
+    app._menu_stack = [root]
+    app._initialized_menus = [root, child]
+
+    root.stop()
+
+    assert root._task_exit is not None
+    assert root._task_exit.visible_panels == (
+        root.content_panels[-1],
+        child.content_panels[-1],
+    )
+    root_work.alive = False
+    child_work.alive = False
+    assert root._tick_task_exit(root._task_exit.wait_started_at + 0.1)
+    assert not app._running
+
+
 def test_run_with_output_adds_a_strict_temporary_panel() -> None:
     app, menu = make_main()
     base = menu.content_panels[0]
@@ -392,6 +414,37 @@ def test_run_with_output_restores_auto_scroll_when_start_fails(
             on_error=lambda error: None,
         )
     assert menu.auto_scroll == "smart"
+
+
+def test_run_with_output_allows_only_one_task_across_all_menus() -> None:
+    app, root = make_main()
+    child = TerminalMenu(app, ScreenContext("child", "Child"))
+
+    class Loop:
+        def add_content_panel(self, panel: ContentPanel) -> None:
+            pass
+
+    root._event_loop = Loop()  # type: ignore[assignment]
+    child._event_loop = Loop()  # type: ignore[assignment]
+    child._running = True
+    release = Event()
+
+    with app._output_capture.install():
+        root.run_with_output(
+            lambda: release.wait(1),
+            on_success=lambda result: None,
+            on_error=lambda error: None,
+        )
+        with pytest.raises(RuntimeError, match="already running"):
+            child.run_with_output(
+                lambda: None,
+                on_success=lambda result: None,
+                on_error=lambda error: None,
+            )
+        release.set()
+        session = root._output_task_session
+        assert session is not None and session.join(1)
+        app._dispatch_output_task_outcome()
 
 
 def test_task_error_dispatches_error_callback() -> None:

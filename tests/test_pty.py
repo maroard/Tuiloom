@@ -182,6 +182,55 @@ print("RESTORED")
     assert b"Main" in final
 
 
+def test_pty_multi_level_navigation_back_reopen_and_quit() -> None:
+    script = """
+from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+
+app = TerminalApp("Journey App")
+root = TerminalMenu(app, ScreenContext("root", "Root"))
+child = TerminalMenu(app, ScreenContext("child", "Child"))
+leaf = TerminalMenu(app, ScreenContext("leaf", "Leaf"))
+root.add_menu(child, "Open child")
+child.add_menu(leaf, "Open leaf")
+app.set_main_menu(root)
+app.run()
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    try:
+        _read_until(master, process, b"Open child")
+        os.write(master, b"\r")
+        _read_until(master, process, b"Open leaf")
+        os.write(master, b"\r")
+        leaf_frame = _read_until(master, process, b"Leaf")
+        assert b"Back" in leaf_frame
+
+        os.write(master, b"\x1b")
+        _read_until(master, process, b"Open leaf")
+        os.write(master, b"\x1b")
+        root_frame = _read_until(master, process, b"Open child")
+        assert b"Quit" in root_frame
+
+        os.write(master, b"\r")
+        reopened = _read_until(master, process, b"Open leaf")
+        assert b"Child" in reopened
+        os.write(master, b"\x1b")
+        _read_until(master, process, b"Open child")
+        os.write(master, b"\x1b")
+        final = _finish(process, master)
+
+        assert b"RESTORED" in final
+        assert b"\x1b[?1049l" in final
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        try:
+            os.close(master)
+        except OSError:
+            pass
+
+
 def test_force_quit_restores_terminal_and_kills_blocked_output_task() -> None:
     script = """
 from threading import Event

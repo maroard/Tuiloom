@@ -131,6 +131,21 @@ def test_event_loop_drains_immediate_input_and_stops() -> None:
     loop.close()
 
 
+def test_event_loop_stops_draining_input_when_callback_changes_top_menu() -> None:
+    menu, loop, _, _ = make_loop(
+        [InputEvent(KeyBinding("enter")), InputEvent(KeyBinding("down")), None]
+    )
+    child = TerminalMenu(menu.app, ScreenContext("child", "Child"))
+    menu._commands[0]._behavior = lambda context: menu.app.push_menu(child)
+    menu.app._menu_stack = [menu]
+
+    loop.run_once()
+
+    assert menu.app._menu_stack == [menu, child]
+    assert menu._selected_index == 0
+    loop.close()
+
+
 def test_event_loop_detects_context_and_terminal_state_changes() -> None:
     menu, loop, _, renderer = make_loop([None])
     menu.screen_context.message = "changed"

@@ -79,17 +79,24 @@ class EventLoop:
         while self._menu._running:
             self.run_once()
 
-    def run_once(self) -> None:
-        """Process one selectable event-loop turn."""
+    def run_once(
+        self,
+        *,
+        process_input: bool = True,
+        render: bool = True,
+        block: bool = True,
+    ) -> None:
+        """Process one turn, optionally limiting it to background work."""
         self._progress_panel_transitions()
-        ready = self._selector.select(self._get_wait_timeout())
+        ready = self._selector.select(self._get_wait_timeout() if block else 0)
 
         for key, _ in ready:
             if key.data == "source":
                 self._drain_wakeup()
-                self._drain_source_events()
+        self._drain_source_events()
 
-        self._drain_input()
+        if process_input:
+            self._drain_input()
         self._request_dynamic_updates()
         completed_menu = self._menu.app._dispatch_output_task_outcome()
 
@@ -97,7 +104,11 @@ class EventLoop:
             self.request_render(immediate=True)
 
         self._check_visible_state()
-        self._render_if_due()
+        if render and (
+            not self._menu.app._menu_stack
+            or self._menu.app._menu_stack[-1] is self._menu
+        ):
+            self._render_if_due()
 
     def request_render(self, immediate: bool = False) -> None:
         """Mark visible state dirty for the next permitted frame."""
@@ -333,7 +344,11 @@ class EventLoop:
             self._menu._handle_event(event)
             self.request_render()
 
-            if not self._menu._running:
+            if (
+                not self._menu._running
+                or self._menu.app._menu_stack
+                and self._menu.app._menu_stack[-1] is not self._menu
+            ):
                 return
 
     def _drain_source_events(self) -> None:

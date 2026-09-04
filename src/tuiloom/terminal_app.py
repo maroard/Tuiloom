@@ -59,6 +59,9 @@ class TerminalApp:
         self._active_output_task: _OutputTaskRegistration | None = None
         self._output_task_outcomes: Queue[_OutputTaskRegistration] = Queue()
         self._input_handler: InputHandler | None = None
+        self._menu_stack: list[TerminalMenu] = []
+        self._initialized_menus: list[TerminalMenu] = []
+        self._running = False
 
     @property
     def name(self) -> str:
@@ -91,9 +94,66 @@ class TerminalApp:
             raise ValueError("Main menu must belong to this TerminalApp")
         previous = self._main_menu
         if previous is not None and previous is not menu:
-            previous.set_exit_label("Back")
+            if not previous._exit_label_explicit:
+                previous._exit_label = "Back"
         self._main_menu = menu
-        menu.set_exit_label("Quit")
+        if not menu._exit_label_explicit:
+            menu._exit_label = "Quit"
+
+    def push_menu(self, menu: TerminalMenu) -> None:
+        """Push an application-owned menu onto the navigation stack."""
+        self._validate_navigation_menu(menu)
+        self._menu_stack.append(menu)
+        self._sync_exit_labels()
+        menu._prepare_open()
+
+    def pop_menu(self) -> None:
+        """Return to the previous menu, or request shutdown at the root."""
+        if len(self._menu_stack) <= 1:
+            self._running = False
+            return
+        self._menu_stack.pop()
+        self._sync_exit_labels()
+        self._menu_stack[-1]._invalidate_renderer()
+
+    def replace_menu(self, menu: TerminalMenu) -> None:
+        """Replace only the menu currently at the top of the stack."""
+        self._validate_navigation_menu(menu, allow_current_top=True)
+        if not self._menu_stack:
+            self._menu_stack.append(menu)
+        else:
+            self._menu_stack[-1] = menu
+        self._sync_exit_labels()
+        menu._prepare_open()
+
+    def reset_to(self, menu: TerminalMenu) -> None:
+        """Truncate through an existing menu, or replace the whole stack."""
+        if not isinstance(menu, TerminalMenu) or menu.app is not self:
+            raise ValueError("Menu must belong to this TerminalApp")
+        if menu in self._menu_stack:
+            del self._menu_stack[self._menu_stack.index(menu) + 1 :]
+        else:
+            self._menu_stack[:] = [menu]
+        self._sync_exit_labels()
+        menu._prepare_open()
+
+    def _sync_exit_labels(self) -> None:
+        for index, menu in enumerate(self._menu_stack):
+            if not menu._exit_label_explicit:
+                menu._exit_label = "Quit" if index == 0 else "Back"
+
+    def _validate_navigation_menu(
+        self,
+        menu: TerminalMenu,
+        *,
+        allow_current_top: bool = False,
+    ) -> None:
+        if not isinstance(menu, TerminalMenu) or menu.app is not self:
+            raise ValueError("Menu must belong to this TerminalApp")
+        if menu in self._menu_stack and not (
+            allow_current_top and self._menu_stack and self._menu_stack[-1] is menu
+        ):
+            raise ValueError("Menu is already present in the navigation stack")
 
     def add_global_command(
         self,
@@ -282,40 +342,103 @@ class TerminalApp:
         if wait_for_worker:
             registration.session.join()
 
-    def run(self) -> None:
-        """Run the main menu as a blocking interactive main-thread call.
+    def run(self, entry_menu: TerminalMenu | None = None) -> None:
+        """Run one centralized application loop from an entry or main menu.
 
         The call requires a real terminal and the Python main thread. Terminal
         screen and input state are restored even when rendering or callbacks
         raise an exception.
         """
-        main_menu = self._main_menu
-        if main_menu is None:
+        initial_menu = entry_menu if entry_menu is not None else self._main_menu
+        if initial_menu is None:
             raise RuntimeError("Cannot run TerminalApp: no main menu has been set")
+        if initial_menu.app is not self:
+            raise ValueError("Entry menu must belong to this TerminalApp")
         if current_thread() is not main_thread():
             raise RuntimeError("TerminalApp.run() must execute on the main thread")
 
         with self._output_capture.install():
             self._input_handler = InputHandler()
+            self._menu_stack = []
+            self._initialized_menus = []
+            self._running = True
+            self.push_menu(initial_menu)
             try:
                 self._enter_terminal_screen()
-                main_menu.run()
+                self._run_application_loop()
             finally:
-                hard_exit_requested = main_menu._hard_exit_requested
+                hard_exit_requested = any(
+                    menu._hard_exit_requested
+                    for menu in (*self._initialized_menus, *self._menu_stack)
+                )
                 try:
                     self._shutdown_output_task(
                         wait_for_worker=not hard_exit_requested,
                     )
                 finally:
                     try:
-                        self._input_handler.close()
+                        self._shutdown_menu_runtimes(
+                            abandon=hard_exit_requested,
+                        )
                     finally:
-                        self._input_handler = None
                         try:
-                            self._leave_terminal_screen()
+                            self._input_handler.close()
                         finally:
-                            if hard_exit_requested:
-                                _exit(0)
+                            self._input_handler = None
+                            try:
+                                self._leave_terminal_screen()
+                            finally:
+                                if hard_exit_requested:
+                                    _exit(0)
+
+    def _run_application_loop(self) -> None:
+        """Drive initialized menu runtimes until navigation requests shutdown."""
+        while self._running:
+            top = self._menu_stack[-1]
+            legacy_override = top.__dict__.get("run")
+            if callable(legacy_override):
+                legacy_override()
+                self._running = False
+                continue
+            if top not in self._initialized_menus:
+                top._initialize_runtime()
+                self._initialized_menus.append(top)
+            for menu in tuple(self._initialized_menus):
+                if menu is top:
+                    continue
+                if menu._event_loop is not None:
+                    menu._event_loop.run_once(
+                        process_input=False,
+                        render=False,
+                        block=False,
+                    )
+                if not self._running:
+                    break
+            if not self._running:
+                break
+            top = self._menu_stack[-1]
+            if top not in self._initialized_menus:
+                continue
+            if top._event_loop is None:
+                raise RuntimeError("Initialized menu has no event loop")
+            top._event_loop.run_once(
+                process_input=True,
+                render=True,
+                block=True,
+            )
+
+    def _shutdown_menu_runtimes(self, *, abandon: bool = False) -> None:
+        """Release every initialized runtime, joining workers on normal exit."""
+        for menu in self._initialized_menus:
+            loop = menu._event_loop
+            if loop is None:
+                continue
+            if abandon:
+                loop.abandon()
+            else:
+                loop.close()
+            menu._event_loop = None
+            menu._running = False
 
     def _enter_terminal_screen(self) -> None:
         stdout.write("\033[?1049h\033[2J\033[H\033[?25l")

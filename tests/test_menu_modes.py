@@ -210,7 +210,7 @@ def test_active_content_replacement_forwards_its_description() -> None:
     assert installed == [(source, "Generating")]
 
 
-def test_menu_run_builds_resources_shows_no_content_and_closes_loop(
+def test_menu_run_builds_resources_without_no_content_message_and_closes_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, menu = make_menu()
@@ -230,6 +230,8 @@ def test_menu_run_builds_resources_shows_no_content_and_closes_loop(
     monkeypatch.setattr(menu, "_create_event_loop", lambda: loop)
     menu.run()
     assert loop.closed
+    assert menu.screen_context.message is None
+    assert menu.show_message(MessageKey.NO_CONTENT_SOURCE)
     assert "No content source" in (menu.screen_context.message or "")
     assert menu._event_loop is None
 

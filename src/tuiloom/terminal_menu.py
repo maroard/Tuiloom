@@ -514,11 +514,6 @@ class TerminalMenu:
             if primary is not None
             else ContentRenderer(source if source is not None else "")
         )
-        if not self._content_panels:
-            self._show_automatic_message(
-                MessageKey.NO_CONTENT_SOURCE,
-                menu_name=self.screen_context.menu_name,
-            )
         self._menu_renderer = MenuRenderer(self)
         self._terminal_renderer = TerminalRenderer(
             menu=self,

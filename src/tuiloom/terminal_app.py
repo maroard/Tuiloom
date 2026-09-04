@@ -110,7 +110,10 @@ class TerminalApp:
     def pop_menu(self) -> None:
         """Return to the previous menu, or request shutdown at the root."""
         if len(self._menu_stack) <= 1:
-            self._running = False
+            if self._menu_stack:
+                self._menu_stack[-1].stop()
+            else:
+                self._running = False
             return
         self._menu_stack.pop()
         self._sync_exit_labels()

@@ -594,8 +594,11 @@ class TerminalMenu:
         at_root = len(self.app._menu_stack) <= 1 and (
             self in self.app._menu_stack or not self.app._menu_stack and self.is_main
         )
-        if at_root and self._current_exit_panels():
-            self._begin_task_exit_choice()
+        if at_root:
+            if self._current_exit_panels():
+                self._begin_task_exit_choice()
+            else:
+                self._stop_immediately()
             return
         if self not in self.app._menu_stack:
             self._stop_immediately()

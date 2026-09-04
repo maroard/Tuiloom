@@ -358,6 +358,20 @@ def test_root_exit_aggregates_active_panels_from_hidden_initialized_menus() -> N
     assert not app._running
 
 
+def test_public_pop_at_root_offers_exit_choices_for_active_work() -> None:
+    app, root = make_main()
+    app._menu_stack = [root]
+    app._running = True
+    install_fake_operations(root, "Root work")
+
+    app.pop_menu()
+
+    assert app._running
+    assert root._task_exit is not None
+    assert root._task_exit.rows == ("Force quit", "Wait and quit", "Cancel")
+    assert app._menu_stack == [root]
+
+
 def test_run_with_output_adds_a_strict_temporary_panel() -> None:
     app, menu = make_main()
     base = menu.content_panels[0]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from threading import Event, Thread
 
 import pytest
@@ -209,12 +210,13 @@ def test_navigation_rejects_foreign_and_simultaneous_duplicates_atomically() -> 
     foreign = TerminalMenu(other, ScreenContext("foreign", "Foreign"))
     app.push_menu(root)
 
-    for operation in (
+    operations: tuple[Callable[[], None], ...] = (
         lambda: app.push_menu(foreign),
         lambda: app.replace_menu(foreign),
         lambda: app.reset_to(foreign),
         lambda: app.push_menu(root),
-    ):
+    )
+    for operation in operations:
         with pytest.raises(ValueError):
             operation()
         assert app._menu_stack == [root]
@@ -245,11 +247,12 @@ def test_run_accepts_entry_menu_without_registered_main(
     monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
     monkeypatch.setattr(app, "_enter_terminal_screen", lambda: None)
     monkeypatch.setattr(app, "_leave_terminal_screen", lambda: None)
-    monkeypatch.setattr(
-        app,
-        "_run_application_loop",
-        lambda: (observed.append(app._menu_stack[-1]), setattr(app, "_running", False)),
-    )
+
+    def observe_entry() -> None:
+        observed.append(app._menu_stack[-1])
+        app._running = False
+
+    monkeypatch.setattr(app, "_run_application_loop", observe_entry)
 
     app.run(entry)
 

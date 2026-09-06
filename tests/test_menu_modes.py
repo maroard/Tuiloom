@@ -228,7 +228,8 @@ def test_menu_run_builds_resources_without_no_content_message_and_closes_loop(
     loop = Loop()
     app._input_handler = object()  # type: ignore[assignment]
     monkeypatch.setattr(menu, "_create_event_loop", lambda: loop)
-    menu.run()
+    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
+        menu.run()
     assert loop.closed
     assert menu.screen_context.message is None
     assert menu.show_message(MessageKey.NO_CONTENT_SOURCE)
@@ -251,9 +252,11 @@ def test_menu_run_resets_selection_on_every_open(
     )
 
     menu._selected_index = second.position
-    menu.run()
+    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
+        menu.run()
     menu._selected_index = second.position
-    menu.run()
+    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
+        menu.run()
 
     assert observed == [0, 0]
 
@@ -286,15 +289,17 @@ def test_menu_run_skips_disabled_commands_from_the_top(
     )
 
     menu._selected_index = len(menu.commands)
-    menu.run()
+    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
+        menu.run()
 
     assert observed == [expected]
 
 
 def test_menu_run_requires_application_lifecycle() -> None:
     _, menu = make_menu()
-    with pytest.raises(RuntimeError, match="outside"):
-        menu.run()
+    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
+        with pytest.raises(RuntimeError, match="outside"):
+            menu.run()
 
 
 def test_alert_back_and_unbound_events_are_safely_consumed() -> None:

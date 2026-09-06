@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.2.1. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.3.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -44,7 +44,7 @@ python -m pip install tuiloom
 To install the version documented here explicitly:
 
 ```bash
-python -m pip install tuiloom==0.2.1
+python -m pip install tuiloom==0.3.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -94,9 +94,11 @@ A Tuiloom application has three main layers:
    minimum width, descriptive text, and footer message.
 
 Every menu belongs to exactly one application. A submenu and its parent must
-belong to the same `TerminalApp`. Registering a menu with `set_main_menu()` makes
-its automatic final row `Quit`; other menus use `Back`. Registering another main
-menu restores `Back` on the previous one.
+belong to the same `TerminalApp`. While the application is running, the
+navigation stack determines the automatic final row: the bottom menu displays
+`Quit`, and every deeper menu displays `Back`. Registering another main menu
+restores `Back` on the previous one until stack depth determines its runtime
+label.
 
 Callbacks receive a frozen `CommandContext` containing the active application,
 menu, command handle, and triggering binding:
@@ -135,6 +137,44 @@ enables it again.
 
 All controls can be remapped through `KeyMap`; see
 [Key bindings and global commands](#key-bindings-and-global-commands).
+
+Navigation is owned by `TerminalApp`. Its centralized application loop drives
+the runtimes of all opened menus without recursive `run()` calls. Start the
+application with `app.run()` after registering a main menu, or pass an
+application-owned entry menu to `app.run(entry_menu)`. In callbacks, transition
+with the stack methods:
+
+```python
+def open_settings(context: CommandContext) -> None:
+    context.app.push_menu(settings)
+
+
+def open_dashboard(context: CommandContext) -> None:
+    context.app.replace_menu(dashboard)
+
+
+def return_home(context: CommandContext) -> None:
+    context.app.reset_to(menu)
+```
+
+`push_menu()` adds a menu above the current one, `pop_menu()` returns to the
+previous menu (or requests shutdown at the bottom), and `replace_menu()` swaps
+only the current top menu. `reset_to()` truncates the stack after the requested
+menu when it is already present; otherwise it replaces the entire stack with
+that menu. Navigation targets must belong to the application, and a menu cannot
+be pushed if it is already on the stack. Stack depth supplies `Quit` for the
+bottom menu and `Back` above it unless `set_exit_label()` has assigned that menu
+an explicit label; an explicit label always takes priority.
+
+Menus that have not been opened remain lazy: pushing or otherwise scheduling a
+menu does not initialize it until the application loop reaches it. Its runtime
+and content workers are then initialized once per application run. Popping or
+replacing the menu removes it from the visible stack but retains and services
+that runtime in the background, including source processing and captured-task
+completion callbacks. Reopening it resets transient navigation state without
+restarting its workers. On graceful exit, `TerminalApp.run()` closes every
+initialized menu runtime and joins its workers, including menus no longer on the
+stack.
 
 ## Screen state and visibility
 
@@ -208,9 +248,13 @@ settings = TerminalMenu(
 open_settings = menu.add_menu(settings, "Settings", position=0)
 ```
 
-Activating the returned command runs the submenu until its `Back` row is
-activated. The parent then resumes. `add_menu()` rejects a submenu owned by a
-different application.
+Activating the returned command pushes the submenu onto the application's
+navigation stack. `add_menu()` is the normal convenience helper for a submenu:
+it creates a command whose callback calls `context.app.push_menu(settings)`; it
+does not start a recursive menu loop. It rejects a submenu owned by a different
+application. Use an explicit command callback with `push_menu()`,
+`replace_menu()`, or `reset_to()` when a different transition is needed. Do not
+call `settings.run()` from a callback.
 
 ## Content sources
 
@@ -494,12 +538,12 @@ messages on the application, then show or suppress them by key:
 from tuiloom import MessageKey
 
 app.add_message("connected", "Connected successfully")
-menu.show_message("connected")       # True when displayed
+menu.show_message("connected")  # True when displayed
 menu.clear_message()
 
-menu.disable_message("connected")    # suppress only in this menu
+menu.disable_message("connected")  # suppress only in this menu
 menu.enable_message("connected")
-app.disable_message("connected")     # suppress in every menu
+app.disable_message("connected")  # suppress in every menu
 app.enable_message("connected")
 
 menu.show_message(MessageKey.NO_CONTENT_SOURCE)
@@ -647,12 +691,7 @@ Anything outside this export list is internal and may change without notice.
 ### Type aliases
 
 ```python
-type ContentSource = (
-    str
-    | list[str]
-    | Iterator[str]
-    | Callable[[], str | list[str]]
-)
+type ContentSource = str | list[str] | Iterator[str] | Callable[[], str | list[str]]
 type AutoScrollMode = Literal["smart", "strict"]
 type CommandBehavior = Callable[[CommandContext], None]
 type InputBehavior = Callable[[str], None]
@@ -868,12 +907,29 @@ Register or globally suppress messages. `add_message()` raises `ValueError` for
 an empty or duplicate key; enable/disable raise `KeyError` for unknown keys.
 
 ```text
-run() -> None
+push_menu(menu: TerminalMenu) -> None
+pop_menu() -> None
+replace_menu(menu: TerminalMenu) -> None
+reset_to(menu: TerminalMenu) -> None
+run(entry_menu: TerminalMenu | None = None) -> None
 ```
 
-Run the registered main menu. Raises `RuntimeError` if no main menu exists or if
-called outside Python's main thread. It blocks until the application exits,
-joins workers, restores terminal state, and then propagates any pending error.
+`push_menu()` adds an application-owned menu to the top of the stack and rejects
+a menu already present there. `pop_menu()` removes the top menu when the stack
+has multiple entries; at the bottom it requests application shutdown.
+`replace_menu()` swaps only the top entry, or creates the first entry when the
+stack is empty. `reset_to()` truncates the stack through an existing menu, or
+replaces the whole stack when the menu is absent. Foreign navigation targets
+raise `ValueError`; invalid simultaneous duplicates are rejected.
+
+`run()` starts with `entry_menu` when supplied, otherwise with the registered
+main menu. It raises `RuntimeError` if neither is available or if called outside
+Python's main thread, and raises `ValueError` for a foreign entry menu. The call
+blocks until the application exits, joins workers, restores terminal state, and
+then propagates any pending error. Each run starts with a fresh navigation
+stack. The bottom entry displays Quit and deeper entries display Back regardless
+of which menu was registered as the main menu, except that a label assigned with
+`set_exit_label()` always takes priority.
 
 ### `TerminalMenu`
 
@@ -920,11 +976,22 @@ add_menu(
     *,
     position: int | None = None,
 ) -> MenuCommand
+delete_command(command: MenuCommand) -> None
 ```
 
 Add a command or application-owned submenu and return its stable handle.
 Invalid positions raise `TypeError` or `ValueError`; foreign submenus raise
-`ValueError`.
+`ValueError`. `add_menu()` installs a normal command that pushes `submenu` onto
+the application's navigation stack; it never calls `TerminalMenu.run()`.
+
+`delete_command()` atomically removes an owned command. The deleted handle is
+immediately invalid: subsequent menu mutations, another deletion, and access to
+its position raise `ValueError`. Handles from another menu and objects that are
+not live command handles are also rejected. If the deleted command was
+selected, selection moves to the next enabled command, then the previous enabled
+command, and finally the automatic Back/Quit row. Deleting any other command
+preserves the selected handle. A command callback may safely delete its own
+handle; the same selection rules apply before activation returns.
 
 ```text
 set_command_label(command: MenuCommand, label: str) -> None
@@ -1044,10 +1111,17 @@ run() -> None
 stop() -> None
 ```
 
-`run()` runs the menu until Back/Quit and is intended for the application or a
-submenu callback; calling it outside `TerminalApp.run()` raises `RuntimeError`.
-`stop()` requests Back/Quit. On the root menu it presents safe shutdown choices
-when background work is active; otherwise it stops immediately.
+`run()` is a transitional compatibility method and emits `DeprecationWarning`.
+When an application is already running it delegates to `app.push_menu(self)` and
+does not start a nested event loop. New code should use `TerminalApp.run()` as
+the application entry point and `context.app.push_menu()` or `add_menu()` in
+callbacks; do not call `TerminalMenu.run()` from callbacks. Calling the
+compatibility method without an application lifecycle raises `RuntimeError`.
+
+`stop()` performs the current menu's Back/Quit action. At stack depth greater
+than one it pops the menu. At the bottom it requests shutdown and presents safe
+shutdown choices when background work is active; otherwise it stops
+immediately.
 
 ### `hyperlink`
 
@@ -1062,6 +1136,8 @@ Unsafe or non-HTTP(S) URLs raise `ValueError`.
 
 - `TerminalApp.run()` is blocking, main-thread-only, and requires an interactive
   terminal.
+- Popped and replaced menu runtimes continue servicing their content workers
+  until the application closes them when `TerminalApp.run()` exits.
 - Only one `run_with_output()` task can run per application.
 - Python stdout/stderr capture does not include subprocess or direct
   file-descriptor output.

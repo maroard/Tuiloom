@@ -15,5 +15,6 @@ class SourceEvent:
     generation: int
     kind: SourceEventKind
     value: str | list[str] | None = None
+    request_id: int | None = None
     error: BaseException | None = None
     traceback: TracebackType | None = None

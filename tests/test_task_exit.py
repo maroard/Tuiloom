@@ -7,7 +7,14 @@ from typing import cast
 
 import pytest
 
-from tuiloom import ContentPanel, KeyBinding, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import (
+    ContentPanel,
+    KeyBinding,
+    ScreenContent,
+    ScreenContext,
+    TerminalApp,
+    TerminalMenu,
+)
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_event import InputEvent
@@ -17,7 +24,9 @@ from tuiloom.render.menu_renderer import MenuRenderer
 
 def make_main() -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source="base")
+    menu = TerminalMenu(
+        app, ScreenContext("main", "Main"), content=ScreenContent.static("base")
+    )
     app.set_main_menu(menu)
     menu._running = True
     return app, menu
@@ -74,7 +83,9 @@ def install_fake_operations(
     loop = FakePanelLoop()
     work: list[FakeWork] = []
     for description in descriptions:
-        panel = menu.add_content_panel("last output", description=description)
+        panel = menu.add_content_panel(
+            ScreenContent.static("last output"), description=description
+        )
         operation = FakeWork(description)
         loop.attach(panel, operation)
         work.append(operation)
@@ -89,7 +100,7 @@ def attach_output_task(
     description: str,
 ) -> ContentPanel:
     panel = menu.add_content_panel(
-        session.iter_output(),
+        ScreenContent.stream(session.iter_output()),
         description=description,
         auto_scroll="strict",
     )

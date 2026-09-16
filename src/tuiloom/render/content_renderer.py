@@ -1,10 +1,5 @@
-"""Normalize the four supported forms of application content.
+"""Normalize the explicit variants of :class:`ScreenContent`."""
 
-``ContentSource`` accepts static ``str``, static ``list[str]``, streaming
-``Iterator[str]``, or a refresh ``Callable[[], str | list[str]]``.
-"""
-
-from collections.abc import Callable, Iterator
 from typing import Literal
 
 from wcwidth import iter_graphemes, iter_sequences, propagate_sgr
@@ -17,10 +12,9 @@ from tuiloom.render.terminal_text import (
     normalize_text_lines,
     sanitize_terminal_text,
 )
+from tuiloom.screen_content import ScreenContent
 
-# Content may be static text or lines, a text stream, or a refresh callable.
-type ContentSource = str | list[str] | Iterator[str] | Callable[[], str | list[str]]
-type RendererState = Literal["static", "streaming", "dynamic"]
+type RendererState = Literal["static", "streaming", "dynamic", "responsive"]
 
 
 class _StreamingTextBuffer:
@@ -177,11 +171,13 @@ class _StreamingTextBuffer:
 
 
 class ContentRenderer:
-    """Normalize static, dynamic, or streaming content sources."""
+    """Normalize one explicitly classified screen-content configuration."""
 
-    def __init__(self, source: ContentSource) -> None:
-        """Select a rendering strategy for the supplied content source."""
-        self.source = source
+    def __init__(self, content: ScreenContent) -> None:
+        """Select the rendering strategy declared by ``content``."""
+        if not isinstance(content, ScreenContent):
+            raise TypeError("ContentRenderer requires a ScreenContent")
+        self.content = content
         self.state: RendererState
         self._stream_buffer: _StreamingTextBuffer | None = None
 
@@ -192,27 +188,18 @@ class ContentRenderer:
             finished=False,
         )
 
-        if (
-            isinstance(source, str)
-            or isinstance(source, list)
-            and all(isinstance(element, str) for element in source)
-        ):
+        if content._kind in ("static", "lines"):
             self.state = "static"
             self._handle_static_state()
-
-        elif isinstance(source, Iterator):
+        elif content._kind == "stream":
             self.state = "streaming"
             self._stream_buffer = _StreamingTextBuffer()
-
-        elif callable(source):
+        elif content._kind == "dynamic":
             self.state = "dynamic"
-
+        elif content._kind == "responsive":
+            self.state = "responsive"
         else:
-            raise TypeError(
-                "Content source must be str, list[str], Iterator[str], "
-                "or Callable[[], str | list[str]], "
-                f"got {type(source).__name__}"
-            )
+            raise RuntimeError(f"Unknown ScreenContent kind: {content._kind}")
 
     def update(self) -> RenderedContent:
         """Return the latest normalized content state."""
@@ -220,8 +207,7 @@ class ContentRenderer:
 
     def _handle_static_state(self) -> RenderedContent:
         """Normalize static content and mark it as finished."""
-        if isinstance(self.source, (str, list)):
-            self._normalize_content(self.source)
+        self._normalize_content(self.content._static_value())
 
         self.rendered_content.finished = True
 
@@ -248,12 +234,10 @@ class ContentRenderer:
         self.rendered_content.finished = False
         self.rendered_content.revision += 1
 
-    def replace_dynamic_content(self, content: str | list[str]) -> None:
-        """Replace dynamic content when its latest value changed."""
-        if self.state != "dynamic":
-            raise RuntimeError(
-                "Cannot replace dynamic content on a non-dynamic renderer"
-            )
+    def replace_generated_content(self, content: str | list[str]) -> None:
+        """Replace dynamic or responsive content when its value changed."""
+        if self.state not in ("dynamic", "responsive"):
+            raise RuntimeError("Cannot replace generated content on this renderer")
 
         previous = (
             self.rendered_content.lines,
@@ -272,6 +256,14 @@ class ContentRenderer:
 
         self.rendered_content.finished = False
 
+    def replace_dynamic_content(self, content: str | list[str]) -> None:
+        """Replace dynamic content (internal compatibility helper)."""
+        if self.state != "dynamic":
+            raise RuntimeError(
+                "Cannot replace dynamic content on a non-dynamic renderer"
+            )
+        self.replace_generated_content(content)
+
     def finish_stream(self) -> None:
         """Commit the stream tail and mark streaming content complete."""
         if self.state != "streaming" or self._stream_buffer is None:
@@ -283,13 +275,13 @@ class ContentRenderer:
 
     def _normalize_content(
         self,
-        content: str | list[str],
+        content: str | list[str] | tuple[str, ...],
     ) -> None:
         """Normalize text or lines and update the rendered dimensions."""
         if isinstance(content, str):
             self.rendered_content.lines = normalize_text_lines(content)
 
-        elif isinstance(content, list) and all(
+        elif isinstance(content, (list, tuple)) and all(
             isinstance(element, str) for element in content
         ):
             self.rendered_content.lines = [

@@ -5,6 +5,7 @@ import pytest
 from tuiloom import (
     AutoScrollMode,
     ContentPanel,
+    ScreenContent,
     ScreenContext,
     TerminalApp,
     TerminalMenu,
@@ -13,7 +14,8 @@ from tuiloom import (
 
 def make_menu(content: str | None = "primary") -> TerminalMenu:
     app = TerminalApp("App")
-    return TerminalMenu(app, ScreenContext("main", "Main"), content_source=content)
+    configured = ScreenContent.static(content) if content is not None else None
+    return TerminalMenu(app, ScreenContext("main", "Main"), content=configured)
 
 
 @pytest.mark.parametrize("mode", ["smart", "strict"])
@@ -24,7 +26,7 @@ def test_constructor_auto_scroll_configures_the_primary_panel(
     menu = TerminalMenu(
         app,
         ScreenContext("main", "Main"),
-        content_source="primary",
+        content=ScreenContent.static("primary"),
         auto_scroll=mode,
     )
 
@@ -36,7 +38,7 @@ def test_content_panels_are_stable_ordered_handles() -> None:
     menu = make_menu()
     primary = menu.content_panels[0]
     metrics = menu.add_content_panel(
-        lambda: "42",
+        ScreenContent.dynamic(lambda: "42"),
         description="Metrics",
         auto_scroll="smart",
         position=0,
@@ -60,11 +62,11 @@ def test_content_panels_are_stable_ordered_handles() -> None:
 
 def test_panel_explicit_methods_mutate_through_the_stable_handle() -> None:
     menu = make_menu()
-    panel = menu.add_content_panel("old", description="Old")
+    panel = menu.add_content_panel(ScreenContent.static("old"), description="Old")
     panel._smart_auto_scroll_active = False
     panel._pending_auto_scroll = "strict"
 
-    panel.set_source("new")
+    panel.set_content(ScreenContent.static("new"))
     assert panel._smart_auto_scroll_active
     assert panel._pending_auto_scroll is None
     panel.set_description("New")
@@ -84,7 +86,8 @@ def test_removed_panel_rejects_every_explicit_mutation() -> None:
     panel.remove()
 
     operations: tuple[Callable[[], None], ...] = (
-        lambda: panel.set_source("new"),
+        lambda: panel.set_content(ScreenContent.static("new")),
+        panel.refresh,
         lambda: panel.set_description("New"),
         lambda: panel.set_auto_scroll("smart"),
         lambda: panel.move(0),
@@ -95,28 +98,41 @@ def test_removed_panel_rejects_every_explicit_mutation() -> None:
             operation()
 
 
+def test_refresh_requires_live_responsive_content() -> None:
+    panel = make_menu().content_panels[0]
+
+    with pytest.raises(RuntimeError, match="responsive"):
+        panel.refresh()
+
+    panel.set_content(ScreenContent.responsive(lambda size: "ready"))
+    panel.refresh()
+    panel.remove()
+    with pytest.raises(ValueError, match="belong"):
+        panel.refresh()
+
+
 def test_directly_constructed_panel_is_not_owned_by_the_menu() -> None:
     menu = make_menu()
-    panel = ContentPanel(menu, "rogue", "Rogue", None)
+    panel = ContentPanel(menu, ScreenContent.static("rogue"), "Rogue", None)
 
     with pytest.raises(ValueError, match="belong"):
         panel.set_description("Invalid")
 
 
-def test_legacy_content_api_controls_the_primary_panel() -> None:
+def test_content_api_controls_the_primary_panel() -> None:
     menu = make_menu()
     primary = menu.content_panels[0]
-    extra = menu.add_content_panel("extra", description="Extra")
+    extra = menu.add_content_panel(ScreenContent.static("extra"), description="Extra")
 
     menu.auto_scroll = "strict"
-    menu.set_content_source("replacement", description="Replacement")
+    menu.set_content(ScreenContent.static("replacement"), description="Replacement")
 
     assert menu.content_panels == (primary, extra)
     assert primary.description == "Replacement"
     assert primary.auto_scroll == "strict"
 
     primary.remove()
-    menu.set_content_source("reborn", description="Primary")
+    menu.set_content(ScreenContent.static("reborn"), description="Primary")
     assert menu.content_panels[0].description == "Primary"
     assert menu.auto_scroll == "strict"
 
@@ -126,6 +142,6 @@ def test_panel_auto_scroll_rejects_invalid_modes(mode: object) -> None:
     menu = make_menu()
     with pytest.raises(ValueError, match="auto_scroll"):
         menu.add_content_panel(
-            "extra",
+            ScreenContent.static("extra"),
             auto_scroll=mode,  # type: ignore[arg-type]
         )

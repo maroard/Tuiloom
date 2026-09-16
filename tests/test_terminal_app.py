@@ -6,20 +6,22 @@ from threading import Event, Thread
 
 import pytest
 
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.output_task import OutputTaskSession
 
 
-def test_content_sources_are_read_only_and_local_source_wins() -> None:
-    app = TerminalApp("App", global_content_source="global")
+def test_contents_are_read_only_and_local_content_wins() -> None:
+    global_content = ScreenContent.static("global")
+    local_content = ScreenContent.static("local")
+    app = TerminalApp("App", global_content=global_content)
     inherited = TerminalMenu(app, ScreenContext("inherited", "Inherited"))
-    local = TerminalMenu(app, ScreenContext("local", "Local"), content_source="local")
+    local = TerminalMenu(app, ScreenContext("local", "Local"), content=local_content)
     assert app.name == "App"
-    assert app.global_content_source == "global"
-    assert inherited._content_source == "global"
-    assert local._content_source == "local"
+    assert app.global_content is global_content
+    assert inherited._content is global_content
+    assert local._content is local_content
     with pytest.raises(AttributeError):
-        app.global_content_source = "new"  # type: ignore[misc]
+        app.global_content = "new"  # type: ignore[assignment,misc]
 
 
 def test_run_requires_main_menu_and_main_thread() -> None:
@@ -343,7 +345,7 @@ def test_push_is_lazy_and_first_open_starts_source_worker_once() -> None:
     menu = TerminalMenu(
         app,
         ScreenContext("stream", "Stream"),
-        content_source=iter(["done"]),
+        content=ScreenContent.stream(iter(["done"])),
     )
 
     app.push_menu(menu)

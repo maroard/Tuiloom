@@ -4,7 +4,7 @@ from os import terminal_size
 
 import pytest
 
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
@@ -12,20 +12,25 @@ from tuiloom.task_exit import TaskExitView
 
 
 def make_renderer(
-    *, content: str | None = "one\ntwo\nthree", spacing: bool = True
+    *,
+    content: ScreenContent | str | None = "one\ntwo\nthree",
+    spacing: bool = True,
 ) -> tuple[TerminalMenu, TerminalRenderer]:
     app = TerminalApp("App")
+    configured = ScreenContent.static(content) if isinstance(content, str) else content
     menu = TerminalMenu(
         app,
         ScreenContext("main", "Main"),
-        content_source=content,
+        content=configured,
         content_spacing=spacing,
     )
     menu.add_command("Run", lambda context: None)
     renderer = TerminalRenderer(
         menu=menu,
         menu_renderer=MenuRenderer(menu),
-        content_renderer=ContentRenderer(content if content is not None else ""),
+        content_renderer=ContentRenderer(
+            configured if configured is not None else ScreenContent.static("")
+        ),
         content_spacing=spacing,
     )
     menu._terminal_renderer = renderer
@@ -55,7 +60,7 @@ def test_no_content_omits_content_box_and_spacing() -> None:
 
 
 def test_content_viewport_fills_available_inner_geometry() -> None:
-    _, renderer = make_renderer(content="a\nb\nc\nd\ne")
+    _, renderer = make_renderer(content=ScreenContent.static("a\nb\nc\nd\ne"))
     lines = renderer._compose_frame(20, 14)
     assert len(lines) == 14
     assert renderer.viewport is not None
@@ -64,10 +69,12 @@ def test_content_viewport_fills_available_inner_geometry() -> None:
 
 
 def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
-    menu, renderer = make_renderer(content="first")
+    menu, renderer = make_renderer(content=ScreenContent.static("first"))
     first = menu.content_panels[0]
     first.set_description("First")
-    second = menu.add_content_panel("second", description="Second")
+    second = menu.add_content_panel(
+        ScreenContent.static("second"), description="Second"
+    )
 
     lines = renderer._compose_frame(32, 20)
     top_indices = [index for index, line in enumerate(lines) if line.startswith("╭")]
@@ -84,16 +91,18 @@ def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
 
 
 def test_multiple_panels_require_one_inner_row_each() -> None:
-    menu, renderer = make_renderer(content="first")
-    menu.add_content_panel("second", description="Second")
+    menu, renderer = make_renderer(content=ScreenContent.static("first"))
+    menu.add_content_panel(ScreenContent.static("second"), description="Second")
     assert renderer._compose_frame(30, 10) == ["Terminal window is too small."]
 
 
 def test_scrolling_changes_only_the_target_panel_viewport() -> None:
-    menu, renderer = make_renderer(content="\n".join(str(index) for index in range(30)))
+    menu, renderer = make_renderer(
+        content=ScreenContent.static("\n".join(str(index) for index in range(30)))
+    )
     first = menu.content_panels[0]
     second = menu.add_content_panel(
-        "\n".join(f"b{index}" for index in range(30)),
+        ScreenContent.static("\n".join(f"b{index}" for index in range(30))),
         description="Second",
     )
     renderer._compose_frame(24, 20)
@@ -119,7 +128,9 @@ def test_hidden_menu_clears_complete_frame() -> None:
 
 
 def test_viewport_navigation_and_smart_auto_scroll() -> None:
-    _, renderer = make_renderer(content="\n".join(str(i) for i in range(30)))
+    _, renderer = make_renderer(
+        content=ScreenContent.static("\n".join(str(i) for i in range(30)))
+    )
     renderer._compose_frame(20, 14)
     assert renderer.viewport is not None
     renderer.apply_stream_auto_scroll("smart")
@@ -136,14 +147,14 @@ def test_viewport_navigation_and_smart_auto_scroll() -> None:
 
 
 def test_horizontal_navigation_and_source_replacement() -> None:
-    _, renderer = make_renderer(content="x" * 60)
+    _, renderer = make_renderer(content=ScreenContent.static("x" * 60))
     renderer._compose_frame(20, 14)
     renderer.scroll_right()
     assert renderer.viewport is not None
     assert renderer.viewport.offset_x == 1
     renderer.scroll_left()
     assert renderer.viewport.offset_x == 0
-    renderer.set_content_renderer(ContentRenderer("new"))
+    renderer.set_content_renderer(ContentRenderer(ScreenContent.static("new")))
     assert renderer.viewport is None
 
 
@@ -171,7 +182,7 @@ def test_render_writes_full_then_differential_frames(
 def test_wait_animation_changes_the_cached_terminal_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    menu, renderer = make_renderer(content="working")
+    menu, renderer = make_renderer(content=ScreenContent.static("working"))
     panel = menu.content_panels[0]
     menu._task_exit = TaskExitView(
         mode="waiting",
@@ -207,9 +218,9 @@ def test_wait_animation_changes_the_cached_terminal_frame(
 def test_same_count_operation_swap_changes_the_cached_terminal_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    menu, renderer = make_renderer(content="first")
+    menu, renderer = make_renderer(content=ScreenContent.static("first"))
     first = menu.content_panels[0]
-    second = menu.add_content_panel("second")
+    second = menu.add_content_panel(ScreenContent.static("second"))
     active = [first]
     menu._task_exit = TaskExitView(
         mode="choice",

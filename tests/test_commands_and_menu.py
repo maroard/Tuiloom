@@ -5,6 +5,7 @@ import pytest
 from tuiloom import (
     CommandContext,
     KeyBinding,
+    ScreenContent,
     ScreenContext,
     TerminalApp,
     TerminalMenu,
@@ -13,9 +14,12 @@ from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.render.menu_renderer import MenuRenderer
 
 
-def make_menu(*, content: str | None = None) -> tuple[TerminalApp, TerminalMenu]:
+def make_menu(
+    *, content: ScreenContent | str | None = None
+) -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source=content)
+    configured = ScreenContent.static(content) if isinstance(content, str) else content
+    menu = TerminalMenu(app, ScreenContext("main", "Main"), content=configured)
     return app, menu
 
 
@@ -128,7 +132,7 @@ def test_selection_wraps_skips_disabled_and_exit_is_always_last() -> None:
 
 
 def test_focus_navigation_routes_arrows_only_to_focused_zone() -> None:
-    _, menu = make_menu(content="long content")
+    _, menu = make_menu(content=ScreenContent.static("long content"))
     menu.add_command("One", lambda context: None)
     press(menu, "tab")
     assert menu._focused_panel is menu.content_panels[0]

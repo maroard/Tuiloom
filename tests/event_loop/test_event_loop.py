@@ -7,13 +7,20 @@ from typing import cast
 
 import pytest
 
-from tuiloom import KeyBinding, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import (
+    ContentSize,
+    KeyBinding,
+    ScreenContent,
+    ScreenContext,
+    TerminalApp,
+    TerminalMenu,
+)
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.input_handler.input_handler import InputHandler
-from tuiloom.render.content_renderer import ContentRenderer, ContentSource
+from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
 
@@ -91,14 +98,15 @@ class UnstoppableWork:
 def make_loop(
     events: list[InputEvent | None],
     *,
-    content: ContentSource = "content",
+    content: ScreenContent | None = None,
     clock: Callable[[], float] = lambda: 0.0,
 ) -> tuple[TerminalMenu, EventLoop, FakeSelector, TerminalRenderer]:
     app = TerminalApp("App")
+    content = content if content is not None else ScreenContent.static("content")
     menu = TerminalMenu(
         app,
         ScreenContext("main", "Main"),
-        content_source=content,
+        content=content,
     )
     menu._running = True
     menu.add_command("Stop", lambda context: menu._stop_immediately())
@@ -156,10 +164,10 @@ def test_event_loop_detects_context_and_terminal_state_changes() -> None:
     loop.close()
 
 
-def test_install_source_replaces_menu_and_terminal_renderers() -> None:
+def test_install_content_replaces_menu_and_terminal_renderers() -> None:
     menu, loop, _, renderer = make_loop([None])
     old = menu._content_renderer
-    loop.install_source("new")
+    loop.install_content(ScreenContent.static("new"))
     assert menu._content_renderer is not old
     assert renderer._content_renderer is menu._content_renderer
     loop.close()
@@ -167,7 +175,7 @@ def test_install_source_replaces_menu_and_terminal_renderers() -> None:
 
 def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
     menu, loop, _, renderer = make_loop([None])
-    streaming = ContentRenderer(iter([]))
+    streaming = ContentRenderer(ScreenContent.stream(iter([])))
     panel = menu.content_panels[0]
     panel._renderer = streaming
     loop._content_renderer = streaming
@@ -184,7 +192,7 @@ def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
 
 def test_dynamic_events_keep_latest_value_and_validate_results() -> None:
     menu, loop, _, renderer = make_loop([None])
-    dynamic = ContentRenderer(lambda: "first")
+    dynamic = ContentRenderer(ScreenContent.dynamic(lambda: "first"))
     panel = menu.content_panels[0]
     panel._renderer = dynamic
     panel._dynamic_in_flight = True
@@ -220,9 +228,11 @@ def test_source_errors_are_raised_with_validation() -> None:
 
 
 def test_events_are_routed_to_their_own_panels() -> None:
-    menu, loop, _, _ = make_loop([None], content=iter(()))
+    menu, loop, _, _ = make_loop([None], content=ScreenContent.stream(iter(())))
     first = menu.content_panels[0]
-    second = menu.add_content_panel(iter(()), description="Second")
+    second = menu.add_content_panel(
+        ScreenContent.stream(iter(())), description="Second"
+    )
 
     loop._source_events.put(SourceEvent(first, first._generation, "data", "first\n"))
     loop._source_events.put(SourceEvent(second, second._generation, "data", "second\n"))
@@ -234,9 +244,9 @@ def test_events_are_routed_to_their_own_panels() -> None:
 
 
 def test_active_removal_hides_panel_but_tracks_worker_until_termination() -> None:
-    menu, loop, _, _ = make_loop([None], content="primary")
+    menu, loop, _, _ = make_loop([None], content=ScreenContent.static("primary"))
     source = BlockingIterator()
-    panel = menu.add_content_panel(source, description="Blocking")
+    panel = menu.add_content_panel(ScreenContent.stream(source), description="Blocking")
     assert source.started.wait(1)
 
     panel.remove()
@@ -251,33 +261,35 @@ def test_active_removal_hides_panel_but_tracks_worker_until_termination() -> Non
 
 
 def test_active_replacement_waits_for_old_worker_before_starting_new() -> None:
-    menu, loop, _, _ = make_loop([None], content="primary")
+    menu, loop, _, _ = make_loop([None], content=ScreenContent.static("primary"))
     old = BlockingIterator()
-    panel = menu.add_content_panel(old, description="Work")
+    panel = menu.add_content_panel(ScreenContent.stream(old), description="Work")
     assert old.started.wait(1)
-    replacement = iter(["new\n"])
+    replacement = ScreenContent.stream(iter(["new\n"]))
 
-    panel.set_source(replacement)
+    panel.set_content(replacement)
 
-    assert panel._pending_source is replacement
-    assert panel._renderer.source is old
+    assert panel._pending_content is replacement
+    assert panel._renderer.content._stream() is old
     assert panel._worker is not None
     assert panel._worker.join(1)
     panel._smart_auto_scroll_active = False
     panel._pending_auto_scroll = "strict"
     loop._progress_panel_transitions()
-    assert panel._renderer.source is replacement
+    assert panel._renderer.content is replacement
     assert panel._smart_auto_scroll_active
     assert panel._pending_auto_scroll is None
     loop.close()
 
 
 def test_panel_error_is_propagated_and_close_joins_other_workers() -> None:
-    menu, loop, _, _ = make_loop([None], content="primary")
+    menu, loop, _, _ = make_loop([None], content=ScreenContent.static("primary"))
     blocking = BlockingIterator()
-    other = menu.add_content_panel(blocking, description="Other")
+    other = menu.add_content_panel(ScreenContent.stream(blocking), description="Other")
     assert blocking.started.wait(1)
-    failed = menu.add_content_panel("failed", description="Failed")
+    failed = menu.add_content_panel(
+        ScreenContent.static("failed"), description="Failed"
+    )
     error = ValueError("panel failed")
     loop._source_events.put(
         SourceEvent(
@@ -298,8 +310,8 @@ def test_panel_error_is_propagated_and_close_joins_other_workers() -> None:
 
 
 def test_completed_temporary_output_panel_is_removed_after_final_chunks() -> None:
-    menu, loop, _, _ = make_loop([None], content="primary")
-    panel = menu.add_content_panel(iter(()), description="Output")
+    menu, loop, _, _ = make_loop([None], content=ScreenContent.static("primary"))
+    panel = menu.add_content_panel(ScreenContent.stream(iter(())), description="Output")
     panel._remove_when_finished = True
     panel._renderer.append_stream_batch(["final\n"])
     loop._source_events.put(SourceEvent(panel, panel._generation, "complete"))
@@ -338,7 +350,7 @@ def test_wakeup_socket_is_drained_without_blocking() -> None:
     loop.close()
 
 
-def test_source_replacement_waits_and_only_starts_latest_request() -> None:
+def test_content_replacement_waits_and_only_starts_latest_request() -> None:
     _, loop, _, _ = make_loop([None])
     old_started = Event()
     old_release = Event()
@@ -360,15 +372,15 @@ def test_source_replacement_waits_and_only_starts_latest_request() -> None:
         latest_release.wait()
         yield "latest"
 
-    loop.install_source(old_source(), description="Old")
+    loop.install_content(ScreenContent.stream(old_source()), description="Old")
     assert old_started.wait(1)
 
-    loop.install_source(
-        second_source(),
+    loop.install_content(
+        ScreenContent.stream(second_source()),
         description="Second",
     )
-    loop.install_source(
-        latest_source(),
+    loop.install_content(
+        ScreenContent.stream(latest_source()),
         description="Latest",
     )
 
@@ -400,7 +412,7 @@ def test_close_waits_for_cancelled_iterator_before_closing_resources() -> None:
         release.wait()
         yield "late"
 
-    loop.install_source(blocked())
+    loop.install_content(ScreenContent.stream(blocked()))
     assert started.wait(1)
     worker = loop._source_worker
     assert worker is not None
@@ -442,7 +454,7 @@ def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() ->
         release.wait()
         return "done"
 
-    loop.install_source(dynamic, description="Refreshing")
+    loop.install_content(ScreenContent.dynamic(dynamic), description="Refreshing")
     assert loop.active_work is None
     loop._request_dynamic_update()
     assert started.wait(1)
@@ -458,3 +470,102 @@ def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() ->
     assert not closer.is_alive()
     assert loop._source_worker is not None
     assert not loop._source_worker.is_alive()
+
+
+def test_responsive_layout_uses_minimums_without_resizing_the_viewport() -> None:
+    rendered = Event()
+    sizes: list[ContentSize] = []
+
+    def responsive(size: ContentSize) -> str:
+        sizes.append(size)
+        rendered.set()
+        return f"{size.width}x{size.height}"
+
+    content = ScreenContent.responsive(
+        responsive,
+        min_width=40,
+        min_height=20,
+    )
+    menu, loop, _, renderer = make_loop([None], content=content)
+    panel = menu.content_panels[0]
+
+    renderer._compose_frame(30, 15)
+    assert rendered.wait(1)
+    loop._drain_source_events()
+
+    assert panel._viewport is not None
+    assert (panel._viewport.width, panel._viewport.height) != (40, 20)
+    assert panel._effective_size == ContentSize(40, 20)
+    assert sizes == [ContentSize(40, 20)]
+    first_request = panel._responsive_request_id
+
+    renderer._compose_frame(29, 14)
+
+    assert panel._responsive_request_id == first_request
+    assert panel._viewport is not None
+    assert (panel._viewport.width, panel._viewport.height) == (27, 3)
+    loop.close()
+
+
+def test_responsive_resize_and_manual_refresh_request_new_results() -> None:
+    rendered = Event()
+    sizes: list[ContentSize] = []
+
+    def responsive(size: ContentSize) -> str:
+        sizes.append(size)
+        rendered.set()
+        return str(len(sizes))
+
+    content = ScreenContent.responsive(responsive, min_width=40, min_height=20)
+    menu, loop, _, renderer = make_loop([None], content=content)
+    panel = menu.content_panels[0]
+
+    renderer._compose_frame(30, 15)
+    assert rendered.wait(1)
+    loop._drain_source_events()
+    rendered.clear()
+
+    renderer._compose_frame(52, 15)
+    assert rendered.wait(1)
+    loop._drain_source_events()
+    assert sizes[-1].width == 50
+    assert sizes[-1].height == 20
+    rendered.clear()
+
+    panel.refresh()
+    assert rendered.wait(1)
+    loop._drain_source_events()
+    assert sizes[-1] == sizes[-2]
+    loop.close()
+
+
+def test_responsive_results_from_obsolete_requests_are_ignored() -> None:
+    content = ScreenContent.responsive(lambda size: "worker value")
+    menu, loop, _, _ = make_loop([None], content=content)
+    panel = menu.content_panels[0]
+    panel._responsive_request_id = 2
+    panel._dynamic_in_flight = True
+    loop._source_events.put(
+        SourceEvent(
+            panel,
+            panel._generation,
+            "data",
+            "stale",
+            request_id=1,
+        )
+    )
+    loop._source_events.put(
+        SourceEvent(
+            panel,
+            panel._generation,
+            "data",
+            "current",
+            request_id=2,
+        )
+    )
+
+    loop._drain_source_events()
+
+    assert panel._renderer.rendered_content.lines == ["current"]
+    assert not panel._dynamic_in_flight
+    loop.close()

@@ -14,7 +14,7 @@ from tuiloom.input_handler.input_handler import InputHandler
 from tuiloom.key_binding import KeyBinding, KeyMap
 from tuiloom.output_capture import OutputCapture
 from tuiloom.output_task import OutputTaskSession
-from tuiloom.render.content_renderer import ContentSource
+from tuiloom.screen_content import ScreenContent
 from tuiloom.terminal_menu import TerminalMenu
 
 
@@ -37,7 +37,7 @@ class TerminalApp:
     def __init__(
         self,
         name: str,
-        global_content_source: ContentSource | None = None,
+        global_content: ScreenContent | None = None,
         *,
         keymap: KeyMap | None = None,
     ) -> None:
@@ -45,11 +45,13 @@ class TerminalApp:
 
         Args:
             name: Application name displayed in every menu box.
-            global_content_source: Default content inherited by menus.
+            global_content: Default content inherited by menus.
             keymap: Custom system bindings, or ``None`` for defaults.
         """
         self._name = name
-        self._global_content_source = global_content_source
+        if global_content is not None and not isinstance(global_content, ScreenContent):
+            raise TypeError("global_content must be a ScreenContent or None")
+        self._global_content = global_content
         self._keymap = keymap if keymap is not None else KeyMap()
         self._keymap._set_external_validator(self._validate_system_binding)
         self._global_commands: list[GlobalCommand] = []
@@ -69,9 +71,9 @@ class TerminalApp:
         return self._name
 
     @property
-    def global_content_source(self) -> ContentSource | None:
-        """Return the content source inherited by menus created without one."""
-        return self._global_content_source
+    def global_content(self) -> ScreenContent | None:
+        """Return the content inherited by menus created without one."""
+        return self._global_content
 
     @property
     def keymap(self) -> KeyMap:

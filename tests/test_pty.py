@@ -113,9 +113,13 @@ def test_read_to_exit_stops_draining_at_pty_eof(
 
 def test_pty_unicode_navigation_and_terminal_restoration() -> None:
     script = """
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 app = TerminalApp("Unicode App")
-menu = TerminalMenu(app, ScreenContext("main", "Menu界"), content_source="café 👨‍👩‍👧")
+menu = TerminalMenu(
+    app,
+    ScreenContext("main", "Menu界"),
+    content=ScreenContent.static("café 👨‍👩‍👧"),
+)
 menu.add_command("Activate", lambda context: context.menu.stop())
 app.set_main_menu(menu)
 app.run()
@@ -132,7 +136,7 @@ print("RESTORED")
 
 def test_pty_hidden_input_submits_unicode_and_backspaces_a_grapheme() -> None:
     script = """
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 app = TerminalApp("Input App")
 menu = TerminalMenu(app, ScreenContext("main", "Input"))
 values = []
@@ -161,12 +165,16 @@ print("RESTORED")
 
 def test_pty_renders_two_labeled_content_panels() -> None:
     script = """
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 
 app = TerminalApp("App")
-menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source="alpha")
+menu = TerminalMenu(
+    app,
+    ScreenContext("main", "Main"),
+    content=ScreenContent.static("alpha"),
+)
 menu.content_panels[0].set_description("Alpha")
-menu.add_content_panel("beta", description="Beta")
+menu.add_content_panel(ScreenContent.static("beta"), description="Beta")
 app.set_main_menu(menu)
 app.run()
 print("RESTORED")

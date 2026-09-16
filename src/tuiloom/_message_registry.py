@@ -119,16 +119,12 @@ class MessageRegistry:
     def _no_content_source_message(menu_name: str) -> str:
         """Build the message shown when a menu has no content source."""
         return (
-            "No content source has been set for this menu "
+            "No content has been set for this menu "
             f"({menu_name})\n"
             "You can set it by using this method: \n"
-            "  'set_content_source(content_source: ContentSource)'\n"
-            "  ContentSource being: (\n"
-            "    str\n"
-            "    | list[str]\n"
-            "    | Iterator[str]\n"
-            "    | Callable[[], str | list[str]]\n"
-            "  )"
+            "  'set_content(content: ScreenContent)'\n"
+            "  Build it with ScreenContent.static(), lines(), stream(),\n"
+            "  dynamic(), or responsive()."
         )
 
     @staticmethod

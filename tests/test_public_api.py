@@ -5,10 +5,12 @@ import tuiloom
 from tuiloom import (
     CommandContext,
     ContentPanel,
+    ContentSize,
     GlobalCommand,
     KeyBinding,
     KeyMap,
     MenuCommand,
+    ScreenContent,
     ScreenContext,
     TerminalApp,
     TerminalMenu,
@@ -21,7 +23,8 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "CommandBehavior",
         "CommandContext",
         "ContentPanel",
-        "ContentSource",
+        "ContentRefreshMode",
+        "ContentSize",
         "GlobalCommand",
         "InputBehavior",
         "KeyBinding",
@@ -29,9 +32,12 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "MenuCommand",
         "MessageKey",
         "ScreenContext",
+        "ScreenContent",
         "TerminalApp",
         "TerminalMenu",
+        "TextColor",
         "hyperlink",
+        "style",
     }
     assert set(tuiloom.__all__) == expected
     assert all(getattr(tuiloom, name) is not None for name in expected)
@@ -48,11 +54,13 @@ def test_public_classes_and_methods_have_documentation() -> None:
     classes = (
         CommandContext,
         ContentPanel,
+        ContentSize,
         GlobalCommand,
         KeyBinding,
         KeyMap,
         MenuCommand,
         ScreenContext,
+        ScreenContent,
         TerminalApp,
         TerminalMenu,
     )
@@ -63,7 +71,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
         TerminalApp: (
             "__init__",
             "name",
-            "global_content_source",
+            "global_content",
             "keymap",
             "global_commands",
             "main_menu",
@@ -99,7 +107,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "clear_global_command_behavior",
             "disable_global_command",
             "enable_global_command",
-            "set_content_source",
+            "set_content",
             "run_with_output",
             "enter_input_mode",
             "leave_input_mode",
@@ -114,10 +122,12 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "stop",
         ),
         ContentPanel: (
+            "content",
             "description",
             "position",
             "auto_scroll",
-            "set_source",
+            "set_content",
+            "refresh",
             "set_description",
             "set_auto_scroll",
             "move",
@@ -134,9 +144,13 @@ def test_public_classes_and_methods_have_documentation() -> None:
 
 
 def test_discarded_content_panel_aliases_are_absent() -> None:
+    assert not hasattr(tuiloom, "ContentSource")
+    assert not hasattr(TerminalApp, "global_content_source")
+    assert not hasattr(TerminalMenu, "set_content_source")
+    assert not hasattr(ContentPanel, "set_source")
     assert hasattr(TerminalMenu, "add_content_panel")
     for removed_name in (
-        "add_content_source",
+        "add_content",
         "set_content_panel_source",
         "set_content_panel_description",
         "set_content_panel_auto_scroll",
@@ -146,7 +160,7 @@ def test_discarded_content_panel_aliases_are_absent() -> None:
         assert not hasattr(TerminalMenu, removed_name)
 
     for method_name in (
-        "set_source",
+        "set_content",
         "set_description",
         "set_auto_scroll",
         "move",

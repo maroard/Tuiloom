@@ -16,6 +16,7 @@ from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
 from tuiloom.render.terminal_text import clip_display, display_width, normalize_line
 from tuiloom.render.viewport import Viewport
+from tuiloom.screen_content import ContentSize
 
 if TYPE_CHECKING:
     from tuiloom.content_panel import ContentPanel
@@ -148,6 +149,16 @@ class TerminalRenderer:
         width: int,
         height: int,
     ) -> None:
+        content = panel.content
+        effective_size = ContentSize(
+            width=max(width, content.min_width or width),
+            height=max(height, content.min_height or height),
+        )
+        loop = self._menu._event_loop
+        if loop is not None:
+            loop.update_content_panel_size(panel, effective_size)
+        else:
+            panel._effective_size = effective_size
         rendered = panel._renderer.update()
         if panel._viewport is None:
             panel._viewport = Viewport(rendered, width, height)

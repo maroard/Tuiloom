@@ -6,6 +6,7 @@ from tuiloom import (
     CommandContext,
     KeyBinding,
     MessageKey,
+    ScreenContent,
     ScreenContext,
     TerminalApp,
     TerminalMenu,
@@ -13,9 +14,12 @@ from tuiloom import (
 from tuiloom.input_handler.input_event import InputEvent
 
 
-def make_menu(content: str | None = None) -> tuple[TerminalApp, TerminalMenu]:
+def make_menu(
+    content: ScreenContent | str | None = None,
+) -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_source=content)
+    configured = ScreenContent.static(content) if isinstance(content, str) else content
+    menu = TerminalMenu(app, ScreenContext("main", "Main"), content=configured)
     return app, menu
 
 
@@ -63,7 +67,7 @@ def test_input_mode_disables_globals_and_escape_leaves_it() -> None:
 
 
 def test_alert_without_callback_does_not_close_on_enter() -> None:
-    _, menu = make_menu(content="content")
+    _, menu = make_menu(content=ScreenContent.static("content"))
     menu.show_alert("Blocking")
     menu._handle_event(event("enter"))
     assert menu._alert_text == "Blocking"
@@ -184,12 +188,12 @@ def test_auto_scroll_validation_and_content_replacement() -> None:
     assert menu.auto_scroll == "smart"
     with pytest.raises(ValueError):
         menu.auto_scroll = "bottom"  # type: ignore[assignment]
-    menu.set_content_source("new")
-    assert menu._content_source == "new"
+    menu.set_content(ScreenContent.static("new"))
+    assert menu._content == ScreenContent.static("new")
 
 
 def test_active_content_replacement_forwards_its_description() -> None:
-    _, menu = make_menu(content="old")
+    _, menu = make_menu(content=ScreenContent.static("old"))
     installed: list[tuple[object, str]] = []
 
     class Loop:
@@ -202,11 +206,11 @@ def test_active_content_replacement_forwards_its_description() -> None:
 
     menu._running = True
     menu._event_loop = Loop()  # type: ignore[assignment]
-    source = iter(["new"])
+    source = ScreenContent.stream(iter(["new"]))
 
-    menu.set_content_source(source, description="Generating")
+    menu.set_content(source, description="Generating")
 
-    assert menu._content_source is source
+    assert menu._content is source
     assert installed == [(source, "Generating")]
 
 
@@ -233,7 +237,7 @@ def test_menu_run_builds_resources_without_no_content_message_and_closes_loop(
     assert loop.closed
     assert menu.screen_context.message is None
     assert menu.show_message(MessageKey.NO_CONTENT_SOURCE)
-    assert "No content source" in (menu.screen_context.message or "")
+    assert "No content" in (menu.screen_context.message or "")
     assert menu._event_loop is None
 
 
@@ -313,7 +317,7 @@ def test_alert_back_and_unbound_events_are_safely_consumed() -> None:
 
 
 def test_exit_selection_and_content_scroll_without_renderer() -> None:
-    _, menu = make_menu(content="content")
+    _, menu = make_menu(content=ScreenContent.static("content"))
     menu._running = True
     menu._selected_index = len(menu.commands)
     menu._handle_event(event("enter"))
@@ -323,10 +327,12 @@ def test_exit_selection_and_content_scroll_without_renderer() -> None:
 
 
 def test_focus_cycles_through_each_content_panel_and_back_to_menu() -> None:
-    _, menu = make_menu(content="\n".join(str(index) for index in range(30)))
+    _, menu = make_menu(
+        content=ScreenContent.static("\n".join(str(index) for index in range(30)))
+    )
     first = menu.content_panels[0]
     second = menu.add_content_panel(
-        "\n".join(f"b{index}" for index in range(30)),
+        ScreenContent.static("\n".join(f"b{index}" for index in range(30))),
         description="Second",
     )
 
@@ -339,9 +345,13 @@ def test_focus_cycles_through_each_content_panel_and_back_to_menu() -> None:
 
 
 def test_removing_focused_panel_advances_to_next_panel() -> None:
-    _, menu = make_menu(content="first")
-    focused = menu.add_content_panel("second", description="Second")
-    following = menu.add_content_panel("third", description="Third")
+    _, menu = make_menu(content=ScreenContent.static("first"))
+    focused = menu.add_content_panel(
+        ScreenContent.static("second"), description="Second"
+    )
+    following = menu.add_content_panel(
+        ScreenContent.static("third"), description="Third"
+    )
     menu._focused_panel = focused
 
     focused.remove()

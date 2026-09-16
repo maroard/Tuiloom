@@ -5,7 +5,7 @@ from selectors import BaseSelector
 from threading import Event
 from typing import cast
 
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_handler import InputHandler
@@ -37,7 +37,7 @@ class QuietInput:
 
 
 def initialize(menu: TerminalMenu) -> EventLoop:
-    source = menu._content_source or ""
+    source = menu._content or ScreenContent.static("")
     content_renderer = ContentRenderer(source)
     menu_renderer = MenuRenderer(menu)
     terminal_renderer = TerminalRenderer(
@@ -61,11 +61,13 @@ def initialize(menu: TerminalMenu) -> EventLoop:
 
 def test_hidden_menu_turn_applies_source_events_without_rendering() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"), content_source="root")
+    root = TerminalMenu(
+        app, ScreenContext("root", "Root"), content=ScreenContent.static("root")
+    )
     child = TerminalMenu(
         app,
         ScreenContext("child", "Child"),
-        content_source=iter(["hidden update\n"]),
+        content=ScreenContent.stream(iter(["hidden update\n"])),
     )
     root_loop = initialize(root)
     child_loop = initialize(child)
@@ -84,8 +86,12 @@ def test_hidden_menu_turn_applies_source_events_without_rendering() -> None:
 
 def test_hidden_owner_receives_output_task_completion_callback() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"), content_source="root")
-    child = TerminalMenu(app, ScreenContext("child", "Child"), content_source="child")
+    root = TerminalMenu(
+        app, ScreenContext("root", "Root"), content=ScreenContent.static("root")
+    )
+    child = TerminalMenu(
+        app, ScreenContext("child", "Child"), content=ScreenContent.static("child")
+    )
     root_loop = initialize(root)
     child_loop = initialize(child)
     app._initialized_menus = [root, child]
@@ -124,11 +130,13 @@ def test_hidden_menu_turn_requests_and_applies_dynamic_updates() -> None:
         evaluated.set()
         return f"hidden {calls}"
 
-    root = TerminalMenu(app, ScreenContext("root", "Root"), content_source="root")
+    root = TerminalMenu(
+        app, ScreenContext("root", "Root"), content=ScreenContent.static("root")
+    )
     child = TerminalMenu(
         app,
         ScreenContext("child", "Child"),
-        content_source=dynamic,
+        content=ScreenContent.dynamic(dynamic),
     )
     root_loop = initialize(root)
     child_loop = initialize(child)
@@ -158,11 +166,13 @@ def test_reopening_menu_retains_its_real_source_worker() -> None:
         started.set()
         yield "loaded"
 
-    root = TerminalMenu(app, ScreenContext("root", "Root"), content_source="root")
+    root = TerminalMenu(
+        app, ScreenContext("root", "Root"), content=ScreenContent.static("root")
+    )
     child = TerminalMenu(
         app,
         ScreenContext("child", "Child"),
-        content_source=stream(),
+        content=ScreenContent.stream(stream()),
     )
     root_loop = initialize(root)
     app._initialized_menus = [root]
@@ -189,11 +199,13 @@ def test_reopening_menu_retains_its_real_source_worker() -> None:
 
 def test_app_shutdown_cancels_and_joins_each_menu_worker_once() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"), content_source="root")
+    root = TerminalMenu(
+        app, ScreenContext("root", "Root"), content=ScreenContent.static("root")
+    )
     child = TerminalMenu(
         app,
         ScreenContext("child", "Child"),
-        content_source="child",
+        content=ScreenContent.static("child"),
     )
     root_loop = initialize(root)
     child_loop = initialize(child)

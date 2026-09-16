@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tuiloom.render.content_renderer import ContentRenderer, ContentSource
+from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.terminal_renderer import AutoScrollMode
+from tuiloom.screen_content import ContentSize, ScreenContent
 
 if TYPE_CHECKING:
     from tuiloom.event_loop.source_worker import SourceWorker
@@ -16,16 +17,19 @@ class ContentPanel:
 
     __slots__ = (
         "_menu",
-        "_source",
+        "_content",
         "_description",
         "_auto_scroll",
         "_renderer",
         "_viewport",
         "_worker",
         "_generation",
-        "_pending_source",
+        "_pending_content",
         "_dynamic_in_flight",
         "_next_dynamic_at",
+        "_effective_size",
+        "_responsive_request_id",
+        "_responsive_refresh_pending",
         "_removed",
         "_retiring",
         "_smart_auto_scroll_active",
@@ -36,21 +40,26 @@ class ContentPanel:
     def __init__(
         self,
         menu: TerminalMenu,
-        source: ContentSource,
+        content: ScreenContent,
         description: str,
         auto_scroll: AutoScrollMode | None,
     ) -> None:
         self._menu = menu
-        self._source = source
+        if not isinstance(content, ScreenContent):
+            raise TypeError("ContentPanel content must be a ScreenContent")
+        self._content = content
         self._description = description
         self._auto_scroll = auto_scroll
-        self._renderer = ContentRenderer(source)
+        self._renderer = ContentRenderer(content)
         self._viewport: Viewport | None = None
         self._worker: SourceWorker | None = None
         self._generation = 0
-        self._pending_source: ContentSource | None = None
+        self._pending_content: ScreenContent | None = None
         self._dynamic_in_flight = False
         self._next_dynamic_at = 0.0
+        self._effective_size: ContentSize | None = None
+        self._responsive_request_id = 0
+        self._responsive_refresh_pending = content._kind == "responsive"
         self._removed = False
         self._retiring = False
         self._smart_auto_scroll_active = True
@@ -72,9 +81,18 @@ class ContentPanel:
         """Return this panel's iterator auto-scroll policy."""
         return self._auto_scroll
 
-    def set_source(self, content_source: ContentSource) -> None:
-        """Replace this panel's source without changing its identity."""
-        self._menu._set_content_panel_source(self, content_source)
+    @property
+    def content(self) -> ScreenContent:
+        """Return the configuration currently mounted by this panel."""
+        return self._content
+
+    def set_content(self, content: ScreenContent) -> None:
+        """Replace this panel's content without changing its identity."""
+        self._menu._set_content_panel_content(self, content)
+
+    def refresh(self) -> None:
+        """Request a fresh responsive rendering for the current size."""
+        self._menu._refresh_content_panel(self)
 
     def set_description(self, description: str) -> None:
         """Replace this panel's visible and shutdown description."""

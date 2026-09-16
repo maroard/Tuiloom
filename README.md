@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.3.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.4.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -21,13 +21,14 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Navigation and focus](#navigation-and-focus)
 - [Screen state and visibility](#screen-state-and-visibility)
 - [Commands and submenus](#commands-and-submenus)
-- [Content sources](#content-sources)
+- [Screen content](#screen-content)
 - [Captured task output](#captured-task-output)
 - [Safe shutdown](#safe-shutdown)
 - [Free-form and hidden input](#free-form-and-hidden-input)
 - [Alerts](#alerts)
 - [Messages](#messages)
 - [Key bindings and global commands](#key-bindings-and-global-commands)
+- [Text styling](#text-styling)
 - [Terminal hyperlinks](#terminal-hyperlinks)
 - [API reference](#api-reference)
 - [Runtime constraints](#runtime-constraints)
@@ -44,7 +45,7 @@ python -m pip install tuiloom
 To install the version documented here explicitly:
 
 ```bash
-python -m pip install tuiloom==0.3.0
+python -m pip install tuiloom==0.4.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -53,7 +54,13 @@ framework or event-loop dependency.
 ## Quick start
 
 ```python
-from tuiloom import CommandContext, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import (
+    CommandContext,
+    ScreenContent,
+    ScreenContext,
+    TerminalApp,
+    TerminalMenu,
+)
 
 app = TerminalApp("Generator")
 menu = TerminalMenu(
@@ -64,12 +71,12 @@ menu = TerminalMenu(
         text="Choose an operation",
         width=24,
     ),
-    content_source="Ready",
+    content=ScreenContent.static("Ready"),
 )
 
 
 def generate(context: CommandContext) -> None:
-    context.menu.set_content_source("Generated")
+    context.menu.set_content(ScreenContent.static("Generated"))
 
 
 menu.add_command("Generate", generate)
@@ -256,46 +263,54 @@ application. Use an explicit command callback with `push_menu()`,
 `replace_menu()`, or `reset_to()` when a different transition is needed. Do not
 call `settings.run()` from a callback.
 
-## Content sources
+## Screen content
 
-`ContentSource` accepts exactly four forms:
+`ScreenContent` uses explicit factories for each production strategy:
 
 ```python
 from collections.abc import Iterator
-
-static_text = "one\ntwo"
-static_lines = ["one", "two"]
-
+from tuiloom import ScreenContent
 
 def stream() -> Iterator[str]:
     yield "one\n"
     yield "two\n"
 
 
-def refreshed() -> str | list[str]:
+def current_state() -> str | list[str]:
     return ["current", "state"]
 
 
-menu.set_content_source(static_text)
-menu.set_content_source(static_lines)
-menu.set_content_source(stream(), description="Loading records")
-menu.set_content_source(refreshed, description="Refreshing state")
+menu.set_content(ScreenContent.static("one\ntwo"))
+menu.set_content(ScreenContent.lines(["one", "two"]))
+menu.set_content(ScreenContent.stream(stream()), description="Loading records")
+menu.set_content(
+    ScreenContent.dynamic(current_state),
+    description="Refreshing state",
+)
 ```
 
-The forms behave differently:
+The factories behave differently:
 
-| Source | Behavior |
+| Factory | Behavior |
 | --- | --- |
-| `str` | Static text split into display lines |
-| `list[str]` | Static lines displayed as supplied |
-| `Iterator[str]` | A background worker consumes chunks until exhaustion |
-| `Callable[[], str \| list[str]]` | A background worker repeatedly evaluates the latest state |
+| `static(str)` | Fixed text split into display lines |
+| `lines(list[str])` | An immutable copy of fixed display lines |
+| `stream(Iterator[str])` | A worker consumes chunks until exhaustion |
+| `dynamic(Callable[[], str \| list[str]])` | A worker evaluates the latest state up to 60 Hz |
+| `responsive(Callable[[ContentSize], str \| list[str]])` | A worker renders for the panel's effective size |
 
 Static content is normalized immediately. Iterator chunks may contain partial
 lines and multiple newlines; carriage returns replace the unfinished line, which
 supports progress-style output. Iterators must yield only strings. Dynamic
 callables must return `str` or `list[str]` and have at most one evaluation in
 flight.
+
+Responsive content can declare `min_width` and `min_height`. Below either
+minimum, the physical viewport remains the size of the terminal while the
+renderer receives the larger virtual `ContentSize`; the result stays clipped
+and scrollable. `refresh_mode="resize"` renders on first display, effective
+size changes, and `panel.refresh()`. `refresh_mode="continuous"` additionally
+renders up to 60 Hz.
 
 Unsafe terminal controls are removed from rendered content. Unicode graphemes,
 cell widths, safe SGR styling, tabs, and line boundaries are normalized for the
@@ -308,16 +323,16 @@ a stable `ContentPanel` handle:
 
 ```python
 logs = menu.add_content_panel(
-    log_stream,
+    ScreenContent.stream(log_stream),
     description="Downloading",
     auto_scroll="strict",
 )
 metrics = menu.add_content_panel(
-    get_metrics,
+    ScreenContent.dynamic(get_metrics),
     description="Indexing",
 )
 
-logs.set_source(new_log_stream)
+logs.set_content(ScreenContent.stream(new_log_stream))
 logs.set_description("Downloading model")
 logs.set_auto_scroll("smart")
 metrics.move(0)
@@ -330,31 +345,34 @@ more than one is present. Each panel owns its source worker, viewport, scroll
 position, and auto-scroll mode. Panels can be added, reordered, replaced, or
 removed while the menu is running.
 
-The constructor's `content_source`, `set_content_source()`, and
-`menu.auto_scroll` remain the compatibility API for the primary panel. A menu
+The constructor's `content`, `set_content()`, and `menu.auto_scroll` configure
+the primary panel. A menu
 with only that panel keeps the original unlabeled content-box appearance.
 
 ### Inherited and local content
 
 ```python
-app = TerminalApp("Monitor", global_content_source="Shared status")
+app = TerminalApp(
+    "Monitor",
+    global_content=ScreenContent.static("Shared status"),
+)
 inherited = TerminalMenu(app, ScreenContext("main", "Main"))
 local = TerminalMenu(
     app,
     ScreenContext("logs", "Logs"),
-    content_source="Local status",
+    content=ScreenContent.static("Local status"),
 )
 ```
 
-A menu constructed with `content_source=None` takes the application's
-`global_content_source`. A local source wins when supplied. If neither exists,
+A menu constructed with `content=None` takes the application's
+`global_content`. A local source wins when supplied. If neither exists,
 the content box is omitted without displaying an automatic message. Applications
 can still show `MessageKey.NO_CONTENT_SOURCE` explicitly with `show_message()`.
 
 ### Replacing active content
 
-`set_content_source(source, description=...)` changes the primary panel.
-`panel.set_source(source)` applies the same replacement semantics to any panel.
+`set_content(content, description=...)` changes and returns the primary panel.
+`panel.set_content(content)` applies the same replacement semantics to any panel.
 If the menu is running, Tuiloom installs the source through the active event
 loop.
 
@@ -380,7 +398,7 @@ Set `auto_scroll` in the constructor or later:
 menu = TerminalMenu(
     app,
     ScreenContext("logs", "Logs"),
-    content_source=stream(),
+    content=ScreenContent.stream(stream()),
     auto_scroll="smart",
 )
 
@@ -515,7 +533,9 @@ A confirmable alert receives a `CommandContext`:
 ```python
 menu.show_alert(
     "Saved",
-    on_confirm=lambda context: context.menu.set_content_source("Ready"),
+    on_confirm=lambda context: context.menu.set_content(
+        ScreenContent.static("Ready")
+    ),
     prompt="Continue",
 )
 ```
@@ -553,7 +573,7 @@ The built-in keys are:
 
 | `MessageKey` | Value | Purpose |
 | --- | --- | --- |
-| `NO_CONTENT_SOURCE` | `"no_content_source"` | Explain a missing content source |
+| `NO_CONTENT_SOURCE` | `"no_content_source"` | Explain missing content |
 | `UNKNOWN_COMMAND` | `"unknown_command"` | Report discarded textual command input |
 | `TASK_EXIT_CHOICES` | `"task_exit_choices"` | Compatibility key for the former numeric exit prompt |
 | `TASK_WAITING` | `"task_waiting"` | Compatibility key for the former waiting footer |
@@ -612,7 +632,7 @@ may arrive only as character case.
 
 ```python
 def refresh(context: CommandContext) -> None:
-    context.menu.set_content_source("Refreshed")
+    context.menu.set_content(ScreenContent.static("Refreshed"))
 
 
 refresh_command = app.add_global_command(
@@ -647,12 +667,49 @@ Input priority is: task-exit choice, hidden-menu handling, free-form input,
 global commands, alerts, then focus/navigation. Unknown terminal sequences are
 consumed and do not block later input.
 
+## Text styling
+
+Use `style()` to combine terminal effects and foreground/background colors in
+one safe string:
+
+```python
+from tuiloom import style
+
+title = style("Important", bold=True)
+warning = style(
+    "Check this value",
+    bold=True,
+    underline=True,
+    color="red",
+    highlight="yellow",
+)
+```
+
+The named colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
+`cyan`, and `white`, plus their `bright_` variants. Colors can also use an ANSI
+index, an RGB tuple, or a hexadecimal string:
+
+```python
+indexed = style("Indexed", color=202)
+rgb = style("RGB", color=(120, 40, 210), highlight=(245, 245, 245))
+hexadecimal = style("Hex", color="#7A28D2", highlight="#F5F5F5")
+```
+
+The available effects are `bold`, `dim`, `italic`, `underline`,
+`strikethrough`, and `reverse`. Input is sanitized before styling: printable
+Unicode, safe SGR sequences, newlines, tabs, and HTTP(S) terminal hyperlinks
+are retained, while unsafe controls are removed. If no effect or color is
+selected, `style()` returns only that sanitized text.
+
 ## Terminal hyperlinks
 
 ```python
-from tuiloom import hyperlink
+from tuiloom import hyperlink, style
 
-label = hyperlink("Project", "https://github.com/maroard/Tuiloom")
+label = hyperlink(
+    style("Project", underline=True, color="bright_blue"),
+    "https://github.com/maroard/Tuiloom",
+)
 ```
 
 `hyperlink()` produces a complete OSC 8 hyperlink. It accepts only absolute
@@ -672,17 +729,21 @@ from tuiloom import (
     CommandBehavior,
     CommandContext,
     ContentPanel,
-    ContentSource,
+    ContentRefreshMode,
+    ContentSize,
     GlobalCommand,
     InputBehavior,
     KeyBinding,
     KeyMap,
     MenuCommand,
     MessageKey,
+    ScreenContent,
     ScreenContext,
     TerminalApp,
     TerminalMenu,
+    TextColor,
     hyperlink,
+    style,
 )
 ```
 
@@ -691,13 +752,19 @@ Anything outside this export list is internal and may change without notice.
 ### Type aliases
 
 ```python
-type ContentSource = str | list[str] | Iterator[str] | Callable[[], str | list[str]]
+type ContentRefreshMode = Literal["resize", "continuous"]
 type AutoScrollMode = Literal["smart", "strict"]
 type CommandBehavior = Callable[[CommandContext], None]
 type InputBehavior = Callable[[str], None]
+type TextColor = str | int | tuple[int, int, int]
 ```
 
 `AutoScrollMode | None` is used where automatic scrolling may be disabled.
+
+`ContentSize` is a frozen dataclass with integer `width` and `height` fields.
+`ScreenContent` is an immutable configuration created with `static()`,
+`lines()`, `stream()`, `dynamic()`, or `responsive()`. Responsive minimums are
+positive integers or `None`; its refresh mode is `"resize"` or `"continuous"`.
 
 ### `ScreenContext`
 
@@ -822,6 +889,7 @@ Applications obtain `ContentPanel` handles from
 
 Read-only properties:
 
+- `content -> ScreenContent`: current mounted production configuration;
 - `description -> str`: current visible and shutdown label;
 - `position -> int`: current zero-based display position;
 - `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy.
@@ -829,22 +897,24 @@ Read-only properties:
 Explicit mutation methods:
 
 ```text
-set_source(content_source: ContentSource) -> None
+set_content(content: ScreenContent) -> None
+refresh() -> None
 set_description(description: str) -> None
 set_auto_scroll(mode: AutoScrollMode | None) -> None
 move(position: int) -> None
 remove() -> None
 ```
 
-The handle keeps its identity across source, label, mode, and position changes.
-Calling a mutation method after removal raises `ValueError`.
+The handle keeps its identity across content, label, mode, and position changes.
+`refresh()` forces a responsive evaluation and raises `RuntimeError` for other
+content variants. Calling a mutation method after removal raises `ValueError`.
 
 ### `TerminalApp`
 
 ```text
 TerminalApp(
     name: str,
-    global_content_source: ContentSource | None = None,
+    global_content: ScreenContent | None = None,
     *,
     keymap: KeyMap | None = None,
 )
@@ -856,7 +926,7 @@ created without a local source, and an optional custom system key map.
 Read-only properties:
 
 - `name -> str`: application name displayed by every menu;
-- `global_content_source -> ContentSource | None`: source inherited at menu
+- `global_content -> ScreenContent | None`: content inherited at menu
   construction;
 - `keymap -> KeyMap`: configurable system key map;
 - `global_commands -> tuple[GlobalCommand, ...]`: immutable ordered handle view;
@@ -937,14 +1007,14 @@ of which menu was registered as the main menu, except that a label assigned with
 TerminalMenu(
     app: TerminalApp,
     screen_context: ScreenContext,
-    content_source: ContentSource | None = None,
+    content: ScreenContent | None = None,
     content_spacing: bool = True,
     show: bool = True,
     auto_scroll: AutoScrollMode | None = None,
 )
 ```
 
-Create a menu owned by `app`. `content_source=None` inherits application
+Create a menu owned by `app`. `content=None` inherits application
 content. `content_spacing` and `show` must be booleans. `auto_scroll` accepts
 `"smart"`, `"strict"`, or `None`.
 
@@ -1027,7 +1097,7 @@ only. Foreign handles raise `ValueError`.
 
 ```text
 add_content_panel(
-    content_source: ContentSource,
+    content: ScreenContent,
     *,
     description: str = "Content in progress",
     auto_scroll: AutoScrollMode | None = None,
@@ -1040,14 +1110,14 @@ is zero-based; invalid positions or auto-scroll modes raise `TypeError` or
 `ValueError`.
 
 ```text
-set_content_source(
-    content_source: ContentSource,
+set_content(
+    content: ScreenContent,
     *,
     description: str = "Content in progress",
-) -> None
+) -> ContentPanel
 ```
 
-Store and, while active, safely install the primary panel's content source.
+Store and, while active, safely install the primary panel's content.
 Replacement semantics are described in
 [Replacing active content](#replacing-active-content).
 
@@ -1122,6 +1192,29 @@ compatibility method without an application lifecycle raises `RuntimeError`.
 than one it pops the menu. At the bottom it requests shutdown and presents safe
 shutdown choices when background work is active; otherwise it stops
 immediately.
+
+### `style`
+
+```text
+style(
+    text: str,
+    *,
+    bold: bool = False,
+    dim: bool = False,
+    italic: bool = False,
+    underline: bool = False,
+    strikethrough: bool = False,
+    reverse: bool = False,
+    color: TextColor | None = None,
+    highlight: TextColor | None = None,
+) -> str
+```
+
+Return sanitized text wrapped in one ANSI SGR opening sequence and targeted
+resets for the selected categories. Named colors, ANSI indexes from 0 to 255,
+RGB tuples with components from 0 to 255, and strict `#RRGGBB` strings are
+accepted. Invalid types raise `TypeError`; unknown names, malformed hexadecimal
+strings, and out-of-range numbers raise `ValueError`.
 
 ### `hyperlink`
 

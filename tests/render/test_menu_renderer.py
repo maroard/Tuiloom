@@ -1,6 +1,6 @@
 from typing import cast
 
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_text import display_width
@@ -12,7 +12,8 @@ def make_renderer(
 ) -> tuple[TerminalMenu, MenuRenderer]:
     app = TerminalApp("Application")
     context = ScreenContext("main", "Title", width=width, text="Description")
-    menu = TerminalMenu(app, context, content_source=content)
+    configured = ScreenContent.static(content) if content is not None else None
+    menu = TerminalMenu(app, context, content=configured)
     menu.add_command("First", lambda command: None)
     menu.add_command("界 command", lambda command: None)
     return menu, MenuRenderer(menu)

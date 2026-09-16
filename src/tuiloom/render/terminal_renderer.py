@@ -93,7 +93,9 @@ class TerminalRenderer:
     def _compose_frame(self, terminal_width: int, terminal_height: int) -> list[str]:
         if not self._menu.show:
             return [""]
-        menu_lines = self._menu_renderer.render().splitlines() or [""]
+        menu_lines = self._menu_renderer.render(
+            max_width=terminal_width - 2
+        ).splitlines() or [""]
         menu_height = len(menu_lines)
         menu_width = max(display_width(line) for line in menu_lines)
         panels = self._menu._visible_content_panels()

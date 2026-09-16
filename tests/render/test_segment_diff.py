@@ -34,6 +34,13 @@ def test_segment_diff_detects_style_only_change() -> None:
     assert changes[0].content.endswith(RESET_SGR)
 
 
+def test_segment_diff_keeps_style_reset_before_plain_text_and_border() -> None:
+    changes = get_segment_changes(["│ old words │"], ["│ \x1b[31mred\x1b[0mplain │"])
+    assert len(changes) == 1
+    assert changes[0].column == 3
+    assert "\x1b[31mred\x1b[0mplain │" in changes[0].content
+
+
 def test_segment_diff_clears_removed_trailing_cells() -> None:
     assert get_segment_changes(["abcdef"], ["abc"]) == [
         SegmentChange(

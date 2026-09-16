@@ -8,6 +8,7 @@ from tuiloom import ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
+from tuiloom.render.terminal_text import display_width
 from tuiloom.task_exit import TaskExitView
 
 
@@ -52,6 +53,71 @@ def test_no_content_omits_content_box_and_spacing() -> None:
     lines = renderer._compose_frame(30, 16)
     assert sum(line.startswith("╭") for line in lines) == 1
     assert "one" not in "\n".join(lines)
+
+
+@pytest.mark.parametrize("content", [None, "content"])
+@pytest.mark.parametrize("strict", [False, True])
+def test_menu_growth_is_bounded_without_lowering_requested_minimum(
+    content: str | None, strict: bool
+) -> None:
+    menu, renderer = make_renderer(content=content)
+    menu.screen_context.width = 10
+    menu.screen_context.strict_width = strict
+    menu.screen_context.title = "x" * 50
+    for terminal_width in (60, 25, 12, 25, 60):
+        lines = renderer._compose_frame(terminal_width, 20)
+        assert lines != ["Terminal window is too small."]
+        expected = 12 if strict else min(52, terminal_width)
+        assert display_width(lines[-1]) == expected
+        assert all(display_width(line) <= terminal_width for line in lines)
+        assert lines[-1].endswith("╯")
+        assert "".join(lines).count("x") == 50
+    assert renderer._compose_frame(11, 20) == ["Terminal window is too small."]
+
+
+def test_strict_width_can_be_smaller_than_automatic_structural_minimum() -> None:
+    menu, renderer = make_renderer(content=None)
+    menu.screen_context.width = 1
+    menu.screen_context.strict_width = True
+    assert all(display_width(line) == 3 for line in renderer._compose_frame(3, 20))
+    menu.screen_context.strict_width = False
+    assert renderer._compose_frame(5, 20) == ["Terminal window is too small."]
+
+
+def test_automatic_width_without_requested_minimum_is_bounded() -> None:
+    menu, renderer = make_renderer(content=None)
+    menu.screen_context.title = "x" * 80
+    lines = renderer._compose_frame(20, 20)
+    assert all(display_width(line) == 20 for line in lines)
+
+
+def test_short_menu_keeps_requested_width_in_large_terminal() -> None:
+    menu, renderer = make_renderer(content=None)
+    menu.screen_context.width = 20
+    lines = renderer._compose_frame(80, 20)
+    assert all(display_width(line) == 22 for line in lines)
+
+
+def test_reflow_increases_menu_height_and_reallocates_panel_space() -> None:
+    menu, renderer = make_renderer()
+    menu.screen_context.width = 10
+    menu.screen_context.text = "alpha beta gamma delta epsilon"
+    wide = renderer._compose_frame(40, 25)
+    assert renderer.viewport is not None
+    wide_panel_height = renderer.viewport.height
+    narrow = renderer._compose_frame(12, 25)
+    assert renderer.viewport.height < wide_panel_height
+    for word in ("alpha", "beta", "gamma", "delta", "epsilon"):
+        assert word in "\n".join(narrow)
+    assert renderer._compose_frame(40, 25) == wide
+
+
+def test_reflow_still_requires_enough_terminal_height() -> None:
+    menu, renderer = make_renderer(content=None)
+    menu.screen_context.width = 10
+    menu.screen_context.text = "alpha beta gamma delta epsilon"
+    assert renderer._compose_frame(40, 10) != ["Terminal window is too small."]
+    assert renderer._compose_frame(12, 10) == ["Terminal window is too small."]
 
 
 def test_content_viewport_fills_available_inner_geometry() -> None:
@@ -166,6 +232,51 @@ def test_render_writes_full_then_differential_frames(
     assert writes
     renderer.invalidate()
     assert renderer._previous_lines is None
+
+
+def test_render_cache_tracks_resize_and_live_width_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, renderer = make_renderer(content=None)
+    menu.screen_context.width = 10
+    menu.screen_context.title = "x" * 50
+    writes: list[str] = []
+    size = terminal_size((30, 20))
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size", lambda: size
+    )
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+
+    renderer.render()
+    assert renderer._previous_lines is not None
+    assert display_width(renderer._previous_lines[-1]) == 30
+    writes.clear()
+    renderer.render()
+    assert writes == []
+
+    menu.screen_context.strict_width = True
+    renderer.render()
+    assert display_width(renderer._previous_lines[-1]) == 12
+    assert writes and not any("\x1b[H\x1b[J" in write for write in writes)
+    assert any("X" in write for write in writes)  # Erase the old right edge.
+
+    menu.screen_context.width = 15
+    renderer.render()
+    assert display_width(renderer._previous_lines[-1]) == 17
+    menu.screen_context.strict_width = False
+    renderer.render()
+    assert display_width(renderer._previous_lines[-1]) == 30
+
+    for columns in (17, 16, 60):
+        writes.clear()
+        size = terminal_size((columns, 20))
+        renderer.render()
+        assert any("\x1b[H\x1b[J" in write for write in writes)
+        if columns == 16:
+            assert renderer._previous_lines == ["Terminal window is too small."]
+        else:
+            assert display_width(renderer._previous_lines[-1]) == min(52, columns)
 
 
 def test_wait_animation_changes_the_cached_terminal_frame(

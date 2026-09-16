@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from tuiloom.render.terminal_text import (
     center_display,
+    clip_display,
     display_width,
     ljust_display,
     normalize_text_lines,
@@ -23,6 +24,7 @@ class _MenuState:
     title: str
     menu_name: str
     requested_width: int | None
+    strict_width: bool
     text: str | None
     message: str | None
     commands: tuple[tuple[str, bool], ...]
@@ -45,6 +47,7 @@ class MenuRenderer:
         self._menu = menu
         self._state: _MenuState | None = None
         self._cached_render: str | None = None
+        self._cached_width: int | None = None
         self._revision = 0
         self.update()
 
@@ -54,9 +57,19 @@ class MenuRenderer:
         return self._revision
 
     @property
-    def width(self) -> int:
-        """Return the calculated inner width."""
+    def minimum_width(self) -> int:
+        """Return the inner width below which the menu cannot fit."""
         state = self._require_state()
+        if state.strict_width and state.requested_width is not None:
+            return state.requested_width
+        return max(4, state.requested_width or 0)
+
+    @property
+    def width(self) -> int:
+        """Return the desired inner width before applying terminal limits."""
+        state = self._require_state()
+        if state.strict_width and state.requested_width is not None:
+            return state.requested_width
         requirements = [
             4,
             display_width(state.app_name),
@@ -73,7 +86,10 @@ class MenuRenderer:
                 requirements.extend(
                     display_width(line) + 2 for line in normalize_text_lines(content)
                 )
-        requirements.extend(display_width(f"> {label}") for label, _ in state.commands)
+        requirements.extend(
+            display_width(f"> {label}" + (" (disabled)" if not enabled else ""))
+            for label, enabled in state.commands
+        )
         if state.exit_label is not None:
             requirements.append(display_width(f"> {state.exit_label}"))
         if state.input_prompt is not None:
@@ -114,6 +130,7 @@ class MenuRenderer:
             title=title,
             menu_name=context.menu_name,
             requested_width=context.width,
+            strict_width=context.strict_width,
             text=text,
             message=message,
             commands=commands,
@@ -133,18 +150,21 @@ class MenuRenderer:
         self._cached_render = None
         self._revision += 1
 
-    def render(self) -> str:
-        """Return the complete menu box or an empty hidden frame."""
+    def render(self, *, max_width: int | None = None) -> str:
+        """Render with an optional inner limit, preserving the minimum width."""
         self.update()
         state = self._require_state()
         if not state.show:
             return ""
-        if self._cached_render is None:
-            self._cached_render = self._render_menu(state)
+        width = self.width
+        if max_width is not None:
+            width = max(self.minimum_width, min(width, max_width))
+        if self._cached_render is None or self._cached_width != width:
+            self._cached_render = self._render_menu(state, width)
+            self._cached_width = width
         return self._cached_render
 
-    def _render_menu(self, state: _MenuState) -> str:
-        width = self.width
+    def _render_menu(self, state: _MenuState, width: int) -> str:
         focused = (
             not state.has_content or state.focus == "menu" or state.alert is not None
         )
@@ -152,9 +172,15 @@ class MenuRenderer:
         vertical = "│" if focused else "┊"
         lines = [
             f"╭{horizontal * width}╮",
-            f"{vertical}{center_display(state.app_name, width)}{vertical}",
+            *(
+                self._content_row(line, width, vertical, centered=True)
+                for line in self._wrapped_lines(state.app_name, width)
+            ),
             f"├{horizontal * width}┤",
-            f"{vertical}{center_display(state.title, width)}{vertical}",
+            *(
+                self._content_row(line, width, vertical, centered=True)
+                for line in self._wrapped_lines(state.title, width)
+            ),
             f"├{horizontal * width}┤",
         ]
         if state.alert is not None:
@@ -169,14 +195,16 @@ class MenuRenderer:
             for index, (label, enabled) in enumerate(state.commands):
                 marker = ">" if index == state.selected_index else " "
                 suffix = " (disabled)" if not enabled else ""
-                row = ljust_display(f"{marker} {label}{suffix}", width)
-                lines.append(f"{vertical}{row}{vertical}")
+                lines.extend(
+                    self._command_rows(f"{label}{suffix}", marker, width, vertical)
+                )
             if state.exit_label is not None:
                 exit_marker = (
                     ">" if state.selected_index == len(state.commands) else " "
                 )
-                exit_row = ljust_display(f"{exit_marker} {state.exit_label}", width)
-                lines.append(f"{vertical}{exit_row}{vertical}")
+                lines.extend(
+                    self._command_rows(state.exit_label, exit_marker, width, vertical)
+                )
             if state.input_prompt is not None:
                 lines.append(f"{vertical}{'':{width}}{vertical}")
                 lines.extend(
@@ -191,12 +219,46 @@ class MenuRenderer:
         return "\n".join(lines)
 
     @staticmethod
+    def _content_row(
+        text: str, width: int, vertical: str, *, centered: bool = False
+    ) -> str:
+        # A grapheme wider than the entire inner area cannot be wrapped to fit.
+        clipped = clip_display(text, 0, width)
+        align = center_display if centered else ljust_display
+        return f"{vertical}{align(clipped, width)}{vertical}"
+
+    @staticmethod
+    def _wrapped_lines(text: str, width: int) -> list[str]:
+        return [
+            line
+            for raw_line in normalize_text_lines(text)
+            for line in wrap_display(raw_line, width)
+        ]
+
+    @staticmethod
+    def _command_rows(label: str, marker: str, width: int, vertical: str) -> list[str]:
+        if width < 4:
+            # Keep wrapping independent of selection: a whitespace marker alone
+            # would be dropped, changing the height when selection moves.
+            wrapped = MenuRenderer._wrapped_lines(f"> {label}", width)
+            wrapped[0] = wrapped[0].replace(">", marker, 1)
+            return [
+                MenuRenderer._content_row(line, width, vertical) for line in wrapped
+            ]
+        return [
+            MenuRenderer._content_row(
+                (f"{marker} " if index == 0 else "  ") + line, width, vertical
+            )
+            for index, line in enumerate(MenuRenderer._wrapped_lines(label, width - 2))
+        ]
+
+    @staticmethod
     def _text_rows(text: str, width: int, vertical: str) -> list[str]:
-        rows: list[str] = []
-        for raw_line in normalize_text_lines(text):
-            for line in wrap_display(raw_line, max(1, width - 2)):
-                rows.append(f"{vertical}{ljust_display(' ' + line, width)}{vertical}")
-        return rows or [f"{vertical}{'':{width}}{vertical}"]
+        padding = 1 if width >= 4 else 0
+        return [
+            MenuRenderer._content_row(" " * padding + line, width, vertical)
+            for line in MenuRenderer._wrapped_lines(text, width - 2 * padding)
+        ]
 
     def _require_state(self) -> _MenuState:
         if self._state is None:

@@ -11,6 +11,7 @@ class ScreenContext:
         width: Minimum inner width, or ``None`` for content-based sizing.
         text: Optional descriptive text above selectable commands.
         message: Optional footer message.
+        strict_width: Fix the inner width when ``width`` is provided.
     """
 
     menu_name: str
@@ -18,15 +19,18 @@ class ScreenContext:
     width: int | None = None
     text: str | None = None
     message: str | None = None
+    strict_width: bool = False
 
     def __post_init__(self) -> None:
         """Validate the minimum width eagerly."""
         self._validate_width(self.width)
 
     def __setattr__(self, name: str, value: object) -> None:
-        """Validate width replacements as eagerly as construction."""
+        """Validate sizing replacements as eagerly as construction."""
         if name == "width":
             self._validate_width(value)
+        elif name == "strict_width" and not isinstance(value, bool):
+            raise TypeError("ScreenContext.strict_width must be a bool")
         super().__setattr__(name, value)
 
     @staticmethod

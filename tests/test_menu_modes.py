@@ -164,6 +164,23 @@ def test_screen_width_rejects_invalid_construction_and_mutation(width: object) -
     assert context.width == 4
 
 
+@pytest.mark.parametrize("strict_width", [None, 0, 1, "true"])
+def test_strict_width_rejects_non_booleans(strict_width: object) -> None:
+    with pytest.raises(TypeError, match="strict_width"):
+        ScreenContext("main", "Main", strict_width=strict_width)  # type: ignore[arg-type]
+    context = ScreenContext("main", "Main", strict_width=True)
+    with pytest.raises(TypeError, match="strict_width"):
+        context.strict_width = strict_width  # type: ignore[assignment]
+    assert context.strict_width is True
+
+
+def test_strict_width_preserves_existing_positional_arguments() -> None:
+    context = ScreenContext("main", "Main", 12, "Text", "Message")
+    assert context.strict_width is False
+    assert context.text == "Text"
+    assert context.message == "Message"
+
+
 def test_show_and_content_spacing_are_validated() -> None:
     app = TerminalApp("App")
     with pytest.raises(TypeError):

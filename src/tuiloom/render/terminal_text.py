@@ -145,7 +145,9 @@ def clip_display(text: str, start: int, end: int) -> str:
             start,
             end,
             tabsize=8,
-            propagate_sgr=True,
+            # Retain literal SGR, including the state preceding the clip.
+            # Propagation can collapse in-range transitions to the first style.
+            propagate_sgr=False,
         )
     )
 

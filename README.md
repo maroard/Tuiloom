@@ -188,9 +188,30 @@ menu.screen_context.message = "Saved"
 menu.screen_context.width = 32
 ```
 
-`width` is the minimum inner width, not a fixed terminal width. It must be a
-positive integer or `None`; booleans are rejected. Tuiloom renders a
-terminal-too-small message when the complete frame cannot fit.
+`width` is the minimum inner width. It must be a positive integer or `None`;
+booleans are rejected. The menu grows to fit its text up to the terminal's inner
+width. Text that still exceeds the available space wraps onto additional lines,
+preferring word boundaries and splitting long words when necessary. Explicit
+line breaks are preserved. Headings remain centered, and command continuations
+align under their label with the selection marker on the first line only.
+
+Set `strict_width=True` to keep the menu at exactly the specified inner `width`:
+
+```python
+menu.screen_context.width = 32
+menu.screen_context.strict_width = True
+```
+
+`strict_width` defaults to `False` and has no effect when `width=None` (automatic
+sizing). Both fields can be changed while the menu runs. Wrapping affects only
+display; the original text and input buffer are retained. Content panels keep
+using the available terminal width and their existing scrolling behavior.
+
+The two border columns are additional: `width=32` needs at least 34 terminal
+columns. Tuiloom still displays `Terminal window is too small.` when that minimum
+cannot fit, or when the frame has insufficient height after wrapping. Automatic
+sizing keeps a minimum inner width of four columns; an explicit strict width
+may be smaller.
 
 By default, a content box and menu box have one blank row between them. Pass
 `content_spacing=False` to remove it.
@@ -708,6 +729,7 @@ ScreenContext(
     width: int | None = None,
     text: str | None = None,
     message: str | None = None,
+    strict_width: bool = False,
 )
 ```
 
@@ -717,10 +739,14 @@ A mutable dataclass holding visible menu state:
 - `title`: heading in the menu box;
 - `width`: positive minimum inner width, or `None` for content-based sizing;
 - `text`: optional description above commands;
-- `message`: optional footer.
+- `message`: optional footer;
+- `strict_width`: fix the inner width when `width` is specified; otherwise use
+  automatic sizing. Defaults to `False`.
 
-Construction and later assignment validate `width`; invalid values raise
-`ValueError`.
+Construction and later assignment validate `width` and `strict_width`. Invalid
+widths raise `ValueError`; non-boolean `strict_width` values raise `TypeError`.
+Menu growth is bounded by the terminal, with overflowing text wrapped inside the
+borders. The requested width plus two border columns must still fit.
 
 ### `KeyBinding`
 

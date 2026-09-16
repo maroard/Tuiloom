@@ -64,6 +64,20 @@ def test_clip_display_never_returns_half_a_wide_grapheme() -> None:
     assert clip_display("A界B", 1, 4) == "界B"
 
 
+def test_right_clip_preserves_style_changes_after_plain_prefix() -> None:
+    clipped = clip_display(" \x1b[31mred\x1b[0mplain", 0, 6)
+    assert display_width(clipped) == 6
+    assert " \x1b[31mred\x1b[0mpl" in clipped
+    assert clipped.endswith(RESET_SGR)
+
+
+def test_offset_clip_preserves_active_style_and_interior_resets() -> None:
+    clipped = clip_display("\x1b[31mzero red\x1b[0m plain", 5, 12)
+    assert display_width(clipped) == 7
+    assert "\x1b[31mred\x1b[0m pla" in clipped
+    assert clipped.endswith(RESET_SGR)
+
+
 def test_padding_and_centering_use_visible_width() -> None:
     styled = "\x1b[31m界\x1b[0m"
 

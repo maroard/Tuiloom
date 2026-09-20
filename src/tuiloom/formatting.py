@@ -26,6 +26,18 @@ _NAMED_COLORS = {
     "bright_cyan": 14,
     "bright_white": 15,
 }
+_NAMED_RGB_COLORS = {
+    "orange": (255, 165, 0),
+    "gray": (128, 128, 128),
+    "dark_red": (127, 0, 0),
+    "dark_green": (0, 127, 0),
+    "dark_yellow": (127, 127, 0),
+    "dark_blue": (0, 0, 127),
+    "dark_magenta": (127, 0, 127),
+    "dark_cyan": (0, 127, 127),
+    "dark_orange": (127, 82, 0),
+    "dark_gray": (64, 64, 64),
+}
 _STYLE_CODES = (
     ("bold", 1, 22),
     ("dim", 2, 22),
@@ -68,6 +80,10 @@ def _color_code(color: TextColor, *, background: bool) -> list[int]:
                 named_index -= 8
             return [base + named_index]
 
+        named_rgb = _NAMED_RGB_COLORS.get(color)
+        if named_rgb is not None:
+            return [prefix, 2, *named_rgb]
+
         if fullmatch(r"#[0-9A-Fa-f]{6}", color):
             return [
                 prefix,
@@ -95,9 +111,10 @@ def style(
 ) -> str:
     """Apply composable ANSI styling to sanitized terminal text.
 
-    Colors accept one of the 16 ANSI names, an index from 0 to 255, an RGB
-    tuple, or a ``#RRGGBB`` hexadecimal string. Only the SGR categories enabled
-    by this call are reset after the text.
+    Colors accept the 16 ANSI names, orange, gray, and dark_ variants of red,
+    green, yellow, blue, magenta, cyan, orange, and gray. An index from 0 to
+    255, an RGB tuple, or a ``#RRGGBB`` string is also accepted. Only the SGR
+    categories enabled by this call are reset after the text.
     """
     if not isinstance(text, str):
         raise TypeError("text must be a string")

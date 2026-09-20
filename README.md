@@ -607,6 +607,27 @@ returns `True`. Local and application-wide suppression combine;
 keys.
 
 Automatic messages use the same registry and respect suppression.
+`menu.active_message_key` is a read-only property identifying the registered
+message currently displayed, or `None` for an empty or directly assigned footer.
+Assigning `screen_context.message` directly resets that identity, even when the
+text is unchanged. Messages with identical text retain distinct keys.
+
+Register a message once during application setup, then toggle it from a callback:
+
+```python
+app.add_message("credit", "Created by maroard")
+
+def credit(context: CommandContext) -> None:
+    context.menu.toggle_message("credit")
+```
+
+`toggle_message(key)` returns `True` when the requested message is displayed,
+or `False` when it is hidden or suppressed. An active message is cleared; another
+message is replaced only if the requested message is enabled. Unknown keys raise
+`KeyError` without changing the footer. Suppression does not retroactively clear
+an active message, which can still be hidden by toggling it. Clearing does not
+restore a previous message.
+
 The three `TASK_*` compatibility keys remain available to application code but
 no longer control Tuiloom's automatic task-exit menu.
 
@@ -706,11 +727,32 @@ warning = style(
 ```
 
 The named colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
-`cyan`, and `white`, plus their `bright_` variants. Colors can also use an ANSI
-index, an RGB tuple, or a hexadecimal string:
+`cyan`, and `white`, plus their `bright_` variants. These use the terminal's
+ANSI palette. The following additional names use fixed RGB values for both
+`color` (text) and `highlight` (background):
+
+| Name | RGB hexadecimal |
+| --- | --- |
+| `orange` | `#FFA500` |
+| `gray` | `#808080` |
+| `dark_red` | `#7F0000` |
+| `dark_green` | `#007F00` |
+| `dark_yellow` | `#7F7F00` |
+| `dark_blue` | `#00007F` |
+| `dark_magenta` | `#7F007F` |
+| `dark_cyan` | `#007F7F` |
+| `dark_orange` | `#7F5200` |
+| `dark_gray` | `#404040` |
+
+Dark variants halve RGB components, rounding down, using full-intensity RGB
+primaries/secondaries as the reference for red through cyan. They do not derive
+their values from the terminal's configurable ANSI palette.
+
+Colors can also use an ANSI index, an RGB tuple, or a hexadecimal string:
 
 ```python
 indexed = style("Indexed", color=202)
+named = style("Warning", color="orange", highlight="dark_gray")
 rgb = style("RGB", color=(120, 40, 210), highlight=(245, 245, 245))
 hexadecimal = style("Hex", color="#7A28D2", highlight="#F5F5F5")
 ```
@@ -1189,6 +1231,8 @@ Show a blocking/confirmable alert or clear it and reveal suspended input state.
 
 ```text
 show_message(key: str) -> bool
+toggle_message(key: str) -> bool
+active_message_key: str | None  # read-only property
 clear_message() -> None
 disable_message(key: str) -> None
 enable_message(key: str) -> None
@@ -1240,6 +1284,22 @@ resets for the selected categories. Named colors, ANSI indexes from 0 to 255,
 RGB tuples with components from 0 to 255, and strict `#RRGGBB` strings are
 accepted. Invalid types raise `TypeError`; unknown names, malformed hexadecimal
 strings, and out-of-range numbers raise `ValueError`.
+
+### `display_width`
+
+```python
+from tuiloom import display_width, style
+
+display_width(style("●", color="green"))  # 1
+display_width("e\u0301")  # 1: combining accent
+display_width("界")  # 2: wide character
+```
+
+`display_width(text: str) -> int` measures terminal columns rather than Python
+string length. It uses the same text sanitization and width calculation as
+Tuiloom's renderer: supported ANSI styles and hyperlinks do not add width,
+Unicode graphemes retain their terminal width, and tabs use eight-column stops.
+Use it to measure a rendered line, for example when validating a canvas cell.
 
 ### `hyperlink`
 

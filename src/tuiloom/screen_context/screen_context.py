@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
@@ -20,6 +20,9 @@ class ScreenContext:
     text: str | None = None
     message: str | None = None
     strict_width: bool = False
+    _active_message_key: str | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         """Validate the minimum width eagerly."""
@@ -31,7 +34,14 @@ class ScreenContext:
             self._validate_width(value)
         elif name == "strict_width" and not isinstance(value, bool):
             raise TypeError("ScreenContext.strict_width must be a bool")
+        elif name == "message":
+            super().__setattr__("_active_message_key", None)
         super().__setattr__(name, value)
+
+    def _set_registered_message(self, key: str, text: str) -> None:
+        """Install a resolved message together with its registry identity."""
+        self.message = text
+        self._active_message_key = key
 
     @staticmethod
     def _validate_width(value: object) -> None:

@@ -36,6 +36,7 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "TerminalApp",
         "TerminalMenu",
         "TextColor",
+        "display_width",
         "hyperlink",
         "style",
     }
@@ -114,6 +115,8 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "show_alert",
             "clear_alert",
             "show_message",
+            "active_message_key",
+            "toggle_message",
             "clear_message",
             "disable_message",
             "enable_message",

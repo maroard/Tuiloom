@@ -55,6 +55,16 @@ def test_style_combines_effects_colors_and_targeted_resets() -> None:
         ("bright_magenta", "95", "105"),
         ("bright_cyan", "96", "106"),
         ("bright_white", "97", "107"),
+        ("orange", "38;2;255;165;0", "48;2;255;165;0"),
+        ("gray", "38;2;128;128;128", "48;2;128;128;128"),
+        ("dark_red", "38;2;127;0;0", "48;2;127;0;0"),
+        ("dark_green", "38;2;0;127;0", "48;2;0;127;0"),
+        ("dark_yellow", "38;2;127;127;0", "48;2;127;127;0"),
+        ("dark_blue", "38;2;0;0;127", "48;2;0;0;127"),
+        ("dark_magenta", "38;2;127;0;127", "48;2;127;0;127"),
+        ("dark_cyan", "38;2;0;127;127", "48;2;0;127;127"),
+        ("dark_orange", "38;2;127;82;0", "48;2;127;82;0"),
+        ("dark_gray", "38;2;64;64;64", "48;2;64;64;64"),
         (0, "38;5;0", "48;5;0"),
         (255, "38;5;255", "48;5;255"),
         ((0, 127, 255), "38;2;0;127;255", "48;2;0;127;255"),
@@ -93,7 +103,7 @@ def test_style_rejects_invalid_color_types_and_rgb_shapes(
 
 @pytest.mark.parametrize(
     "color",
-    [-1, 256, (0, -1, 0), (0, 256, 0), "orange", "RED", "#123", "#GG0000"],
+    [-1, 256, (0, -1, 0), (0, 256, 0), "unknown", "RED", "#123", "#GG0000"],
 )
 @pytest.mark.parametrize("option", ["color", "highlight"])
 def test_style_rejects_invalid_color_values(color: object, option: str) -> None:

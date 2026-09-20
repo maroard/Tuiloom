@@ -518,6 +518,23 @@ class TerminalMenu:
         self._alert_behavior = None
         self._alert_prompt = None
 
+    @property
+    def active_message_key(self) -> str | None:
+        """Return the displayed registered key, or None for a raw/empty footer."""
+        return self.screen_context._active_message_key
+
+    def toggle_message(self, key: str) -> bool:
+        """Toggle a registered message and report whether it is now displayed.
+
+        Unknown keys raise KeyError without changing the footer. Suppression
+        prevents showing a message but does not prevent hiding an active one.
+        """
+        self.app._validate_message_key(key)
+        if self.active_message_key == key:
+            self.clear_message()
+            return False
+        return self.show_message(key)
+
     def show_message(self, key: str) -> bool:
         """Show an enabled registered message without disturbing it on failure."""
         self.app._validate_message_key(key)
@@ -531,7 +548,7 @@ class TerminalMenu:
         message = self.app._get_message(key, **context)
         if message is None:
             return False
-        self.screen_context.message = message
+        self.screen_context._set_registered_message(key, message)
         return True
 
     def clear_message(self) -> None:
@@ -881,7 +898,7 @@ class TerminalMenu:
         message = self.app._get_message(key, **context)
         if message is None:
             return False
-        self.screen_context.message = message
+        self.screen_context._set_registered_message(key, message)
         return True
 
     def _begin_task_exit_choice(self) -> None:

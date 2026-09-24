@@ -3,12 +3,15 @@ from inspect import getdoc
 
 import tuiloom
 from tuiloom import (
+    ChoiceContext,
+    ChoiceOption,
     CommandContext,
     ContentPanel,
     ContentSize,
     GlobalCommand,
     KeyBinding,
     KeyMap,
+    MenuChoice,
     MenuCommand,
     ScreenContent,
     ScreenContext,
@@ -20,6 +23,9 @@ from tuiloom import (
 def test_public_api_contains_only_intentional_symbols() -> None:
     expected = {
         "AutoScrollMode",
+        "ChoiceBehavior",
+        "ChoiceContext",
+        "ChoiceOption",
         "CommandBehavior",
         "CommandContext",
         "ContentPanel",
@@ -30,6 +36,7 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "KeyBinding",
         "KeyMap",
         "MenuCommand",
+        "MenuChoice",
         "MessageKey",
         "ScreenContext",
         "ScreenContent",
@@ -53,6 +60,8 @@ def test_package_declares_inline_typing() -> None:
 
 def test_public_classes_and_methods_have_documentation() -> None:
     classes = (
+        ChoiceContext,
+        ChoiceOption,
         CommandContext,
         ContentPanel,
         ContentSize,
@@ -60,6 +69,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
         KeyBinding,
         KeyMap,
         MenuCommand,
+        MenuChoice,
         ScreenContext,
         ScreenContent,
         TerminalApp,
@@ -97,6 +107,8 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "content_panels",
             "add_content_panel",
             "add_command",
+            "add_choice",
+            "set_choice_value",
             "add_menu",
             "set_command_label",
             "set_command_behavior",

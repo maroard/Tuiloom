@@ -3,6 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from tuiloom.choice_layout import (
+    choice_indent,
+    choice_lines,
+    choice_slot_width,
+    choice_token,
+)
+from tuiloom.command import MenuChoice
 from tuiloom.render.terminal_text import (
     center_display,
     clip_display,
@@ -28,6 +35,7 @@ class _MenuState:
     text: str | None
     message: str | None
     commands: tuple[tuple[str, bool], ...]
+    choice: tuple[int, MenuChoice, int | None, int] | None
     exit_label: str | None
     selected_index: int
     focus: str
@@ -90,6 +98,18 @@ class MenuRenderer:
             display_width(f"> {label}" + (" (disabled)" if not enabled else ""))
             for label, enabled in state.commands
         )
+        if state.choice is not None:
+            _, choice, _, _ = state.choice
+            for row in range(choice.rows):
+                labels = [
+                    option.label for option in choice.options if option.row == row
+                ]
+                if labels:
+                    requirements.append(
+                        sum(choice_slot_width(label) for label in labels)
+                        + 2
+                        + 2 * (len(labels) - 1)
+                    )
         if state.exit_label is not None:
             requirements.append(display_width(f"> {state.exit_label}"))
         if state.input_prompt is not None:
@@ -106,7 +126,8 @@ class MenuRenderer:
         if exit_view is None:
             title = context.title
             text = context.text
-            message = context.message
+            hover_message = menu._hover_message()
+            message = hover_message if hover_message is not None else context.message
             commands = tuple(
                 (command.label, command.enabled) for command in menu.commands
             )
@@ -115,6 +136,17 @@ class MenuRenderer:
             alert = menu._alert_text
             alert_prompt = menu._alert_prompt
             input_prompt = menu._input_prompt if menu._alert_text is None else None
+            active = menu._active_choice()
+            choice = (
+                (
+                    menu._selected_index,
+                    active,
+                    menu._choice_index,
+                    active.selected_index,
+                )
+                if active is not None
+                else None
+            )
         else:
             title = exit_view.visible_title(len(menu._current_exit_panels()))
             text = None
@@ -125,6 +157,7 @@ class MenuRenderer:
             alert = None
             alert_prompt = None
             input_prompt = None
+            choice = None
         state = _MenuState(
             app_name=menu.app.name,
             title=title,
@@ -134,6 +167,7 @@ class MenuRenderer:
             text=text,
             message=message,
             commands=commands,
+            choice=choice,
             exit_label=exit_label,
             selected_index=selected_index,
             focus="menu" if menu._focused_panel is None else "content",
@@ -156,13 +190,18 @@ class MenuRenderer:
         state = self._require_state()
         if not state.show:
             return ""
-        width = self.width
-        if max_width is not None:
-            width = max(self.minimum_width, min(width, max_width))
+        width = self.effective_width(max_width)
         if self._cached_render is None or self._cached_width != width:
             self._cached_render = self._render_menu(state, width)
             self._cached_width = width
         return self._cached_render
+
+    def effective_width(self, max_width: int | None) -> int:
+        """Return the same inner width used by rendering and choice navigation."""
+        width = self.width
+        if max_width is not None:
+            width = max(self.minimum_width, min(width, max_width))
+        return width
 
     def _render_menu(self, state: _MenuState, width: int) -> str:
         focused = (
@@ -193,11 +232,39 @@ class MenuRenderer:
                 lines.extend(self._text_rows(state.text, width, vertical))
                 lines.append(f"{vertical}{'':{width}}{vertical}")
             for index, (label, enabled) in enumerate(state.commands):
-                marker = ">" if index == state.selected_index else " "
+                option_cursor = (
+                    state.choice is not None
+                    and state.choice[0] == index
+                    and state.choice[2] is not None
+                )
+                marker = (
+                    ">" if index == state.selected_index and not option_cursor else " "
+                )
                 suffix = " (disabled)" if not enabled else ""
                 lines.extend(
                     self._command_rows(f"{label}{suffix}", marker, width, vertical)
                 )
+                if state.choice is not None and state.choice[0] == index:
+                    _, choice, cursor, selected = state.choice
+                    for visual in choice_lines(choice, width):
+                        tokens = []
+                        for position, option in enumerate(visual.indices):
+                            label = choice.options[option].label
+                            token = choice_token(
+                                label,
+                                selected=selected == option,
+                                cursor=cursor == option,
+                            )
+                            if position < len(visual.indices) - 1:
+                                token += " " * (
+                                    choice_slot_width(label) - display_width(token)
+                                )
+                            tokens.append(token)
+                        raw = " " * choice_indent(width) + "  ".join(tokens)
+                        lines.extend(
+                            self._content_row(line, width, vertical)
+                            for line in self._wrapped_lines(raw, width)
+                        )
             if state.exit_label is not None:
                 exit_marker = (
                     ">" if state.selected_index == len(state.commands) else " "

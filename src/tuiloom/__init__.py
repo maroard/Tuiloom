@@ -2,10 +2,14 @@
 
 from tuiloom._message_registry import MessageKey
 from tuiloom.command import (
+    ChoiceBehavior,
+    ChoiceContext,
+    ChoiceOption,
     CommandBehavior,
     CommandContext,
     GlobalCommand,
     InputBehavior,
+    MenuChoice,
     MenuCommand,
 )
 from tuiloom.content_panel import ContentPanel
@@ -21,6 +25,9 @@ from tuiloom.terminal_menu import TerminalMenu
 __all__ = [
     "AutoScrollMode",
     "CommandBehavior",
+    "ChoiceBehavior",
+    "ChoiceContext",
+    "ChoiceOption",
     "CommandContext",
     "ContentPanel",
     "ContentRefreshMode",
@@ -30,6 +37,7 @@ __all__ = [
     "KeyBinding",
     "KeyMap",
     "MenuCommand",
+    "MenuChoice",
     "hyperlink",
     "ScreenContent",
     "ScreenContext",

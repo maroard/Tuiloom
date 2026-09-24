@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from shutil import get_terminal_size
 from time import monotonic
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, cast, overload
 from warnings import warn
 
 from wcwidth import iter_graphemes
 
 from tuiloom._message_registry import MessageKey
+from tuiloom.choice_layout import ChoiceLine, choice_lines
 from tuiloom.command import (
+    ChoiceBehavior,
+    ChoiceContext,
+    ChoiceOption,
     CommandBehavior,
     CommandContext,
     GlobalCommand,
     InputBehavior,
+    MenuChoice,
     MenuCommand,
 )
 from tuiloom.content_panel import ContentPanel
@@ -64,6 +70,7 @@ class TerminalMenu:
         self._exit_label = "Back"
         self._exit_label_explicit = False
         self._selected_index = 0
+        self._choice_index: int | None = None
         self._focused_panel: ContentPanel | None = None
         self._running = False
         self._hard_exit_requested = False
@@ -273,6 +280,7 @@ class TerminalMenu:
         label: str,
         behavior: CommandBehavior,
         *,
+        on_hover: CommandBehavior | None = None,
         position: int | None = None,
     ) -> MenuCommand:
         """Add a selectable command and return its stable mutation handle."""
@@ -282,18 +290,83 @@ class TerminalMenu:
             if self._selected_index < len(self._commands)
             else None
         )
-        command = MenuCommand(self, label, behavior)
+        command = MenuCommand(self, label, behavior, on_hover)
         self._commands.insert(insert_at, command)
         if selected is not None:
             self._selected_index = self._commands.index(selected)
         self._normalize_selection()
         return command
 
+    def add_choice(
+        self,
+        label: str,
+        options: list[ChoiceOption] | tuple[ChoiceOption, ...],
+        on_select: ChoiceBehavior,
+        *,
+        rows: int = 1,
+        selected_index: int = 0,
+        on_hover: CommandBehavior | None = None,
+        position: int | None = None,
+    ) -> MenuChoice:
+        """Add an expanding choice command and return its stable handle."""
+        insert_at = self._validate_position(position, allow_end=True)
+        if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
+            raise ValueError("rows must be a positive integer")
+        if not options or any(
+            not isinstance(option, ChoiceOption) for option in options
+        ):
+            raise ValueError("options must be a nonempty list of ChoiceOption")
+        if any(
+            isinstance(option.row, bool)
+            or not isinstance(option.row, int)
+            or option.row < 0
+            or option.row >= rows
+            for option in options
+        ):
+            raise ValueError("option row is outside declared rows")
+        if (
+            isinstance(selected_index, bool)
+            or not isinstance(selected_index, int)
+            or not 0 <= selected_index < len(options)
+        ):
+            raise ValueError("selected_index is outside options")
+        for option in options:
+            if option.hover_message is not None:
+                self.app._validate_message_key(option.hover_message)
+        selected = (
+            self._commands[self._selected_index]
+            if self._selected_index < len(self._commands)
+            else None
+        )
+        choice = MenuChoice(
+            self, label, tuple(options), rows, selected_index, on_select, on_hover
+        )
+        self._commands.insert(insert_at, choice)
+        if selected is not None:
+            self._selected_index = self._commands.index(selected)
+        self._normalize_selection()
+        return choice
+
+    def set_choice_value(self, choice: MenuChoice, selected_index: int) -> None:
+        """Set the validated option without invoking ``on_select``."""
+        self._require_command(choice)
+        if not isinstance(choice, MenuChoice):
+            raise ValueError("Command is not a choice")
+        if (
+            isinstance(selected_index, bool)
+            or not isinstance(selected_index, int)
+            or not 0 <= selected_index < len(choice.options)
+        ):
+            raise ValueError("selected_index is outside options")
+        choice._selected_option = selected_index
+        self._invalidate_renderer()
+
     def add_menu(
         self,
         submenu: TerminalMenu,
         label: str,
         *,
+        on_hover: CommandBehavior | None = None,
         position: int | None = None,
     ) -> MenuCommand:
         """Add an application-owned submenu command and return its handle."""
@@ -302,6 +375,7 @@ class TerminalMenu:
         return self.add_command(
             label,
             lambda context: context.app.push_menu(submenu),
+            on_hover=on_hover,
             position=position,
         )
 
@@ -328,6 +402,7 @@ class TerminalMenu:
             )
             return
 
+        self._choice_index = None
         for index in range(removed_position, len(self._commands)):
             if self._commands[index].enabled:
                 self._selected_index = index
@@ -338,12 +413,27 @@ class TerminalMenu:
                 return
         self._selected_index = len(self._commands)
 
+    @overload
+    def set_command_behavior(
+        self, command: MenuChoice, behavior: ChoiceBehavior
+    ) -> None: ...
+
+    @overload
     def set_command_behavior(
         self, command: MenuCommand, behavior: CommandBehavior
+    ) -> None: ...
+
+    def set_command_behavior(
+        self,
+        command: MenuCommand,
+        behavior: CommandBehavior | ChoiceBehavior,
     ) -> None:
         """Replace an owned command callback."""
         self._require_command(command)
-        command._behavior = behavior
+        if isinstance(command, MenuChoice):
+            command._on_select = cast(ChoiceBehavior, behavior)
+        else:
+            command._behavior = cast(CommandBehavior, behavior)
 
     def move_command(self, command: MenuCommand, position: int) -> None:
         """Move an owned command to a zero-based position atomically."""
@@ -540,16 +630,35 @@ class TerminalMenu:
         self.app._validate_message_key(key)
         if not self.is_message_enabled(key):
             return False
+        message = self._message_text(key)
+        if message is None:
+            return False
+        self.screen_context._set_registered_message(key, message)
+        return True
+
+    def _message_text(self, key: str) -> str | None:
         context: dict[str, object] = {}
         if key == MessageKey.NO_CONTENT_SOURCE:
             context["menu_name"] = self.screen_context.menu_name
         elif key == MessageKey.UNKNOWN_COMMAND:
             context["command"] = ""
-        message = self.app._get_message(key, **context)
-        if message is None:
-            return False
-        self.screen_context._set_registered_message(key, message)
-        return True
+        return self.app._get_message(key, **context)
+
+    def _hover_message(self) -> str | None:
+        """Resolve an option preview without changing the persistent footer."""
+        if (
+            self._focused_panel is not None
+            or self._alert_text is not None
+            or self._input_behavior is not None
+        ):
+            return None
+        choice = self._active_choice()
+        if choice is None or self._choice_index is None:
+            return None
+        key = choice.options[self._choice_index].hover_message
+        if key is None or not self.is_message_enabled(key):
+            return None
+        return self._message_text(key)
 
     def clear_message(self) -> None:
         """Clear the current footer message."""
@@ -605,7 +714,9 @@ class TerminalMenu:
         self._input_buffer = ""
         self._focused_panel = None
         self._selected_index = 0
+        self._choice_index = None
         self._normalize_selection()
+        self._hover_current(None)
         self._invalidate_renderer()
 
     def _initialize_runtime(self) -> None:
@@ -715,11 +826,87 @@ class TerminalMenu:
         selectable = self._selectable_indices()
         if self._selected_index not in selectable:
             self._selected_index = selectable[0]
+            self._choice_index = None
 
-    def _move_selection(self, delta: int) -> None:
+    def _move_selection(self, delta: int, binding: KeyBinding | None = None) -> None:
         selectable = self._selectable_indices()
         current = selectable.index(self._selected_index)
         self._selected_index = selectable[(current + delta) % len(selectable)]
+        self._choice_index = None
+        self._hover_current(binding)
+
+    def _active_choice(self) -> MenuChoice | None:
+        if self._selected_index >= len(self._commands):
+            return None
+        command = self._commands[self._selected_index]
+        return command if isinstance(command, MenuChoice) else None
+
+    def _choice_lines(self, choice: MenuChoice) -> tuple[ChoiceLine, ...]:
+        renderer = self._menu_renderer or MenuRenderer(self)
+        renderer.update()
+        width = renderer.effective_width(get_terminal_size().columns - 2)
+        return choice_lines(choice, width)
+
+    def _hover_current(self, binding: KeyBinding | None) -> None:
+        choice = self._active_choice()
+        if choice is not None and self._choice_index is not None:
+            option = choice.options[self._choice_index]
+            if option.on_hover is not None:
+                option.on_hover(
+                    ChoiceContext(
+                        self.app, self, choice, option, self._choice_index, binding
+                    )
+                )
+            return
+        if self._selected_index < len(self._commands):
+            command = self._commands[self._selected_index]
+            if command._on_hover is not None:
+                command._on_hover(CommandContext(self.app, self, command, binding))
+
+    def _move_choice_horizontal(self, delta: int, binding: KeyBinding) -> None:
+        choice = self._active_choice()
+        if choice is None:
+            return
+        ordered = [
+            index for line in self._choice_lines(choice) for index in line.indices
+        ]
+        if self._choice_index is None:
+            if delta < 0:
+                return
+            self._choice_index = ordered[0]
+        elif self._choice_index == ordered[0] and delta < 0:
+            self._choice_index = None
+        else:
+            candidate = ordered.index(self._choice_index) + delta
+            if not 0 <= candidate < len(ordered):
+                return
+            self._choice_index = ordered[candidate]
+        self._hover_current(binding)
+
+    def _move_choice_vertical(self, delta: int, binding: KeyBinding) -> bool:
+        choice = self._active_choice()
+        if choice is None or self._choice_index is None:
+            return False
+        lines = self._choice_lines(choice)
+        current_row = next(
+            row for row, line in enumerate(lines) if self._choice_index in line.indices
+        )
+        target_row = current_row + delta
+        if target_row < 0:
+            self._choice_index = None
+            self._hover_current(binding)
+        elif target_row >= len(lines):
+            self._move_selection(1, binding)
+        else:
+            current_line = lines[current_row]
+            x = current_line.starts[current_line.indices.index(self._choice_index)]
+            target = lines[target_row]
+            self._choice_index = min(
+                target.indices,
+                key=lambda index: abs(target.starts[target.indices.index(index)] - x),
+            )
+            self._hover_current(binding)
+        return True
 
     def _resolve_content(self) -> ScreenContent | None:
         return self._content
@@ -809,9 +996,15 @@ class TerminalMenu:
             self.stop()
         elif self._focused_panel is None:
             if action == "up":
-                self._move_selection(-1)
+                if not self._move_choice_vertical(-1, binding):
+                    self._move_selection(-1, binding)
             elif action == "down":
-                self._move_selection(1)
+                if not self._move_choice_vertical(1, binding):
+                    self._move_selection(1, binding)
+            elif action == "left":
+                self._move_choice_horizontal(-1, binding)
+            elif action == "right":
+                self._move_choice_horizontal(1, binding)
             elif action == "activate":
                 self._activate_selection(binding)
         elif action in {"up", "down", "left", "right"}:
@@ -848,6 +1041,19 @@ class TerminalMenu:
             return
         command = self._commands[self._selected_index]
         if not command.enabled:
+            return
+        if isinstance(command, MenuChoice):
+            if self._choice_index is None:
+                self._choice_index = command.selected_index
+                self._hover_current(binding)
+            else:
+                index = self._choice_index
+                self.set_choice_value(command, index)
+                command._on_select(
+                    ChoiceContext(
+                        self.app, self, command, command.options[index], index, binding
+                    )
+                )
             return
         command.behavior(CommandContext(self.app, self, command, binding))
 

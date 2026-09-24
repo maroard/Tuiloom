@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, cast
 
 from tuiloom.key_binding import KeyBinding
 
@@ -38,6 +38,31 @@ type CommandBehavior = Callable[[CommandContext], None]
 type InputBehavior = Callable[[str], None]
 
 
+@dataclass(frozen=True, slots=True)
+class ChoiceContext:
+    """Describe a choice option hover or selection callback."""
+
+    app: TerminalApp
+    menu: TerminalMenu
+    command: MenuChoice
+    option: ChoiceOption
+    index: int
+    binding: KeyBinding | None
+
+
+type ChoiceBehavior = Callable[[ChoiceContext], None]
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceOption:
+    """One labelled option with optional hover behavior and footer preview."""
+
+    label: str
+    row: int = field(default=0, kw_only=True)
+    on_hover: ChoiceBehavior | None = field(default=None, kw_only=True)
+    hover_message: str | None = field(default=None, kw_only=True)
+
+
 class MenuCommand:
     """Stable handle for one selectable menu command.
 
@@ -48,15 +73,20 @@ class MenuCommand:
         enabled: Whether the command can currently be selected and activated.
     """
 
-    __slots__ = ("_menu", "_label", "_behavior", "_enabled")
+    __slots__ = ("_menu", "_label", "_behavior", "_enabled", "_on_hover")
 
     def __init__(
-        self, menu: TerminalMenu, label: str, behavior: CommandBehavior
+        self,
+        menu: TerminalMenu,
+        label: str,
+        behavior: CommandBehavior,
+        on_hover: CommandBehavior | None = None,
     ) -> None:
         self._menu = menu
         self._label = label
         self._behavior = behavior
         self._enabled = True
+        self._on_hover = on_hover
 
     @property
     def label(self) -> str:
@@ -77,6 +107,49 @@ class MenuCommand:
     def enabled(self) -> bool:
         """Return whether the command is locally enabled."""
         return self._enabled
+
+
+class MenuChoice(MenuCommand):
+    """Stable command handle with an independently validated option value."""
+
+    __slots__ = ("_options", "_rows", "_selected_option", "_on_select")
+
+    def __init__(
+        self,
+        menu: TerminalMenu,
+        label: str,
+        options: tuple[ChoiceOption, ...],
+        rows: int,
+        selected_index: int,
+        on_select: ChoiceBehavior,
+        on_hover: CommandBehavior | None,
+    ) -> None:
+        super().__init__(menu, label, lambda context: None, on_hover)
+        self._options = options
+        self._rows = rows
+        self._selected_option = selected_index
+        self._on_select = on_select
+
+    @property
+    def options(self) -> tuple[ChoiceOption, ...]:
+        return self._options
+
+    @property
+    def rows(self) -> int:
+        return self._rows
+
+    @property
+    def selected_index(self) -> int:
+        return self._selected_option
+
+    @property
+    def behavior(self) -> CommandBehavior:
+        """Return the current selection callback through the command interface."""
+        return cast(CommandBehavior, self._on_select)
+
+    @property
+    def value(self) -> str:
+        return self._options[self._selected_option].label
 
 
 class GlobalCommand:

@@ -10,8 +10,9 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.4.1. Tuiloom requires
-Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
+This README documents the current development branch. The latest published
+release is 0.4.1. Tuiloom requires Python 3.12 or newer and is tested on Linux
+and macOS with Python 3.12–3.14.
 
 ## Contents
 
@@ -42,7 +43,7 @@ Install the latest release from PyPI:
 python -m pip install tuiloom
 ```
 
-To install the version documented here explicitly:
+To install the latest published version explicitly:
 
 ```bash
 python -m pip install tuiloom==0.4.1
@@ -260,6 +261,47 @@ view, and a handle from another menu is rejected.
 
 The handle exposes read-only `label`, `behavior`, `position`, and `enabled`
 properties. Their current values reflect mutations performed through the menu.
+
+### Horizontal choices
+
+Use `add_choice()` when a command should reveal several options on hover. The
+callback receives a `ChoiceContext` with `app`, `menu`, `command`, `option`,
+`index`, and the triggering `binding`. Hover callbacks receive the same context
+for options; the command label's `on_hover` receives a `CommandContext`.
+
+```python
+from tuiloom import ChoiceOption
+
+app.add_message("fast_help", "Run the simulation to completion.")
+mode = menu.add_choice(
+    "Simulation mode",
+    [
+        ChoiceOption("Fast", hover_message="fast_help"),
+        ChoiceOption("Accurate", on_hover=lambda context: show_accurate_preview()),
+        ChoiceOption("Custom", row=1),
+    ],
+    lambda context: apply_mode(context.option.label),
+    rows=2,
+    selected_index=0,
+)
+menu.set_choice_value(mode, 1)  # Update without calling on_select.
+```
+
+`ChoiceOption(label, *, row=0, on_hover=None, hover_message=None)` uses zero-based
+declared rows. `hover_message` names a registered application message shown only
+while the cursor is on that option. It overlays the persistent footer without
+changing `ScreenContext.message` or `active_message_key`; the previous footer
+reappears when the cursor leaves. Unknown message keys raise `KeyError` when
+the choice is added. `on_hover` remains available for other actions.
+Empty declared rows are skipped. A narrow terminal wraps between options, and
+arrow navigation follows those visible lines. Right from the label enters the
+options; Down moves to the next command. Enter from the label moves to the
+active option. Moving the cursor previews an option without changing
+`mode.value`. Enter on an option validates it and calls `on_select`, including
+when it is already active. The `>` marker follows the cursor; `✓` marks the
+validated value. Option lines start two cells to the right of command markers
+when the width permits. Use the owning menu's command mutation methods to rename,
+move, disable, or delete a choice.
 
 Every time a menu opens, its marker starts on the first enabled command from
 the top. Disabled commands are skipped during initialization and navigation; if
@@ -901,6 +943,12 @@ CommandContext(
 A frozen dataclass created by Tuiloom for callbacks. `command` is `None` for
 alert confirmation. `binding` may be `None` for programmatic execution.
 
+`ChoiceContext` is the corresponding frozen context for option hover and
+selection. It adds `option: ChoiceOption` and `index: int`, and its `command`
+is always the owning `MenuChoice`. `ChoiceBehavior` is a callback accepting
+this context. `MenuChoice` extends `MenuCommand` with read-only `options`,
+`rows`, `selected_index`, and the validated label in `value`.
+
 ### `MenuCommand`
 
 ```text
@@ -1105,12 +1153,25 @@ add_command(
     label: str,
     behavior: CommandBehavior,
     *,
+    on_hover: CommandBehavior | None = None,
     position: int | None = None,
 ) -> MenuCommand
+add_choice(
+    label: str,
+    options: list[ChoiceOption] | tuple[ChoiceOption, ...],
+    on_select: ChoiceBehavior,
+    *,
+    rows: int = 1,
+    selected_index: int = 0,
+    on_hover: CommandBehavior | None = None,
+    position: int | None = None,
+) -> MenuChoice
+set_choice_value(choice: MenuChoice, selected_index: int) -> None
 add_menu(
     submenu: TerminalMenu,
     label: str,
     *,
+    on_hover: CommandBehavior | None = None,
     position: int | None = None,
 ) -> MenuCommand
 delete_command(command: MenuCommand) -> None

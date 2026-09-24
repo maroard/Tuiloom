@@ -21,7 +21,7 @@ def choice_indent(width: int) -> int:
 
 def choice_token(label: str, *, selected: bool, cursor: bool) -> str:
     """Render one option without reserving space for an absent checkmark."""
-    return f"{'>' if cursor else ' '} " + ("✓ " if selected else "") + label
+    return f"{'>' if cursor else ' '} {label}" + (" ✓" if selected else "")
 
 
 def choice_slot_width(label: str) -> int:

@@ -51,12 +51,13 @@ def test_choice_hover_and_deferred_selection() -> None:
     press(target, "right")
     assert len(events) == count
     rendered = MenuRenderer(target).render()
-    assert "✓ Fast" in rendered
+    assert "Fast ✓" in rendered
     assert "> Accurate" in rendered
     assert ">   Accurate" not in rendered
     press(target, "enter")
     assert choice.value == "Accurate"
     assert events[-1] == ("select", 1)
+    assert "> Accurate ✓" in MenuRenderer(target).render()
     press(target, "enter")
     assert events[-1] == ("select", 1)
     press(target, "left")
@@ -64,7 +65,7 @@ def test_choice_hover_and_deferred_selection() -> None:
     assert events.count(("label", None)) == 2
 
 
-def test_leftmost_option_cursor_is_indented_and_check_has_one_space() -> None:
+def test_leftmost_option_cursor_is_indented_and_check_follows_label() -> None:
     target = menu()
     target.add_choice(
         "Mode",
@@ -76,7 +77,7 @@ def test_leftmost_option_cursor_is_indented_and_check_has_one_space() -> None:
     press(target, "right")
     assert "│  > Fast" in MenuRenderer(target).render()
     press(target, "enter")
-    assert "│  > ✓ Fast" in MenuRenderer(target).render()
+    assert "│  > Fast ✓" in MenuRenderer(target).render()
 
 
 def test_validating_right_option_keeps_cursor_column_fixed() -> None:
@@ -97,10 +98,11 @@ def test_validating_right_option_keeps_cursor_column_fixed() -> None:
     after = next(
         line
         for line in MenuRenderer(target).render().splitlines()
-        if "> ✓ Accurate" in line
+        if "> Accurate ✓" in line
     )
     assert after.index(">") == cursor_column
-    assert after.index("Accurate") == before.index("Accurate") + 2
+    assert after.index("Accurate") == before.index("Accurate")
+    assert after.index("✓") == after.index("Accurate") + len("Accurate") + 1
 
 
 def test_visual_rows_and_resize_drive_navigation() -> None:

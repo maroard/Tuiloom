@@ -297,10 +297,10 @@ arrow navigation follows those visible lines. Right from the label enters the
 options; Down moves to the next command. Enter from the label moves to the
 active option. Moving the cursor previews an option without changing
 `mode.value`. Enter on an option validates it and calls `on_select`, including
-when it is already active. The `>` marker follows the cursor; `✓` marks the
-validated value. Option lines start two cells to the right of command markers
-when the width permits. Use the owning menu's command mutation methods to rename,
-move, disable, or delete a choice.
+when it is already active. The `>` marker follows the cursor; `✓` appears after
+the validated option's label. Option lines start two cells to the right of
+command markers when the width permits. Use the owning menu's command mutation
+methods to rename, move, disable, or delete a choice.
 
 Every time a menu opens, its marker starts on the first enabled command from
 the top. Disabled commands are skipped during initialization and navigation; if

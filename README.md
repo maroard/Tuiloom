@@ -10,9 +10,8 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the current development branch. The latest published
-release is 0.4.1. Tuiloom requires Python 3.12 or newer and is tested on Linux
-and macOS with Python 3.12–3.14.
+This README documents the complete public API of Tuiloom 0.5.0. Tuiloom requires
+Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
 
@@ -43,10 +42,10 @@ Install the latest release from PyPI:
 python -m pip install tuiloom
 ```
 
-To install the latest published version explicitly:
+To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.4.1
+python -m pip install tuiloom==0.5.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required

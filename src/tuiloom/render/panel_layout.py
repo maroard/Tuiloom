@@ -18,15 +18,23 @@ def allocate_panel_heights(
     allocation. Weights apply to the full frame; borders are removed afterward.
     Return None when minimums do not fit. Integer rounding uses the largest
     fractional remainders, with ties resolved in panel display order.
+    Collapsed panels use a fixed inner height instead of their expanded bounds.
     """
-    heights = [panel.min_height + 2 for panel in panels]
+    heights = [
+        (panel.collapsed_height if panel.collapsed else panel.min_height) + 2
+        for panel in panels
+    ]
     if sum(heights) > available:
         return None
 
     weights = [Fraction(panel.weight) for panel in panels]
     minimums = [Fraction(height) for height in heights]
     maximums = [
-        Fraction(panel.max_height + 2 if panel.max_height is not None else available)
+        Fraction(panel.collapsed_height + 2)
+        if panel.collapsed
+        else Fraction(
+            panel.max_height + 2 if panel.max_height is not None else available
+        )
         for panel in panels
     ]
     remaining = available

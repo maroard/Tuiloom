@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.6.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.7.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -45,7 +45,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.6.0
+python -m pip install tuiloom==0.7.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -471,6 +471,52 @@ Panel bounds size the physical viewport. The `min_height` on
 the callback receives the larger of the allocated height and that virtual
 minimum, and its result remains clipped and scrollable. A layout change
 refreshes responsive content when its effective `ContentSize` changes.
+
+### Collapsible content panels
+
+Panels start expanded. Collapse a panel to a fixed, smaller viewport while
+keeping its content and runtime mounted:
+
+```python
+logs = menu.add_content_panel(
+    ScreenContent.stream(log_stream),
+    description="Logs",
+    weight=3,
+    min_height=4,
+    max_height=30,
+    collapsed_height=2,
+)
+logs.collapse()
+assert logs.collapsed
+logs.set_collapsed_height(1)
+logs.expand()
+logs.toggle_collapse()
+```
+
+`collapsed_height` defaults to `1` and counts visible content rows, excluding
+the two border rows. It must be a positive integer; booleans are rejected.
+Invalid creation or height updates raise `TypeError` or `ValueError` before
+changing panel state. `collapse()` and `expand()` are idempotent;
+`toggle_collapse()` switches the state. All mutation methods return `None`.
+
+A collapsed panel reserves exactly `collapsed_height` content rows, independently
+of its expanded `weight`, `min_height`, and `max_height`. Expanded panels share
+the remaining frame rows using the usual weighted sizing. If the required
+heights cannot fit, the existing terminal-too-small message is displayed. If
+all panels are collapsed, unused terminal rows remain below the frame.
+
+`expand()` recalculates the viewport from the current terminal size and expanded
+sizing options. `set_layout()` changes only those expanded options, even while
+collapsed; it never changes the collapse state or `collapsed_height`.
+
+Collapsed panels remain visible, focusable, and scrollable. Collapsing or
+expanding preserves the panel, renderer, viewport, worker, content buffer, and
+auto-scroll policy. Streams and dynamic sources continue producing content.
+Scroll offsets follow the existing viewport rules and may be clamped when the
+viewport grows. Responsive content refreshes when its effective `ContentSize`
+changes, still respecting its virtual rendering minimums and using the same
+worker. No collapse shortcut is installed automatically; applications can bind
+`toggle_collapse()` through their existing commands.
 
 ### Inherited and local content
 
@@ -1090,7 +1136,9 @@ Read-only properties:
 - `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy;
 - `weight -> float`: positive relative share of total panel height, including borders;
 - `min_height -> int`: minimum visible content rows, default `1`;
-- `max_height -> int | None`: maximum visible content rows, default `None`.
+- `max_height -> int | None`: maximum expanded visible content rows, default `None`;
+- `collapsed -> bool`: whether the panel uses its fixed collapsed height, default `False`;
+- `collapsed_height -> int`: collapsed visible content rows, default `1`.
 
 Explicit mutation methods:
 
@@ -1099,6 +1147,10 @@ set_content(content: ScreenContent) -> None
 refresh() -> None
 set_description(description: str) -> None
 set_auto_scroll(mode: AutoScrollMode | None) -> None
+collapse() -> None
+expand() -> None
+toggle_collapse() -> None
+set_collapsed_height(height: int) -> None
 set_layout(
     *,
     weight: float = 1,
@@ -1111,8 +1163,13 @@ remove() -> None
 
 The handle keeps its identity across content, label, mode, layout and position
 changes.
-`set_layout()` replaces the complete sizing configuration; omitted arguments
-reset to their defaults. It can be called before or during application execution.
+`set_layout()` replaces the expanded sizing configuration; omitted arguments
+reset to their defaults. It leaves `collapsed` and `collapsed_height` unchanged.
+`collapse()` and `expand()` are idempotent; `toggle_collapse()` switches the state.
+`set_collapsed_height()` sets a positive integer content height independently of
+the expanded bounds. See [Collapsible content panels](#collapsible-content-panels)
+for allocation and runtime behavior. These methods can be called before or
+during application execution.
 `refresh()` forces a responsive evaluation and raises `RuntimeError` for other
 content variants. Calling a mutation method after removal raises `ValueError`.
 
@@ -1325,6 +1382,7 @@ add_content_panel(
     weight: float = 1,
     min_height: int = 1,
     max_height: int | None = None,
+    collapsed_height: int = 1,
 ) -> ContentPanel
 ```
 
@@ -1332,6 +1390,8 @@ Add an independently rendered panel and return its stable handle. `position`
 is zero-based; invalid positions or auto-scroll modes raise `TypeError` or
 `ValueError`. Sizing options are validated before insertion; see
 [Content panel sizing](#content-panel-sizing) for allocation and bounds.
+`collapsed_height` sets the fixed content row count used after `collapse()`;
+panels start expanded. See [Collapsible content panels](#collapsible-content-panels).
 
 Change a panel through its `ContentPanel` handle. See
 [Replacing active content](#replacing-active-content) for source replacement

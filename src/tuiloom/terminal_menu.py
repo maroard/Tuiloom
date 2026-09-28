@@ -140,6 +140,7 @@ class TerminalMenu:
         weight: float = 1,
         min_height: int = 1,
         max_height: int | None = None,
+        collapsed_height: int = 1,
     ) -> ContentPanel:
         """Add an independently rendered content panel and return its handle."""
         self._validate_auto_scroll(auto_scroll)
@@ -154,6 +155,7 @@ class TerminalMenu:
             weight=weight,
             min_height=min_height,
             max_height=max_height,
+            collapsed_height=collapsed_height,
         )
         self._content_panels.insert(insert_at, panel)
         if self._running and self._event_loop is not None:
@@ -229,6 +231,29 @@ class TerminalMenu:
         panel._weight = weight
         panel._min_height = min_height
         panel._max_height = max_height
+        self._invalidate_renderer()
+        if self._running and self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
+
+    def _set_content_panel_collapsed(
+        self, panel: ContentPanel, collapsed: bool
+    ) -> None:
+        """Change an owned panel's display state without touching its runtime."""
+        self._require_content_panel(panel)
+        if panel._collapsed == collapsed:
+            return
+        panel._collapsed = collapsed
+        self._invalidate_renderer()
+        if self._running and self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
+
+    def _set_content_panel_collapsed_height(
+        self, panel: ContentPanel, height: int
+    ) -> None:
+        """Validate and replace an owned panel's fixed collapsed height."""
+        self._require_content_panel(panel)
+        panel._validate_collapsed_height(height)
+        panel._collapsed_height = height
         self._invalidate_renderer()
         if self._running and self._event_loop is not None:
             self._event_loop.request_render(immediate=True)

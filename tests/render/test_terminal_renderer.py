@@ -132,6 +132,114 @@ def test_panel_minimums_that_do_not_fit_use_the_existing_too_small_frame() -> No
     assert second._viewport is not None and second._viewport.height == 3
 
 
+@pytest.mark.parametrize(
+    ("rows", "collapsed", "expected"),
+    [
+        (20, (True, False, False), [2, 5, 13]),
+        (20, (False, True, False), [11, 2, 7]),
+        (20, (True, True, True), [2, 2, 2]),
+        (6, (True, True, True), [2, 2, 2]),
+        (5, (True, True, True), None),
+        (20, (False, False, False), [10, 4, 6]),
+    ],
+)
+def test_collapsed_panels_reserve_fixed_rows_before_weighted_sharing(
+    rows: int, collapsed: tuple[bool, ...], expected: list[int] | None
+) -> None:
+    menu, renderer = make_renderer(content=None)
+    panels = [
+        menu.add_content_panel(
+            ScreenContent.static("content"),
+            weight=weight,
+            min_height=4,
+            collapsed_height=2,
+        )
+        for weight in (3, 1, 2)
+    ]
+    for panel, state in zip(panels, collapsed, strict=True):
+        if state:
+            panel.collapse()
+    frame = compose_with_panel_rows(menu, renderer, rows)
+    if expected is None:
+        assert frame == ["Terminal window is too small."]
+        assert all(panel._viewport is None for panel in panels)
+    else:
+        assert [p._viewport.height if p._viewport else None for p in panels] == expected
+        menu_height = len(renderer._menu_renderer.render(max_width=28).splitlines())
+        assert len(frame) == sum(expected) + 2 * len(panels) + 1 + menu_height
+
+
+def test_expand_uses_current_terminal_size_and_updated_layout() -> None:
+    menu, renderer = make_renderer()
+    panel = menu.content_panels[0]
+    panel.set_collapsed_height(5)
+    panel.set_layout(min_height=2, max_height=3)
+    panel.collapse()
+    compose_with_panel_rows(menu, renderer, 10)
+    viewport = panel._viewport
+    assert viewport is not None and viewport.height == 5
+    panel.set_layout(weight=2, min_height=4, max_height=8)
+    compose_with_panel_rows(menu, renderer, 20)
+    assert viewport.height == 5
+    panel.expand()
+    compose_with_panel_rows(menu, renderer, 6)
+    assert panel._viewport is viewport and viewport.height == 6
+
+
+@pytest.mark.parametrize("spacing", [False, True])
+def test_collapse_before_first_render_can_recover_from_too_small_frame(
+    spacing: bool,
+) -> None:
+    menu, renderer = make_renderer(spacing=spacing)
+    panel = menu.content_panels[0]
+    panel.set_layout(min_height=10)
+    menu_height = len(renderer._menu_renderer.render(max_width=28).splitlines())
+    terminal_height = menu_height + int(spacing) + 3
+    assert renderer._compose_frame(30, terminal_height) == [
+        "Terminal window is too small."
+    ]
+    panel.collapse()
+    assert renderer._compose_frame(30, terminal_height)[0].startswith("╭")
+    assert panel._viewport is not None and panel._viewport.height == 1
+    panel.expand()
+    assert renderer._compose_frame(30, terminal_height) == [
+        "Terminal window is too small."
+    ]
+
+
+def test_live_collapse_keeps_focus_scroll_and_viewport(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, renderer = make_renderer(content="\n".join("x" * 50 for _ in range(30)))
+    panel = menu.content_panels[0]
+    other = menu.add_content_panel(ScreenContent.static("other"))
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size",
+        lambda: terminal_size((30, 30)),
+    )
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", lambda _: None)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+    menu._focused_panel = panel
+    renderer.render()
+    viewport = panel._viewport
+    assert viewport is not None
+    viewport.offset_x, viewport.offset_y = 2, 5
+    panel._smart_auto_scroll_active = False
+    panel.collapse()
+    renderer.render()
+    assert panel._viewport is viewport and viewport.height == 1
+    assert (viewport.offset_x, viewport.offset_y) == (2, 5)
+    assert menu._focused_panel is panel and not panel._smart_auto_scroll_active
+    menu._handle_event(InputEvent(binding=KeyBinding("down")))
+    assert viewport.offset_y == 6
+    assert other._viewport is not None and other._viewport.offset_y == 0
+    panel.expand()
+    renderer.render()
+    assert panel._viewport is viewport and viewport.height > 1
+    assert (viewport.offset_x, viewport.offset_y) == (2, 6)
+    assert menu._focused_panel is panel
+
+
 def test_live_layout_change_redraws_and_preserves_focus_and_scroll(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -170,7 +278,10 @@ def test_live_layout_change_redraws_and_preserves_focus_and_scroll(
 
 
 @pytest.mark.parametrize("mode", ["strict", "smart"])
-def test_auto_scroll_uses_new_panel_height_and_keeps_smart_pause(mode: str) -> None:
+@pytest.mark.parametrize("collapse", [False, True])
+def test_auto_scroll_uses_new_panel_height_and_keeps_smart_pause(
+    mode: str, collapse: bool
+) -> None:
     menu, renderer = make_renderer(content=ScreenContent.stream(iter(())))
     panel = menu.content_panels[0]
     panel.set_auto_scroll(mode)  # type: ignore[arg-type]
@@ -184,7 +295,11 @@ def test_auto_scroll_uses_new_panel_height_and_keeps_smart_pause(mode: str) -> N
     paused_offset = viewport.offset_y
     assert not panel._smart_auto_scroll_active
 
-    panel.set_layout(max_height=3)
+    if collapse:
+        panel.set_collapsed_height(3)
+        panel.collapse()
+    else:
+        panel.set_layout(max_height=3)
     assert not panel._smart_auto_scroll_active
     panel._renderer.append_stream_batch(["\nnext"])
     renderer.apply_stream_auto_scroll(panel.auto_scroll, panel)

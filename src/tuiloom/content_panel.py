@@ -24,6 +24,8 @@ class ContentPanel:
         "_weight",
         "_min_height",
         "_max_height",
+        "_collapsed",
+        "_collapsed_height",
         "_renderer",
         "_viewport",
         "_worker",
@@ -51,17 +53,21 @@ class ContentPanel:
         weight: float = 1,
         min_height: int = 1,
         max_height: int | None = None,
+        collapsed_height: int = 1,
     ) -> None:
         self._menu = menu
         if not isinstance(content, ScreenContent):
             raise TypeError("ContentPanel content must be a ScreenContent")
         self._validate_layout(weight, min_height, max_height)
+        self._validate_collapsed_height(collapsed_height)
         self._content = content
         self._description = description
         self._auto_scroll = auto_scroll
         self._weight = weight
         self._min_height = min_height
         self._max_height = max_height
+        self._collapsed = False
+        self._collapsed_height = collapsed_height
         self._renderer = ContentRenderer(content)
         self._viewport: Viewport | None = None
         self._worker: SourceWorker | None = None
@@ -113,6 +119,39 @@ class ContentPanel:
         """Return the visible content row limit, or None for an unlimited panel."""
         return self._max_height
 
+    @property
+    def collapsed(self) -> bool:
+        """Return whether this panel displays its fixed collapsed height."""
+        return self._collapsed
+
+    @property
+    def collapsed_height(self) -> int:
+        """Return the collapsed content row count, excluding borders."""
+        return self._collapsed_height
+
+    def collapse(self) -> None:
+        """Use the collapsed height while keeping content and runtime mounted."""
+        self._menu._set_content_panel_collapsed(self, True)
+
+    def expand(self) -> None:
+        """Resume weighted sizing with the configured expanded height bounds."""
+        self._menu._set_content_panel_collapsed(self, False)
+
+    def toggle_collapse(self) -> None:
+        """Switch between collapsed and expanded sizing."""
+        self._menu._set_content_panel_collapsed(self, not self._collapsed)
+
+    def set_collapsed_height(self, height: int) -> None:
+        """Set the positive collapsed content row count, excluding borders."""
+        self._menu._set_content_panel_collapsed_height(self, height)
+
+    @staticmethod
+    def _validate_collapsed_height(height: int) -> None:
+        if isinstance(height, bool) or not isinstance(height, int):
+            raise TypeError("collapsed_height must be a positive integer")
+        if height <= 0:
+            raise ValueError("collapsed_height must be a positive integer")
+
     def set_layout(
         self,
         *,
@@ -120,7 +159,7 @@ class ContentPanel:
         min_height: int = 1,
         max_height: int | None = None,
     ) -> None:
-        """Replace all sizing options; omitted options return to their defaults."""
+        """Replace expanded sizing options; omitted options use their defaults."""
         self._menu._set_content_panel_layout(self, weight, min_height, max_height)
 
     @staticmethod

@@ -636,6 +636,174 @@ def test_live_layout_change_schedules_a_frame_without_content_or_input_events(
         loop.close()
 
 
+def test_live_collapse_schedules_frames_without_source_or_input_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, loop, _, renderer = make_loop([None])
+    menu._terminal_renderer = renderer
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size",
+        lambda: terminal_size((30, 30)),
+    )
+    monkeypatch.setattr(
+        "tuiloom.event_loop.event_loop.get_terminal_size",
+        lambda: terminal_size((30, 30)),
+    )
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", lambda _: None)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+    try:
+        loop.run_once(process_input=False, block=False)
+        panel = menu.content_panels[0]
+        viewport = panel._viewport
+        assert viewport is not None and viewport.height > 3
+        for operation, expected in (
+            (panel.collapse, 1),
+            (lambda: panel.set_collapsed_height(3), 3),
+            (panel.expand, viewport.height),
+            (panel.toggle_collapse, 3),
+        ):
+            operation()
+            loop.run_once(process_input=False, block=False)
+            assert panel._viewport is viewport and viewport.height == expected
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("minimum", [None, 10])
+def test_collapse_reflows_responsive_content_on_the_same_worker(
+    minimum: int | None,
+) -> None:
+    sizes: list[ContentSize] = []
+
+    def content(size: ContentSize) -> list[str]:
+        sizes.append(size)
+        return ["responsive"] * size.height
+
+    configured = ScreenContent.responsive(content, min_height=minimum)
+    menu, loop, _, renderer = make_loop([None], content=configured)
+    try:
+        panel = menu.content_panels[0]
+        panel.set_layout(min_height=4, max_height=6)
+        worker, generation, content_renderer = (
+            panel._worker,
+            panel._generation,
+            panel._renderer,
+        )
+        renderer._compose_frame(30, 30)
+        loop._source_events.put(loop._source_events.get(timeout=1))
+        loop._drain_source_events()
+        assert sizes == [ContentSize(28, minimum or 6)]
+        viewport = panel._viewport
+        assert viewport is not None
+
+        panel.collapse()
+        renderer._compose_frame(30, 30)
+        if minimum is None:
+            loop._source_events.put(loop._source_events.get(timeout=1))
+            loop._drain_source_events()
+            assert sizes[-1] == ContentSize(28, 1)
+        else:
+            assert sizes == [ContentSize(28, 10)]
+        assert viewport.height == 1
+        panel.expand()
+        renderer._compose_frame(30, 30)
+        if minimum is None:
+            loop._source_events.put(loop._source_events.get(timeout=1))
+            loop._drain_source_events()
+            assert sizes == [ContentSize(28, 6), ContentSize(28, 1), ContentSize(28, 6)]
+        else:
+            assert sizes == [ContentSize(28, 10)]
+        assert viewport.height == 6
+        assert panel._viewport is viewport and panel.content is configured
+        assert (panel._worker, panel._generation, panel._renderer) == (
+            worker,
+            generation,
+            content_renderer,
+        )
+    finally:
+        loop.close()
+
+
+def test_stream_keeps_consuming_and_buffering_while_collapsed() -> None:
+    waiting, release = Event(), Event()
+
+    def stream() -> Iterator[str]:
+        yield "before\n"
+        waiting.set()
+        release.wait()
+        yield "during\n"
+
+    configured = ScreenContent.stream(stream())
+    menu, loop, _, renderer = make_loop([None], content=configured)
+    try:
+        panel = menu.content_panels[0]
+        assert waiting.wait(1)
+        loop._drain_source_events()
+        renderer._compose_frame(30, 30)
+        worker, generation, content_renderer, viewport = (
+            panel._worker,
+            panel._generation,
+            panel._renderer,
+            panel._viewport,
+        )
+        assert worker is not None and viewport is not None
+        panel.collapse()
+        renderer._compose_frame(30, 30)
+        assert worker.is_alive() and viewport.height == 1
+        release.set()
+        assert worker.join(1)
+        loop._drain_source_events()
+        assert content_renderer.rendered_content.lines == ["before", "during"]
+        assert content_renderer.rendered_content.finished
+        assert panel.collapsed and panel in menu.content_panels
+        panel.expand()
+        frame = renderer._compose_frame(30, 30)
+        assert "during" in "\n".join(frame)
+        assert panel.content is configured
+        assert (panel._worker, panel._generation, panel._renderer, panel._viewport) == (
+            worker,
+            generation,
+            content_renderer,
+            viewport,
+        )
+    finally:
+        release.set()
+        loop.close()
+
+
+def test_dynamic_source_keeps_refreshing_while_collapsed() -> None:
+    now = 0.0
+    values = iter(["before", "during", "after"])
+    menu, loop, _, renderer = make_loop(
+        [None], content=ScreenContent.dynamic(lambda: next(values)), clock=lambda: now
+    )
+    try:
+        panel = menu.content_panels[0]
+        worker, generation, content_renderer = (
+            panel._worker,
+            panel._generation,
+            panel._renderer,
+        )
+        for value in ("before", "during", "after"):
+            if value == "during":
+                panel.collapse()
+            elif value == "after":
+                panel.expand()
+            loop._request_dynamic_updates()
+            loop._source_events.put(loop._source_events.get(timeout=1))
+            loop._drain_source_events()
+            renderer._compose_frame(30, 30)
+            assert content_renderer.rendered_content.lines == [value]
+            assert (panel._worker, panel._generation, panel._renderer) == (
+                worker,
+                generation,
+                content_renderer,
+            )
+            now += 1
+    finally:
+        loop.close()
+
+
 def test_responsive_results_from_obsolete_requests_are_ignored() -> None:
     content = ScreenContent.responsive(lambda size: "worker value")
     menu, loop, _, _ = make_loop([None], content=content)

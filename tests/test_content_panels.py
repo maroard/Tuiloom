@@ -89,6 +89,10 @@ def test_removed_panel_rejects_every_explicit_mutation() -> None:
         lambda: panel.set_description("New"),
         lambda: panel.set_auto_scroll("smart"),
         lambda: panel.set_layout(weight=2),
+        panel.collapse,
+        panel.expand,
+        panel.toggle_collapse,
+        lambda: panel.set_collapsed_height(2),
         lambda: panel.move(0),
         panel.remove,
     )
@@ -213,3 +217,95 @@ def test_layout_mutation_rejects_unowned_panels() -> None:
     rogue = ContentPanel(menu, ScreenContent.static("rogue"), "Rogue", None)
     with pytest.raises(ValueError, match="belong"):
         rogue.set_layout(weight=2)
+
+
+def test_collapse_transitions_preserve_panel_configuration() -> None:
+    menu = make_menu()
+    panel = menu.content_panels[0]
+    content, renderer = panel.content, panel._renderer
+    assert panel.collapsed is False
+    assert panel.collapsed_height == 1
+    transitions: tuple[tuple[Callable[[], object], bool], ...] = (
+        (panel.expand, False),
+        (panel.collapse, True),
+        (panel.collapse, True),
+        (panel.toggle_collapse, False),
+        (panel.toggle_collapse, True),
+        (panel.expand, False),
+    )
+    for operation, collapsed in transitions:
+        assert operation() is None
+        assert panel.collapsed is collapsed
+    assert panel.content is content and panel._renderer is renderer
+    assert menu.content_panels == (panel,)
+
+
+def test_collapsed_height_is_separate_from_expanded_layout() -> None:
+    menu = make_menu()
+    panel = menu.add_content_panel(
+        ScreenContent.static("extra"), min_height=4, max_height=8, collapsed_height=2
+    )
+    panel.collapse()
+    panel.set_layout(weight=3, min_height=5, max_height=10)
+    assert panel.collapsed and panel.collapsed_height == 2
+    panel.set_collapsed_height(3)
+    assert panel.collapsed_height == 3
+    assert (panel.weight, panel.min_height, panel.max_height) == (3, 5, 10)
+    panel.set_layout()
+    assert panel.collapsed and panel.collapsed_height == 3
+    panel.set_content(ScreenContent.static("replacement"))
+    panel.move(0)
+    assert panel.collapsed and panel.collapsed_height == 3
+    panel.expand()
+    assert (panel.weight, panel.min_height, panel.max_height) == (1, 1, None)
+
+
+@pytest.mark.parametrize(
+    ("height", "error"),
+    [
+        (True, TypeError),
+        (None, TypeError),
+        (1.5, TypeError),
+        ("2", TypeError),
+        (0, ValueError),
+        (-1, ValueError),
+    ],
+)
+def test_collapsed_height_validation_is_atomic(
+    height: object, error: type[Exception]
+) -> None:
+    menu = make_menu()
+    original = menu.content_panels
+    with pytest.raises(error, match="collapsed_height"):
+        menu.add_content_panel(
+            ScreenContent.static("bad"),
+            collapsed_height=height,  # type: ignore[arg-type]
+        )
+    assert menu.content_panels == original
+    with pytest.raises(error, match="collapsed_height"):
+        ContentPanel(
+            menu,
+            ScreenContent.static("bad"),
+            "Bad",
+            None,
+            collapsed_height=height,  # type: ignore[arg-type]
+        )
+    panel = original[0]
+    panel.set_collapsed_height(2)
+    panel.collapse()
+    with pytest.raises(error, match="collapsed_height"):
+        panel.set_collapsed_height(height)  # type: ignore[arg-type]
+    assert panel.collapsed and panel.collapsed_height == 2
+
+
+def test_collapse_mutations_reject_unowned_panels() -> None:
+    menu = make_menu()
+    rogue = ContentPanel(menu, ScreenContent.static("rogue"), "Rogue", None)
+    for operation in (
+        rogue.collapse,
+        rogue.expand,
+        rogue.toggle_collapse,
+        lambda: rogue.set_collapsed_height(2),
+    ):
+        with pytest.raises(ValueError, match="belong"):
+            operation()

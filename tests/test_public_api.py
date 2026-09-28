@@ -1,5 +1,5 @@
 from importlib.resources import files
-from inspect import getdoc
+from inspect import getdoc, signature
 
 import tuiloom
 from tuiloom import (
@@ -18,6 +18,8 @@ from tuiloom import (
     TerminalApp,
     TerminalMenu,
 )
+from tuiloom.event_loop.event_loop import EventLoop
+from tuiloom.render.terminal_renderer import TerminalRenderer
 
 
 def test_public_api_contains_only_intentional_symbols() -> None:
@@ -103,7 +105,6 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "commands",
             "is_main",
             "show",
-            "auto_scroll",
             "content_panels",
             "add_content_panel",
             "add_command",
@@ -120,7 +121,6 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "clear_global_command_behavior",
             "disable_global_command",
             "enable_global_command",
-            "set_content",
             "run_with_output",
             "enter_input_mode",
             "leave_input_mode",
@@ -141,6 +141,10 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "description",
             "position",
             "auto_scroll",
+            "weight",
+            "min_height",
+            "max_height",
+            "set_layout",
             "set_content",
             "refresh",
             "set_description",
@@ -165,6 +169,8 @@ def test_discarded_content_panel_aliases_are_absent() -> None:
     assert not hasattr(ContentPanel, "set_source")
     assert hasattr(TerminalMenu, "add_content_panel")
     for removed_name in (
+        "set_content",
+        "auto_scroll",
         "add_content",
         "set_content_panel_source",
         "set_content_panel_description",
@@ -190,3 +196,31 @@ def test_accidental_runtime_state_is_not_public() -> None:
     for name in ("input_handler", "running", "content_renderer"):
         assert not hasattr(app, name)
         assert not hasattr(menu, name)
+
+
+def test_removed_single_content_constructor_parameters_are_absent() -> None:
+    menu_parameters = signature(TerminalMenu).parameters
+    assert "content" not in menu_parameters
+    assert "auto_scroll" not in menu_parameters
+    assert "content_renderer" not in signature(TerminalRenderer).parameters
+    assert "content_renderer" not in signature(EventLoop).parameters
+
+
+def test_removed_renderer_and_event_loop_aliases_are_absent() -> None:
+    for name in (
+        "viewport",
+        "set_content_renderer",
+        "reset_stream_auto_scroll",
+        "scroll_up",
+        "scroll_down",
+        "scroll_left",
+        "scroll_right",
+    ):
+        assert not hasattr(TerminalRenderer, name)
+    for name in (
+        "install_content",
+        "_apply_content",
+        "_sync_primary_aliases",
+        "_progress_source_replacement",
+    ):
+        assert not hasattr(EventLoop, name)

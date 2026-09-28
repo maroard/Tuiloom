@@ -19,7 +19,9 @@ def make_menu(
 ) -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if isinstance(content, str) else content
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content=configured)
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    if configured is not None:
+        menu.add_content_panel(configured)
     return app, menu
 
 
@@ -199,14 +201,15 @@ def test_show_and_content_spacing_are_validated() -> None:
 
 
 def test_auto_scroll_validation_and_content_replacement() -> None:
-    _, menu = make_menu()
-    assert menu.auto_scroll is None
-    menu.auto_scroll = "smart"
-    assert menu.auto_scroll == "smart"
+    _, menu = make_menu(content="old")
+    panel = menu.content_panels[0]
+    assert panel.auto_scroll is None
+    panel.set_auto_scroll("smart")
+    assert panel.auto_scroll == "smart"
     with pytest.raises(ValueError):
-        menu.auto_scroll = "bottom"  # type: ignore[assignment]
-    menu.set_content(ScreenContent.static("new"))
-    assert menu._content == ScreenContent.static("new")
+        panel.set_auto_scroll("bottom")  # type: ignore[arg-type]
+    panel.set_content(ScreenContent.static("new"))
+    assert panel.content == ScreenContent.static("new")
 
 
 def test_active_content_replacement_forwards_its_description() -> None:
@@ -225,9 +228,11 @@ def test_active_content_replacement_forwards_its_description() -> None:
     menu._event_loop = Loop()  # type: ignore[assignment]
     source = ScreenContent.stream(iter(["new"]))
 
-    menu.set_content(source, description="Generating")
+    panel = menu.content_panels[0]
+    panel.set_description("Generating")
+    panel.set_content(source)
 
-    assert menu._content is source
+    assert menu.content_panels == (panel,)
     assert installed == [(source, "Generating")]
 
 

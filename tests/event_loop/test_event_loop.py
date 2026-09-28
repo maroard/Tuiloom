@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from os import terminal_size
 from selectors import BaseSelector, SelectorKey
 from threading import Event, Thread
 from typing import cast
@@ -103,19 +104,14 @@ def make_loop(
 ) -> tuple[TerminalMenu, EventLoop, FakeSelector, TerminalRenderer]:
     app = TerminalApp("App")
     content = content if content is not None else ScreenContent.static("content")
-    menu = TerminalMenu(
-        app,
-        ScreenContext("main", "Main"),
-        content=content,
-    )
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu.add_content_panel(content)
     menu._running = True
     menu.add_command("Stop", lambda context: menu._stop_immediately())
-    content_renderer = ContentRenderer(content)
     menu_renderer = MenuRenderer(menu)
     terminal_renderer = TerminalRenderer(
         menu=menu,
         menu_renderer=menu_renderer,
-        content_renderer=content_renderer,
         content_spacing=True,
     )
     selector = FakeSelector()
@@ -124,7 +120,6 @@ def make_loop(
         cast(InputHandler, FakeInput(events)),
         menu_renderer,
         terminal_renderer,
-        content_renderer,
         clock=clock,
         selector_factory=lambda: cast(BaseSelector, selector),
     )
@@ -164,12 +159,21 @@ def test_event_loop_detects_context_and_terminal_state_changes() -> None:
     loop.close()
 
 
-def test_install_content_replaces_menu_and_terminal_renderers() -> None:
+def test_panel_replacement_replaces_its_renderer_and_viewport() -> None:
     menu, loop, _, renderer = make_loop([None])
-    old = menu._content_renderer
-    loop.install_content(ScreenContent.static("new"))
-    assert menu._content_renderer is not old
-    assert renderer._content_renderer is menu._content_renderer
+    panel = menu.content_panels[0]
+    old = panel._renderer
+    renderer._compose_frame(30, 20)
+    assert panel._viewport is not None
+
+    panel.set_content(ScreenContent.static("new"))
+
+    assert panel._renderer is not old
+    assert panel._renderer.content == ScreenContent.static("new")
+    assert panel._viewport is None
+    renderer._compose_frame(30, 20)
+    assert panel._viewport is not None
+    assert "new" in panel._viewport.render()
     loop.close()
 
 
@@ -178,12 +182,9 @@ def test_streaming_events_apply_data_completion_and_ignore_stale() -> None:
     streaming = ContentRenderer(ScreenContent.stream(iter([])))
     panel = menu.content_panels[0]
     panel._renderer = streaming
-    loop._content_renderer = streaming
-    menu._content_renderer = streaming
-    renderer.set_content_renderer(streaming)
-    loop._source_events.put(SourceEvent(panel, loop._generation - 1, "data", "stale"))
-    loop._source_events.put(SourceEvent(panel, loop._generation, "data", "fresh\n"))
-    loop._source_events.put(SourceEvent(panel, loop._generation, "complete"))
+    loop._source_events.put(SourceEvent(panel, panel._generation - 1, "data", "stale"))
+    loop._source_events.put(SourceEvent(panel, panel._generation, "data", "fresh\n"))
+    loop._source_events.put(SourceEvent(panel, panel._generation, "complete"))
     loop._drain_source_events()
     assert streaming.rendered_content.lines == ["fresh"]
     assert streaming.rendered_content.finished
@@ -196,18 +197,14 @@ def test_dynamic_events_keep_latest_value_and_validate_results() -> None:
     panel = menu.content_panels[0]
     panel._renderer = dynamic
     panel._dynamic_in_flight = True
-    loop._content_renderer = dynamic
-    menu._content_renderer = dynamic
-    renderer.set_content_renderer(dynamic)
-    loop._dynamic_in_flight = True
-    loop._source_events.put(SourceEvent(panel, loop._generation, "data", "old"))
-    loop._source_events.put(SourceEvent(panel, loop._generation, "data", ["new"]))
+    loop._source_events.put(SourceEvent(panel, panel._generation, "data", "old"))
+    loop._source_events.put(SourceEvent(panel, panel._generation, "data", ["new"]))
     loop._drain_source_events()
     assert dynamic.rendered_content.lines == ["new"]
-    assert not loop._dynamic_in_flight
+    assert not panel._dynamic_in_flight
 
     loop._source_events.put(
-        SourceEvent(panel, loop._generation, "data", 3)  # type: ignore[arg-type]
+        SourceEvent(panel, panel._generation, "data", 3)  # type: ignore[arg-type]
     )
     with pytest.raises(RuntimeError, match="invalid"):
         loop._drain_source_events()
@@ -220,10 +217,10 @@ def test_source_errors_are_raised_with_validation() -> None:
     error = ValueError("source failed")
     with pytest.raises(ValueError, match="source failed"):
         loop._handle_source_event(
-            SourceEvent(panel, loop._generation, "error", error=error)
+            SourceEvent(panel, panel._generation, "error", error=error)
         )
     with pytest.raises(RuntimeError, match="no exception"):
-        loop._handle_source_event(SourceEvent(panel, loop._generation, "error"))
+        loop._handle_source_event(SourceEvent(panel, panel._generation, "error"))
     loop.close()
 
 
@@ -351,7 +348,8 @@ def test_wakeup_socket_is_drained_without_blocking() -> None:
 
 
 def test_content_replacement_waits_and_only_starts_latest_request() -> None:
-    _, loop, _, _ = make_loop([None])
+    menu, loop, _, _ = make_loop([None])
+    panel = menu.content_panels[0]
     old_started = Event()
     old_release = Event()
     second_started = Event()
@@ -372,25 +370,22 @@ def test_content_replacement_waits_and_only_starts_latest_request() -> None:
         latest_release.wait()
         yield "latest"
 
-    loop.install_content(ScreenContent.stream(old_source()), description="Old")
+    panel.set_description("Old")
+    panel.set_content(ScreenContent.stream(old_source()))
     assert old_started.wait(1)
 
-    loop.install_content(
-        ScreenContent.stream(second_source()),
-        description="Second",
-    )
-    loop.install_content(
-        ScreenContent.stream(latest_source()),
-        description="Latest",
-    )
+    panel.set_description("Second")
+    panel.set_content(ScreenContent.stream(second_source()))
+    panel.set_description("Latest")
+    panel.set_content(ScreenContent.stream(latest_source()))
 
     assert not second_started.is_set()
     assert not latest_started.is_set()
     old_release.set()
-    assert loop._source_worker is not None
-    assert loop._source_worker.join(1)
+    assert panel._worker is not None
+    assert panel._worker.join(1)
 
-    loop._progress_source_replacement()
+    loop._progress_panel_transitions()
 
     assert latest_started.wait(1)
     assert not second_started.is_set()
@@ -398,12 +393,13 @@ def test_content_replacement_waits_and_only_starts_latest_request() -> None:
     assert loop.active_work.description == "Latest"
     latest_release.set()
     loop.close()
-    assert loop._source_worker is not None
-    assert not loop._source_worker.is_alive()
+    assert panel._worker is not None
+    assert not panel._worker.is_alive()
 
 
 def test_close_waits_for_cancelled_iterator_before_closing_resources() -> None:
-    _, loop, selector, _ = make_loop([None])
+    menu, loop, selector, _ = make_loop([None])
+    panel = menu.content_panels[0]
     started = Event()
     release = Event()
 
@@ -412,9 +408,9 @@ def test_close_waits_for_cancelled_iterator_before_closing_resources() -> None:
         release.wait()
         yield "late"
 
-    loop.install_content(ScreenContent.stream(blocked()))
+    panel.set_content(ScreenContent.stream(blocked()))
     assert started.wait(1)
-    worker = loop._source_worker
+    worker = panel._worker
     assert worker is not None
     closer = Thread(target=loop.close)
     closer.start()
@@ -445,7 +441,8 @@ def test_abandon_releases_resources_without_touching_workers() -> None:
 
 
 def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() -> None:
-    _, loop, _, _ = make_loop([None])
+    menu, loop, _, _ = make_loop([None])
+    panel = menu.content_panels[0]
     started = Event()
     release = Event()
 
@@ -454,9 +451,10 @@ def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() ->
         release.wait()
         return "done"
 
-    loop.install_content(ScreenContent.dynamic(dynamic), description="Refreshing")
+    panel.set_description("Refreshing")
+    panel.set_content(ScreenContent.dynamic(dynamic))
     assert loop.active_work is None
-    loop._request_dynamic_update()
+    loop._request_dynamic_updates()
     assert started.wait(1)
     assert loop.active_work is not None
     assert loop.active_work.description == "Refreshing"
@@ -468,8 +466,8 @@ def test_dynamic_source_is_active_only_during_evaluation_and_close_joins_it() ->
     closer.join(1)
 
     assert not closer.is_alive()
-    assert loop._source_worker is not None
-    assert not loop._source_worker.is_alive()
+    assert panel._worker is not None
+    assert not panel._worker.is_alive()
 
 
 def test_responsive_layout_uses_minimums_without_resizing_the_viewport() -> None:
@@ -537,6 +535,105 @@ def test_responsive_resize_and_manual_refresh_request_new_results() -> None:
     loop._drain_source_events()
     assert sizes[-1] == sizes[-2]
     loop.close()
+
+
+def test_panel_sizing_reflows_responsive_content_without_restarting_workers() -> None:
+    first_rendered = Event()
+    second_rendered = Event()
+    first_sizes: list[ContentSize] = []
+    second_sizes: list[ContentSize] = []
+
+    def first_content(size: ContentSize) -> list[str]:
+        first_sizes.append(size)
+        first_rendered.set()
+        return ["first"] * size.height
+
+    def second_content(size: ContentSize) -> list[str]:
+        second_sizes.append(size)
+        second_rendered.set()
+        return ["second"] * size.height
+
+    menu, loop, _, renderer = make_loop(
+        [None], content=ScreenContent.responsive(first_content)
+    )
+    try:
+        first = menu.content_panels[0]
+        first.set_layout(max_height=3)
+        second = menu.add_content_panel(
+            ScreenContent.responsive(second_content, min_width=40, min_height=40),
+            min_height=2,
+        )
+        workers = (first._worker, second._worker)
+        renderer._compose_frame(30, 30)
+        assert first_rendered.wait(1) and second_rendered.wait(1)
+        loop._drain_source_events()
+        assert first_sizes == [ContentSize(28, 3)]
+        assert second_sizes == [ContentSize(40, 40)]
+        first_viewport, second_viewport = first._viewport, second._viewport
+        assert first_viewport is not None and second_viewport is not None
+        first_request = first._responsive_request_id
+        second_request = second._responsive_request_id
+        first_rendered.clear()
+
+        first.set_layout(max_height=8)
+        renderer._compose_frame(30, 30)
+        assert first_rendered.wait(1)
+        loop._drain_source_events()
+        assert first_sizes[-1] == ContentSize(28, 8)
+        assert first._responsive_request_id == first_request + 1
+        assert second._responsive_request_id == second_request
+        assert first._viewport is first_viewport
+        assert second._viewport is second_viewport
+        assert second_viewport.height < 40
+        assert (first._worker, second._worker) == workers
+
+        first_rendered.clear()
+        first.set_layout(weight=4)
+        renderer._compose_frame(30, 30)
+        assert first_rendered.wait(1)
+        loop._drain_source_events()
+        assert first_sizes[-1].height == first_viewport.height
+        assert first_viewport.height > 8
+        assert second._responsive_request_id == second_request
+
+        first_rendered.clear()
+        renderer._compose_frame(32, 34)
+        assert first_rendered.wait(1)
+        loop._drain_source_events()
+        assert first_sizes[-1] == ContentSize(30, first_viewport.height)
+        assert second_sizes == [ContentSize(40, 40)]
+    finally:
+        loop.close()
+
+
+def test_live_layout_change_schedules_a_frame_without_content_or_input_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, loop, _, renderer = make_loop([None])
+    menu._terminal_renderer = renderer
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size",
+        lambda: terminal_size((30, 30)),
+    )
+    monkeypatch.setattr(
+        "tuiloom.event_loop.event_loop.get_terminal_size",
+        lambda: terminal_size((30, 30)),
+    )
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", lambda _: None)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+    try:
+        loop.run_once(process_input=False, block=False)
+        panel = menu.content_panels[0]
+        assert panel._viewport is not None and panel._viewport.height > 3
+        viewport = panel._viewport
+
+        panel.set_layout(max_height=3)
+        loop.run_once(process_input=False, block=False)
+
+        assert panel._viewport is viewport
+        assert viewport.height == 3
+    finally:
+        loop.close()
 
 
 def test_responsive_results_from_obsolete_requests_are_ignored() -> None:

@@ -12,31 +12,29 @@ from tuiloom import (
 )
 
 
-def make_menu(content: str | None = "primary") -> TerminalMenu:
+def make_menu(content: str | None = "first") -> TerminalMenu:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if content is not None else None
-    return TerminalMenu(app, ScreenContext("main", "Main"), content=configured)
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    if configured is not None:
+        menu.add_content_panel(configured)
+    return menu
 
 
 @pytest.mark.parametrize("mode", ["smart", "strict"])
-def test_constructor_auto_scroll_configures_the_primary_panel(
+def test_add_content_panel_configures_auto_scroll(
     mode: AutoScrollMode,
 ) -> None:
     app = TerminalApp("App")
-    menu = TerminalMenu(
-        app,
-        ScreenContext("main", "Main"),
-        content=ScreenContent.static("primary"),
-        auto_scroll=mode,
-    )
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu.add_content_panel(ScreenContent.static("first"), auto_scroll=mode)
 
-    assert menu.auto_scroll == mode
     assert menu.content_panels[0].auto_scroll == mode
 
 
 def test_content_panels_are_stable_ordered_handles() -> None:
     menu = make_menu()
-    primary = menu.content_panels[0]
+    first = menu.content_panels[0]
     metrics = menu.add_content_panel(
         ScreenContent.dynamic(lambda: "42"),
         description="Metrics",
@@ -44,8 +42,8 @@ def test_content_panels_are_stable_ordered_handles() -> None:
         position=0,
     )
 
-    assert isinstance(primary, ContentPanel)
-    assert menu.content_panels == (metrics, primary)
+    assert isinstance(first, ContentPanel)
+    assert menu.content_panels == (metrics, first)
     assert metrics.description == "Metrics"
     assert metrics.position == 0
     assert metrics.auto_scroll == "smart"
@@ -90,6 +88,7 @@ def test_removed_panel_rejects_every_explicit_mutation() -> None:
         panel.refresh,
         lambda: panel.set_description("New"),
         lambda: panel.set_auto_scroll("smart"),
+        lambda: panel.set_layout(weight=2),
         lambda: panel.move(0),
         panel.remove,
     )
@@ -119,22 +118,24 @@ def test_directly_constructed_panel_is_not_owned_by_the_menu() -> None:
         panel.set_description("Invalid")
 
 
-def test_content_api_controls_the_primary_panel() -> None:
+def test_panel_replacement_preserves_its_handle_and_other_panels() -> None:
     menu = make_menu()
-    primary = menu.content_panels[0]
+    first = menu.content_panels[0]
     extra = menu.add_content_panel(ScreenContent.static("extra"), description="Extra")
 
-    menu.auto_scroll = "strict"
-    menu.set_content(ScreenContent.static("replacement"), description="Replacement")
+    first.set_auto_scroll("strict")
+    first.set_description("Replacement")
+    first.set_content(ScreenContent.static("replacement"))
 
-    assert menu.content_panels == (primary, extra)
-    assert primary.description == "Replacement"
-    assert primary.auto_scroll == "strict"
+    assert menu.content_panels == (first, extra)
+    assert first.description == "Replacement"
+    assert first.auto_scroll == "strict"
+    assert extra.content == ScreenContent.static("extra")
 
-    primary.remove()
-    menu.set_content(ScreenContent.static("reborn"), description="Primary")
-    assert menu.content_panels[0].description == "Primary"
-    assert menu.auto_scroll == "strict"
+    first.remove()
+    replacement = menu.add_content_panel(ScreenContent.static("reborn"))
+    assert menu.content_panels == (extra, replacement)
+    assert replacement.auto_scroll is None
 
 
 @pytest.mark.parametrize("mode", ["bottom", "", 1])
@@ -145,3 +146,70 @@ def test_panel_auto_scroll_rejects_invalid_modes(mode: object) -> None:
             ScreenContent.static("extra"),
             auto_scroll=mode,  # type: ignore[arg-type]
         )
+
+
+def test_panel_layout_defaults_and_explicit_configuration() -> None:
+    menu = make_menu()
+    first = menu.content_panels[0]
+    assert (first.weight, first.min_height, first.max_height) == (1, 1, None)
+
+    panel = menu.add_content_panel(
+        ScreenContent.static("extra"), weight=2.5, min_height=3, max_height=8
+    )
+    assert (panel.weight, panel.min_height, panel.max_height) == (2.5, 3, 8)
+
+    first.set_layout(weight=3, min_height=2, max_height=9)
+    assert (first.weight, first.min_height, first.max_height) == (3, 2, 9)
+
+    first.set_content(ScreenContent.static("replacement"))
+    first.move(1)
+    assert (first.weight, first.min_height, first.max_height) == (3, 2, 9)
+
+    first.set_layout()
+    assert (first.weight, first.min_height, first.max_height) == (1, 1, None)
+
+
+@pytest.mark.parametrize(
+    ("options", "error", "match"),
+    [
+        ({"weight": True}, TypeError, "weight"),
+        ({"weight": "2"}, TypeError, "weight"),
+        ({"weight": None}, TypeError, "weight"),
+        ({"weight": 0}, ValueError, "weight"),
+        ({"weight": -1}, ValueError, "weight"),
+        ({"weight": float("nan")}, ValueError, "weight"),
+        ({"weight": float("inf")}, ValueError, "weight"),
+        ({"weight": float("-inf")}, ValueError, "weight"),
+        ({"min_height": True}, TypeError, "min_height"),
+        ({"min_height": 1.5}, TypeError, "min_height"),
+        ({"min_height": None}, TypeError, "min_height"),
+        ({"min_height": 0}, ValueError, "min_height"),
+        ({"min_height": -2}, ValueError, "min_height"),
+        ({"max_height": False}, TypeError, "max_height"),
+        ({"max_height": "4"}, TypeError, "max_height"),
+        ({"max_height": 0}, ValueError, "max_height"),
+        ({"max_height": -2}, ValueError, "max_height"),
+        ({"min_height": 4, "max_height": 3}, ValueError, "max_height"),
+    ],
+)
+def test_panel_layout_validation_is_atomic(
+    options: dict[str, object], error: type[Exception], match: str
+) -> None:
+    menu = make_menu()
+    original = menu.content_panels
+    with pytest.raises(error, match=match):
+        menu.add_content_panel(ScreenContent.static("bad"), **options)  # type: ignore[arg-type]
+    assert menu.content_panels == original
+
+    panel = original[0]
+    panel.set_layout(weight=2, min_height=3, max_height=6)
+    with pytest.raises(error, match=match):
+        panel.set_layout(**options)  # type: ignore[arg-type]
+    assert (panel.weight, panel.min_height, panel.max_height) == (2, 3, 6)
+
+
+def test_layout_mutation_rejects_unowned_panels() -> None:
+    menu = make_menu()
+    rogue = ContentPanel(menu, ScreenContent.static("rogue"), "Rogue", None)
+    with pytest.raises(ValueError, match="belong"):
+        rogue.set_layout(weight=2)

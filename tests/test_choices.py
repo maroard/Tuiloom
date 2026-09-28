@@ -302,9 +302,8 @@ def test_hover_message_overlays_without_mutating_persistent_message() -> None:
 def test_hover_message_disappears_on_next_command_and_content_focus() -> None:
     app = TerminalApp("App")
     app.add_message("preview", "Temporary preview")
-    target = TerminalMenu(
-        app, ScreenContext("main", "Main"), content=ScreenContent.static("Panel")
-    )
+    target = TerminalMenu(app, ScreenContext("main", "Main"))
+    target.add_content_panel(ScreenContent.static("Panel"))
     target.add_choice(
         "Mode", [ChoiceOption("First", hover_message="preview")], lambda c: None
     )

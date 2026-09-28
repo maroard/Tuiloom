@@ -18,7 +18,9 @@ def make_renderer(
     app = TerminalApp(app_name)
     context = ScreenContext("main", "Title", width=width, text="Description")
     configured = ScreenContent.static(content) if content is not None else None
-    menu = TerminalMenu(app, context, content=configured)
+    menu = TerminalMenu(app, context)
+    if configured is not None:
+        menu.add_content_panel(configured)
     menu.add_command("First", lambda command: None)
     menu.add_command("界 command", lambda command: None)
     return menu, MenuRenderer(menu)

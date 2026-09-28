@@ -19,7 +19,9 @@ def make_menu(
 ) -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if isinstance(content, str) else content
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content=configured)
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    if configured is not None:
+        menu.add_content_panel(configured)
     return app, menu
 
 

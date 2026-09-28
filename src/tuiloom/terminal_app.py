@@ -45,7 +45,7 @@ class TerminalApp:
 
         Args:
             name: Application name displayed in every menu box.
-            global_content: Default content inherited by menus.
+            global_content: Content mounted as an ordinary panel in every menu.
             keymap: Custom system bindings, or ``None`` for defaults.
         """
         self._name = name
@@ -72,7 +72,7 @@ class TerminalApp:
 
     @property
     def global_content(self) -> ScreenContent | None:
-        """Return the content inherited by menus created without one."""
+        """Return the content mounted as an ordinary panel in each new menu."""
         return self._global_content
 
     @property

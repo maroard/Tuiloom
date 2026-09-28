@@ -24,9 +24,8 @@ from tuiloom.render.menu_renderer import MenuRenderer
 
 def make_main() -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
-    menu = TerminalMenu(
-        app, ScreenContext("main", "Main"), content=ScreenContent.static("base")
-    )
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu.add_content_panel(ScreenContent.static("base"))
     app.set_main_menu(menu)
     menu._running = True
     return app, menu
@@ -445,7 +444,7 @@ def test_run_with_output_adds_a_strict_temporary_panel() -> None:
         app._dispatch_output_task_outcome()
     assert added == [output_panel]
     assert output_panel._remove_when_finished
-    assert menu.auto_scroll is None
+    assert base.auto_scroll is None
 
     menu._running = False
     with pytest.raises(RuntimeError, match="active"):
@@ -456,12 +455,13 @@ def test_run_with_output_adds_a_strict_temporary_panel() -> None:
         )
 
 
-def test_run_with_output_restores_auto_scroll_when_start_fails(
+def test_run_with_output_preserves_panel_auto_scroll_when_start_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, menu = make_main()
     menu._event_loop = object()  # type: ignore[assignment]
-    menu.auto_scroll = "smart"
+    base = menu.content_panels[0]
+    base.set_auto_scroll("smart")
 
     def fail(*args: object, **kwargs: object) -> OutputTaskSession:
         raise RuntimeError("start failed")
@@ -473,7 +473,7 @@ def test_run_with_output_restores_auto_scroll_when_start_fails(
             on_success=lambda result: None,
             on_error=lambda error: None,
         )
-    assert menu.auto_scroll == "smart"
+    assert base.auto_scroll == "smart"
 
 
 def test_run_with_output_allows_only_one_task_across_all_menus() -> None:

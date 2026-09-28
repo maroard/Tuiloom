@@ -10,16 +10,30 @@ from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
 from tuiloom.output_task import OutputTaskSession
 
 
-def test_contents_are_read_only_and_local_content_wins() -> None:
+def test_global_content_creates_an_ordinary_panel_for_every_menu() -> None:
     global_content = ScreenContent.static("global")
     local_content = ScreenContent.static("local")
     app = TerminalApp("App", global_content=global_content)
     inherited = TerminalMenu(app, ScreenContext("inherited", "Inherited"))
-    local = TerminalMenu(app, ScreenContext("local", "Local"), content=local_content)
+    local = TerminalMenu(app, ScreenContext("local", "Local"))
+    inherited_panel = inherited.content_panels[0]
+    global_panel = local.content_panels[0]
+    local_panel = local.add_content_panel(local_content)
     assert app.name == "App"
     assert app.global_content is global_content
-    assert inherited._content is global_content
-    assert local._content is local_content
+    assert inherited_panel.content is global_content
+    assert global_panel.content is global_content
+    assert list(local.content_panels) == [global_panel, local_panel]
+    assert local_panel.content is local_content
+    assert inherited_panel is not global_panel
+
+    global_panel.move(1)
+    assert list(local.content_panels) == [local_panel, global_panel]
+    global_panel.set_content(ScreenContent.static("replacement"))
+    assert inherited_panel.content is global_content
+    assert global_panel.content == ScreenContent.static("replacement")
+    global_panel.remove()
+    assert list(local.content_panels) == [local_panel]
     with pytest.raises(AttributeError):
         app.global_content = "new"  # type: ignore[assignment,misc]
 
@@ -342,11 +356,8 @@ def test_reopening_retained_menu_resets_navigation_without_reinitializing(
 
 def test_push_is_lazy_and_first_open_starts_source_worker_once() -> None:
     app = TerminalApp("App")
-    menu = TerminalMenu(
-        app,
-        ScreenContext("stream", "Stream"),
-        content=ScreenContent.stream(iter(["done"])),
-    )
+    menu = TerminalMenu(app, ScreenContext("stream", "Stream"))
+    menu.add_content_panel(ScreenContent.stream(iter(["done"])))
 
     app.push_menu(menu)
 

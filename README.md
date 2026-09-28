@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.5.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.6.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -45,7 +45,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.5.0
+python -m pip install tuiloom==0.6.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -71,12 +71,12 @@ menu = TerminalMenu(
         text="Choose an operation",
         width=24,
     ),
-    content=ScreenContent.static("Ready"),
 )
+status = menu.add_content_panel(ScreenContent.static("Ready"))
 
 
 def generate(context: CommandContext) -> None:
-    context.menu.set_content(ScreenContent.static("Generated"))
+    status.set_content(ScreenContent.static("Generated"))
 
 
 menu.add_command("Generate", generate)
@@ -95,8 +95,8 @@ A Tuiloom application has three main layers:
 
 1. `TerminalApp` owns application-wide configuration, global commands,
    messages, captured-output state, and the root menu.
-2. `TerminalMenu` owns selectable commands, content, input, alerts, local
-   overrides, and its event loop.
+2. `TerminalMenu` owns selectable commands, content panels, input, alerts,
+   local overrides, and its event loop.
 3. `ScreenContext` is the mutable visible state of one menu: name, title,
    minimum width, descriptive text, and footer message.
 
@@ -138,8 +138,8 @@ row contains `>`, so it remains visible without ANSI color support.
 
 Tab changes focus only when the menu has content. It cycles through
 `menu -> panel 1 -> panel 2 -> ... -> menu`. Focused boxes use solid borders;
-unfocused boxes use dotted borders. Moving upward while
-`auto_scroll="smart"` suspends automatic following, and reaching the bottom
+unfocused boxes use dotted borders. Moving upward in a panel with
+`auto_scroll="smart"` suspends its automatic following, and reaching the bottom
 enables it again.
 
 All controls can be remapped through `KeyMap`; see
@@ -343,13 +343,12 @@ def current_state() -> str | list[str]:
     return ["current", "state"]
 
 
-menu.set_content(ScreenContent.static("one\ntwo"))
-menu.set_content(ScreenContent.lines(["one", "two"]))
-menu.set_content(ScreenContent.stream(stream()), description="Loading records")
-menu.set_content(
-    ScreenContent.dynamic(current_state),
-    description="Refreshing state",
-)
+panel = menu.add_content_panel(ScreenContent.static("one\ntwo"))
+panel.set_content(ScreenContent.lines(["one", "two"]))
+panel.set_content(ScreenContent.stream(stream()))
+panel.set_description("Loading records")
+panel.set_content(ScreenContent.dynamic(current_state))
+panel.set_description("Refreshing state")
 ```
 
 The factories behave differently:
@@ -403,14 +402,75 @@ metrics.remove()
 ```
 
 `menu.content_panels` exposes the handles in display order as an immutable
-tuple. Visible panels are stacked vertically at equal height and labeled when
-more than one is present. Each panel owns its source worker, viewport, scroll
-position, and auto-scroll mode. Panels can be added, reordered, replaced, or
-removed while the menu is running.
+tuple. Visible panels are stacked vertically at equal height by default and
+labeled when more than one is present. Each panel owns its source worker,
+viewport, scroll position, and auto-scroll mode. Panels can be added, reordered,
+replaced, or removed while the menu is running.
 
-The constructor's `content`, `set_content()`, and `menu.auto_scroll` configure
-the primary panel. A menu
-with only that panel keeps the original unlabeled content-box appearance.
+Every panel has the same capabilities; there is no primary panel. A menu with
+one panel shows an unlabeled content box. Create panels with
+`menu.add_content_panel()` and keep their handles to change content, labels,
+auto-scroll, or layout.
+
+### Content panel sizing
+
+Each panel can set its share of visible vertical space:
+
+```python
+logs = menu.add_content_panel(
+    ScreenContent.stream(log_stream),
+    description="Logs",
+    weight=3,
+    min_height=4,
+    max_height=30,
+)
+metrics = menu.add_content_panel(
+    ScreenContent.dynamic(get_metrics),
+    description="Metrics",
+    weight=1,
+    min_height=4,
+)
+
+# Configure another panel through its handle.
+status = menu.add_content_panel(ScreenContent.static("Ready"))
+status.set_layout(weight=2, min_height=3, max_height=10)
+
+# Replace the complete layout; omitted options use their defaults.
+logs.set_layout(weight=4, min_height=2, max_height=20)
+logs.set_layout()  # Restore equal sharing without an upper limit.
+```
+
+`weight` defaults to `1` and accepts a finite positive integer or float.
+`min_height` defaults to `1`; `max_height` defaults to `None` (no upper limit).
+Minimum and maximum heights count visible content rows, excluding borders.
+Supplied heights must be positive integers, and `max_height` must be at least
+`min_height`. Booleans are rejected for all three options. Invalid creation or
+layout updates raise `TypeError` or `ValueError` before changing panel state.
+
+Weights target ratios on the **total** available panel height, including each
+panel's two border rows and excluding the content/menu gap. For 23 rows,
+weights `3` and `1` produce complete frames of `17` and `6` rows, containing
+`15` and `4` visible content rows respectively. Bounds still apply to the inner
+content: with 20 available frame rows, weights `1` and `3` and minimums of `4`
+produce frames of `6` and `14` rows (content heights of `4` and `12`).
+A panel that reaches a minimum or maximum keeps that
+bound while the other panels share the remaining rows by weight. Fractional
+rows are rounded down, then leftover rows go to the largest fractional
+remainders, with ties resolved in display order. Defaults preserve the original
+equal sharing, including giving leftover rows to the first panels.
+
+If the minimum heights cannot all fit, Tuiloom displays
+`Terminal window is too small.` If every panel reaches its maximum, unused
+terminal rows remain below the frame. Layout changes preserve panel identity,
+workers, focus, scroll positions and auto-scroll policy; viewport growth can
+clamp an existing scroll offset to the new bottom. Replacing content or moving
+a panel keeps its layout configuration.
+
+Panel bounds size the physical viewport. The `min_height` on
+`ScreenContent.responsive()` still specifies a **virtual** rendering minimum:
+the callback receives the larger of the allocated height and that virtual
+minimum, and its result remains clipped and scrollable. A layout change
+refreshes responsive content when its effective `ContentSize` changes.
 
 ### Inherited and local content
 
@@ -419,25 +479,32 @@ app = TerminalApp(
     "Monitor",
     global_content=ScreenContent.static("Shared status"),
 )
-inherited = TerminalMenu(app, ScreenContext("main", "Main"))
-local = TerminalMenu(
-    app,
-    ScreenContext("logs", "Logs"),
-    content=ScreenContent.static("Local status"),
-)
+menu = TerminalMenu(app, ScreenContext("logs", "Logs"))
+shared = menu.content_panels[0]  # Automatically added from global_content.
+logs = menu.add_content_panel(ScreenContent.static("Local status"))
+
+shared.set_description("Shared status")
+shared.set_layout(weight=1, min_height=2)
+shared.set_content(ScreenContent.static("Updated status"))
+# shared.remove()  # Remove it like any other panel.
 ```
 
-A menu constructed with `content=None` takes the application's
-`global_content`. A local source wins when supplied. If neither exists,
-the content box is omitted without displaying an automatic message. Applications
-can still show `MessageKey.NO_CONTENT_SOURCE` explicitly with `show_message()`.
+Each menu captures `app.global_content` at construction. When it is present,
+Tuiloom automatically adds an ordinary panel for that source. Retrieve its
+handle through `menu.content_panels`; it can be changed, reordered, or removed
+like any other panel. Explicitly added local panels are additional panels and
+do not override inherited content.
+
+When `global_content` is `None`, a new menu has no panels until one is added.
+A menu without panels omits the content box without displaying an automatic
+message. Applications can still show `MessageKey.NO_CONTENT_SOURCE` explicitly
+with `show_message()`.
 
 ### Replacing active content
 
-`set_content(content, description=...)` changes and returns the primary panel.
-`panel.set_content(content)` applies the same replacement semantics to any panel.
-If the menu is running, Tuiloom installs the source through the active event
-loop.
+`panel.set_content(content)` replaces that panel's source and returns `None`.
+Use `panel.set_description(description)` to change its label separately. If the
+menu is running, Tuiloom installs the source through the active event loop.
 
 Replacing an iterator or an in-flight dynamic evaluation requests cooperative
 cancellation of the old source. The UI remains responsive, waits for the old
@@ -455,19 +522,17 @@ worker can stop.
 
 ### Auto-scroll
 
-Set `auto_scroll` in the constructor or later:
+Set each panel's `auto_scroll` when adding it or through its handle later:
 
 ```python
-menu = TerminalMenu(
-    app,
-    ScreenContext("logs", "Logs"),
-    content=ScreenContent.stream(stream()),
+menu = TerminalMenu(app, ScreenContext("logs", "Logs"))
+logs = menu.add_content_panel(
+    ScreenContent.stream(stream()),
     auto_scroll="smart",
 )
 
-menu.auto_scroll = "strict"
-menu.auto_scroll = None
-
+logs.set_auto_scroll("strict")
+logs.set_auto_scroll(None)
 logs.set_auto_scroll("smart")
 ```
 
@@ -479,10 +544,21 @@ logs.set_auto_scroll("smart")
 Changing a panel's mode or replacing its content resets its smart-scroll state.
 Invalid modes raise `ValueError`.
 
+### Migrating to panel-only content
+
+The panel-only API is a breaking change: `TerminalMenu` no longer accepts
+`content` or `auto_scroll`, and `menu.set_content()` and `menu.auto_scroll` have
+been removed. Create a panel with `menu.add_content_panel(content, ...)`, keep
+its handle, and use `panel.set_content()`, `panel.set_description()`,
+`panel.set_auto_scroll()`, and `panel.set_layout()` for updates. The menu's
+`content_spacing` and `show` constructor options are keyword-only.
+`TerminalApp.global_content` remains supported; access its automatically added
+panel through `menu.content_panels`.
+
 ## Captured task output
 
 `run_with_output()` runs blocking Python work on a non-daemon worker and uses
-its captured stdout/stderr as the menu's temporary content source:
+its captured stdout/stderr in a temporary content panel:
 
 ```python
 def download() -> str:
@@ -596,7 +672,7 @@ A confirmable alert receives a `CommandContext`:
 ```python
 menu.show_alert(
     "Saved",
-    on_confirm=lambda context: context.menu.set_content(ScreenContent.static("Ready")),
+    on_confirm=lambda context: status.set_content(ScreenContent.static("Ready")),
     prompt="Continue",
 )
 ```
@@ -713,8 +789,11 @@ may arrive only as character case.
 ### Invisible global commands
 
 ```python
+status = menu.add_content_panel(ScreenContent.static("Ready"))
+
+
 def refresh(context: CommandContext) -> None:
-    context.menu.set_content(ScreenContent.static("Refreshed"))
+    status.set_content(ScreenContent.static("Refreshed"))
 
 
 refresh_command = app.add_global_command(
@@ -999,14 +1078,19 @@ message values.
 ### `ContentPanel`
 
 Applications obtain `ContentPanel` handles from
-`TerminalMenu.add_content_panel()` rather than constructing them directly.
+`TerminalMenu.add_content_panel()` or `menu.content_panels` rather than
+constructing them directly. All panels, including automatically inherited
+content, support the same methods.
 
 Read-only properties:
 
 - `content -> ScreenContent`: current mounted production configuration;
 - `description -> str`: current visible and shutdown label;
 - `position -> int`: current zero-based display position;
-- `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy.
+- `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy;
+- `weight -> float`: positive relative share of total panel height, including borders;
+- `min_height -> int`: minimum visible content rows, default `1`;
+- `max_height -> int | None`: maximum visible content rows, default `None`.
 
 Explicit mutation methods:
 
@@ -1015,11 +1099,20 @@ set_content(content: ScreenContent) -> None
 refresh() -> None
 set_description(description: str) -> None
 set_auto_scroll(mode: AutoScrollMode | None) -> None
+set_layout(
+    *,
+    weight: float = 1,
+    min_height: int = 1,
+    max_height: int | None = None,
+) -> None
 move(position: int) -> None
 remove() -> None
 ```
 
-The handle keeps its identity across content, label, mode, and position changes.
+The handle keeps its identity across content, label, mode, layout and position
+changes.
+`set_layout()` replaces the complete sizing configuration; omitted arguments
+reset to their defaults. It can be called before or during application execution.
 `refresh()` forces a responsive evaluation and raises `RuntimeError` for other
 content variants. Calling a mutation method after removal raises `ValueError`.
 
@@ -1034,8 +1127,9 @@ TerminalApp(
 )
 ```
 
-The constructor stores the display name, optional content inherited by menus
-created without a local source, and an optional custom system key map.
+The constructor stores the display name, optional content inherited by every
+menu at construction as an ordinary panel, and an optional custom system key
+map. Each menu captures the global configuration when it is created.
 
 Read-only properties:
 
@@ -1121,16 +1215,17 @@ of which menu was registered as the main menu, except that a label assigned with
 TerminalMenu(
     app: TerminalApp,
     screen_context: ScreenContext,
-    content: ScreenContent | None = None,
+    *,
     content_spacing: bool = True,
     show: bool = True,
-    auto_scroll: AutoScrollMode | None = None,
 )
 ```
 
-Create a menu owned by `app`. `content=None` inherits application
-content. `content_spacing` and `show` must be booleans. `auto_scroll` accepts
-`"smart"`, `"strict"`, or `None`.
+Create a menu owned by `app`. When `app.global_content` is present, construction
+automatically adds an ordinary panel for it, available through `content_panels`.
+Otherwise the menu starts without panels. Add explicit panels with
+`add_content_panel()`; they are additional to any inherited panel.
+`content_spacing` and `show` must be booleans and are keyword-only.
 
 Properties:
 
@@ -1140,8 +1235,6 @@ Properties:
 - `commands -> tuple[MenuCommand, ...]`: immutable ordered handle view;
 - `is_main -> bool`: whether this is the registered root;
 - `show -> bool`: readable and writable visibility state;
-- `auto_scroll -> AutoScrollMode | None`: readable and writable iterator-follow
-  policy for the primary panel;
 - `content_panels -> tuple[ContentPanel, ...]`: immutable ordered panel-handle
   view.
 
@@ -1229,24 +1322,20 @@ add_content_panel(
     description: str = "Content in progress",
     auto_scroll: AutoScrollMode | None = None,
     position: int | None = None,
+    weight: float = 1,
+    min_height: int = 1,
+    max_height: int | None = None,
 ) -> ContentPanel
 ```
 
 Add an independently rendered panel and return its stable handle. `position`
 is zero-based; invalid positions or auto-scroll modes raise `TypeError` or
-`ValueError`.
+`ValueError`. Sizing options are validated before insertion; see
+[Content panel sizing](#content-panel-sizing) for allocation and bounds.
 
-```text
-set_content(
-    content: ScreenContent,
-    *,
-    description: str = "Content in progress",
-) -> ContentPanel
-```
-
-Store and, while active, safely install the primary panel's content.
-Replacement semantics are described in
-[Replacing active content](#replacing-active-content).
+Change a panel through its `ContentPanel` handle. See
+[Replacing active content](#replacing-active-content) for source replacement
+semantics.
 
 ```text
 run_with_output[T](

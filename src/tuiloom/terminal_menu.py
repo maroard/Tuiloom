@@ -44,24 +44,19 @@ class TerminalMenu:
         self,
         app: TerminalApp,
         screen_context: ScreenContext,
-        content: ScreenContent | None = None,
+        *,
         content_spacing: bool = True,
         show: bool = True,
-        auto_scroll: AutoScrollMode | None = None,
     ) -> None:
         """Create a menu owned by ``app``.
 
         ``content_spacing`` inserts exactly one blank row between the content
-        and menu boxes. A missing local source inherits application content.
+        and menu boxes. Application content creates one ordinary panel.
         """
         if not isinstance(content_spacing, bool):
             raise TypeError("content_spacing must be a bool")
         self._app = app
         self._screen_context = screen_context
-        if content is not None and not isinstance(content, ScreenContent):
-            raise TypeError("TerminalMenu content must be a ScreenContent or None")
-        self._content = content if content is not None else app.global_content
-        self._content_description = "Content in progress"
         self._content_spacing = content_spacing
         if not isinstance(show, bool):
             raise TypeError("TerminalMenu.show must be a bool")
@@ -90,22 +85,12 @@ class TerminalMenu:
         self._global_overrides: dict[GlobalCommand, CommandBehavior] = {}
         self._task_exit: TaskExitView | None = None
 
-        self._content_renderer: ContentRenderer | None = None
         self._menu_renderer: MenuRenderer | None = None
         self._terminal_renderer: TerminalRenderer | None = None
         self._event_loop: EventLoop | None = None
-        self._auto_scroll: AutoScrollMode | None = None
         self._content_panels: list[ContentPanel] = []
-        self._primary_content_panel: ContentPanel | None = None
-        self.auto_scroll = auto_scroll
-        if self._content is not None:
-            self._primary_content_panel = ContentPanel(
-                self,
-                self._content,
-                self._content_description,
-                self._auto_scroll,
-            )
-            self._content_panels.append(self._primary_content_panel)
+        if app.global_content is not None:
+            self.add_content_panel(app.global_content)
 
     @property
     def app(self) -> TerminalApp:
@@ -145,25 +130,6 @@ class TerminalMenu:
         self._show = value
         self._invalidate_renderer()
 
-    @property
-    def auto_scroll(self) -> AutoScrollMode | None:
-        """Return the iterator auto-scroll policy."""
-        return self._auto_scroll
-
-    @auto_scroll.setter
-    def auto_scroll(self, mode: AutoScrollMode | None) -> None:
-        """Set ``smart``, ``strict``, or disabled iterator following."""
-        if mode not in (None, "smart", "strict"):
-            raise ValueError("auto_scroll must be 'smart', 'strict', or None")
-        if mode == self._auto_scroll:
-            return
-        if self._primary_content_panel is not None:
-            self._primary_content_panel.set_auto_scroll(mode)
-        else:
-            self._auto_scroll = mode
-        if self._terminal_renderer is not None:
-            self._terminal_renderer.reset_stream_auto_scroll()
-
     def add_content_panel(
         self,
         content: ScreenContent,
@@ -171,13 +137,24 @@ class TerminalMenu:
         description: str = "Content in progress",
         auto_scroll: AutoScrollMode | None = None,
         position: int | None = None,
+        weight: float = 1,
+        min_height: int = 1,
+        max_height: int | None = None,
     ) -> ContentPanel:
         """Add an independently rendered content panel and return its handle."""
         self._validate_auto_scroll(auto_scroll)
         insert_at = self._validate_content_position(position, allow_end=True)
         if not isinstance(content, ScreenContent):
             raise TypeError("content must be a ScreenContent")
-        panel = ContentPanel(self, content, description, auto_scroll)
+        panel = ContentPanel(
+            self,
+            content,
+            description,
+            auto_scroll,
+            weight=weight,
+            min_height=min_height,
+            max_height=max_height,
+        )
         self._content_panels.insert(insert_at, panel)
         if self._running and self._event_loop is not None:
             self._event_loop.add_content_panel(panel)
@@ -203,8 +180,6 @@ class TerminalMenu:
             panel._viewport = None
             panel._effective_size = None
             panel._responsive_refresh_pending = content._kind == "responsive"
-        if panel is self._primary_content_panel:
-            self._content = content
         self._invalidate_renderer()
 
     def _refresh_content_panel(self, panel: ContentPanel) -> None:
@@ -227,8 +202,6 @@ class TerminalMenu:
         panel._description = description
         if panel._worker is not None:
             panel._worker.description = description
-        if panel is self._primary_content_panel:
-            self._content_description = description
         self._invalidate_renderer()
 
     def _set_content_panel_auto_scroll(
@@ -242,8 +215,23 @@ class TerminalMenu:
         panel._auto_scroll = mode
         panel._smart_auto_scroll_active = True
         panel._pending_auto_scroll = None
-        if panel is self._primary_content_panel:
-            self._auto_scroll = mode
+
+    def _set_content_panel_layout(
+        self,
+        panel: ContentPanel,
+        weight: float,
+        min_height: int,
+        max_height: int | None,
+    ) -> None:
+        """Validate and atomically replace an owned panel's sizing options."""
+        self._require_content_panel(panel)
+        panel._validate_layout(weight, min_height, max_height)
+        panel._weight = weight
+        panel._min_height = min_height
+        panel._max_height = max_height
+        self._invalidate_renderer()
+        if self._running and self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
 
     def _move_content_panel(self, panel: ContentPanel, position: int) -> None:
         """Move one owned panel to a zero-based position."""
@@ -259,9 +247,6 @@ class TerminalMenu:
         removed_position = self._content_panels.index(panel)
         was_focused = panel is self._focused_panel
         self._content_panels.remove(panel)
-        if panel is self._primary_content_panel:
-            self._primary_content_panel = None
-            self._content = None
         panel._removed = True
         if self._running and self._event_loop is not None:
             self._event_loop.retire_content_panel(panel)
@@ -496,31 +481,6 @@ class TerminalMenu:
         self.app._require_global(command)
         self._disabled_global_commands.discard(command)
 
-    def set_content(
-        self,
-        content: ScreenContent,
-        *,
-        description: str = "Content in progress",
-    ) -> ContentPanel:
-        """Install primary content and return its stable mounted panel."""
-        if not isinstance(content, ScreenContent):
-            raise TypeError("content must be a ScreenContent")
-        panel = self._primary_content_panel
-        if panel is None:
-            panel = self.add_content_panel(
-                content,
-                description=description,
-                auto_scroll=self._auto_scroll,
-                position=0,
-            )
-            self._primary_content_panel = panel
-            self._content = content
-            self._content_description = description
-            return panel
-        panel.set_description(description)
-        panel.set_content(content)
-        return panel
-
     def run_with_output[T](
         self,
         action: Callable[[], T],
@@ -722,20 +682,10 @@ class TerminalMenu:
     def _initialize_runtime(self) -> None:
         """Create renderers and workers the first time this menu is opened."""
         self._running = True
-        content = self._resolve_content()
-        primary = self._primary_content_panel
-        self._content_renderer = (
-            primary._renderer
-            if primary is not None
-            else ContentRenderer(
-                content if content is not None else ScreenContent.static("")
-            )
-        )
         self._menu_renderer = MenuRenderer(self)
         self._terminal_renderer = TerminalRenderer(
             menu=self,
             menu_renderer=self._menu_renderer,
-            content_renderer=self._content_renderer,
             content_spacing=self._content_spacing,
         )
         self._event_loop = self._create_event_loop()
@@ -908,9 +858,6 @@ class TerminalMenu:
             self._hover_current(binding)
         return True
 
-    def _resolve_content(self) -> ScreenContent | None:
-        return self._content
-
     def _has_content(self) -> bool:
         """Return whether the content box currently has a source."""
         return bool(self._content_panels) or self._output_task_session is not None
@@ -945,7 +892,6 @@ class TerminalMenu:
     def _create_event_loop(self) -> EventLoop:
         if (
             self.app._input_handler is None
-            or self._content_renderer is None
             or self._menu_renderer is None
             or self._terminal_renderer is None
         ):
@@ -955,7 +901,6 @@ class TerminalMenu:
             input_handler=self.app._input_handler,
             menu_renderer=self._menu_renderer,
             terminal_renderer=self._terminal_renderer,
-            content_renderer=self._content_renderer,
         )
 
     def _handle_event(self, event: InputEvent) -> None:

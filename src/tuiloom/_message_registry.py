@@ -121,8 +121,8 @@ class MessageRegistry:
         return (
             "No content has been set for this menu "
             f"({menu_name})\n"
-            "You can set it by using this method: \n"
-            "  'set_content(content: ScreenContent)'\n"
+            "You can add a panel by using this method: \n"
+            "  'add_content_panel(content: ScreenContent)'\n"
             "  Build it with ScreenContent.static(), lines(), stream(),\n"
             "  dynamic(), or responsive()."
         )

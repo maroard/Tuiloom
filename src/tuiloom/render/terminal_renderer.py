@@ -11,8 +11,8 @@ from shutil import get_terminal_size
 from sys import stdout
 from typing import TYPE_CHECKING, Literal
 
-from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
+from tuiloom.render.panel_layout import allocate_panel_heights
 from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
 from tuiloom.render.terminal_text import clip_display, display_width, normalize_line
 from tuiloom.render.viewport import Viewport
@@ -34,25 +34,14 @@ class TerminalRenderer:
         *,
         menu: TerminalMenu,
         menu_renderer: MenuRenderer,
-        content_renderer: ContentRenderer,
         content_spacing: bool,
     ) -> None:
         self._menu = menu
         self._menu_renderer = menu_renderer
-        self._content_renderer = content_renderer
-        primary = menu._primary_content_panel
-        if primary is not None:
-            primary._renderer = content_renderer
         self._content_spacing = content_spacing
         self._previous_lines: list[str] | None = None
         self._previous_terminal_size: terminal_size | None = None
         self._last_render_key: tuple[object, ...] | None = None
-
-    @property
-    def viewport(self) -> Viewport | None:
-        """Return the primary viewport as a compatibility reference."""
-        primary = self._menu._primary_content_panel
-        return primary._viewport if primary is not None else None
 
     def render(self, input_buffer: str = "") -> None:
         """Render and write one complete terminal frame."""
@@ -80,6 +69,7 @@ class TerminalRenderer:
             tuple(
                 (
                     panel,
+                    panel._renderer,
                     self._menu._visible_panel_description(panel),
                     panel._renderer.rendered_content.revision,
                     panel._viewport.offset_x if panel._viewport is not None else 0,
@@ -107,14 +97,12 @@ class TerminalRenderer:
 
         spacing = 1 if self._content_spacing else 0
         viewport_width = terminal_width - 2
-        inner_total = terminal_height - menu_height - spacing - 2 * len(panels)
-        if viewport_width <= 0 or inner_total < len(panels):
+        panel_total = terminal_height - menu_height - spacing
+        if viewport_width <= 0:
             return self._render_terminal_too_small()
-        base_height, remainder = divmod(inner_total, len(panels))
-        heights = [
-            base_height + (1 if index < remainder else 0)
-            for index in range(len(panels))
-        ]
+        heights = allocate_panel_heights(panels, panel_total)
+        if heights is None:
+            return self._render_terminal_too_small()
         show_labels = len(panels) > 1 or self._menu._task_exit is not None
         content_lines: list[str] = []
         for panel, height in zip(panels, heights, strict=True):
@@ -224,25 +212,12 @@ class TerminalRenderer:
         self._previous_terminal_size = None
         self._last_render_key = None
 
-    def set_content_renderer(self, content_renderer: ContentRenderer) -> None:
-        """Replace the primary renderer and reset its viewport."""
-        self._content_renderer = content_renderer
-        primary = self._menu._primary_content_panel
-        if primary is not None:
-            primary._renderer = content_renderer
-            primary._viewport = None
-            self.reset_stream_auto_scroll(primary)
-        self.invalidate()
-
     def apply_stream_auto_scroll(
         self,
         mode: AutoScrollMode | None,
-        panel: ContentPanel | None = None,
+        panel: ContentPanel,
     ) -> None:
         """Apply or defer iterator following for one panel batch."""
-        panel = panel or self._menu._primary_content_panel
-        if panel is None:
-            return
         if mode is None:
             panel._pending_auto_scroll = None
             return
@@ -251,14 +226,6 @@ class TerminalRenderer:
         panel._pending_auto_scroll = mode
         if panel._viewport is not None:
             panel._viewport.scroll_to_bottom()
-
-    def reset_stream_auto_scroll(self, panel: ContentPanel | None = None) -> None:
-        """Reset smart-follow state for one newly installed source."""
-        panel = panel or self._menu._primary_content_panel
-        if panel is None:
-            return
-        panel._smart_auto_scroll_active = True
-        panel._pending_auto_scroll = None
 
     def scroll_panel(self, panel: ContentPanel, direction: ScrollDirection) -> None:
         """Scroll one panel and update its smart-follow state."""
@@ -271,27 +238,3 @@ class TerminalRenderer:
             panel._smart_auto_scroll_active = False
         elif direction == "down" and viewport.is_at_bottom():
             panel._smart_auto_scroll_active = True
-
-    def scroll_up(self) -> None:
-        """Move the focused or primary content one row up."""
-        panel = self._menu._focused_panel or self._menu._primary_content_panel
-        if panel is not None:
-            self.scroll_panel(panel, "up")
-
-    def scroll_down(self) -> None:
-        """Move the focused or primary content one row down."""
-        panel = self._menu._focused_panel or self._menu._primary_content_panel
-        if panel is not None:
-            self.scroll_panel(panel, "down")
-
-    def scroll_left(self) -> None:
-        """Move the focused or primary content one column left."""
-        panel = self._menu._focused_panel or self._menu._primary_content_panel
-        if panel is not None:
-            self.scroll_panel(panel, "left")
-
-    def scroll_right(self) -> None:
-        """Move the focused or primary content one column right."""
-        panel = self._menu._focused_panel or self._menu._primary_content_panel
-        if panel is not None:
-            self.scroll_panel(panel, "right")

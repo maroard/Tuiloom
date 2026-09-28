@@ -12,9 +12,8 @@ from tuiloom.output_task import OutputTaskSession
 
 def make_panel() -> ContentPanel:
     app = TerminalApp("App")
-    menu = TerminalMenu(
-        app, ScreenContext("main", "Main"), content=ScreenContent.static("")
-    )
+    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu.add_content_panel(ScreenContent.static(""))
     return menu.content_panels[0]
 
 

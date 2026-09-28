@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import isfinite
 from typing import TYPE_CHECKING
 
 from tuiloom.render.content_renderer import ContentRenderer
@@ -20,6 +21,9 @@ class ContentPanel:
         "_content",
         "_description",
         "_auto_scroll",
+        "_weight",
+        "_min_height",
+        "_max_height",
         "_renderer",
         "_viewport",
         "_worker",
@@ -43,13 +47,21 @@ class ContentPanel:
         content: ScreenContent,
         description: str,
         auto_scroll: AutoScrollMode | None,
+        *,
+        weight: float = 1,
+        min_height: int = 1,
+        max_height: int | None = None,
     ) -> None:
         self._menu = menu
         if not isinstance(content, ScreenContent):
             raise TypeError("ContentPanel content must be a ScreenContent")
+        self._validate_layout(weight, min_height, max_height)
         self._content = content
         self._description = description
         self._auto_scroll = auto_scroll
+        self._weight = weight
+        self._min_height = min_height
+        self._max_height = max_height
         self._renderer = ContentRenderer(content)
         self._viewport: Viewport | None = None
         self._worker: SourceWorker | None = None
@@ -85,6 +97,46 @@ class ContentPanel:
     def content(self) -> ScreenContent:
         """Return the configuration currently mounted by this panel."""
         return self._content
+
+    @property
+    def weight(self) -> float:
+        """Return the relative share of visible panel height, including borders."""
+        return self._weight
+
+    @property
+    def min_height(self) -> int:
+        """Return the minimum number of visible content rows, excluding borders."""
+        return self._min_height
+
+    @property
+    def max_height(self) -> int | None:
+        """Return the visible content row limit, or None for an unlimited panel."""
+        return self._max_height
+
+    def set_layout(
+        self,
+        *,
+        weight: float = 1,
+        min_height: int = 1,
+        max_height: int | None = None,
+    ) -> None:
+        """Replace all sizing options; omitted options return to their defaults."""
+        self._menu._set_content_panel_layout(self, weight, min_height, max_height)
+
+    @staticmethod
+    def _validate_layout(
+        weight: float, min_height: int, max_height: int | None
+    ) -> None:
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            raise TypeError("weight must be a finite positive number")
+        if weight <= 0 or (isinstance(weight, float) and not isfinite(weight)):
+            raise ValueError("weight must be a finite positive number")
+        if min_height is None:
+            raise TypeError("min_height must be a positive integer")
+        ScreenContent._validate_minimum("min_height", min_height)
+        ScreenContent._validate_minimum("max_height", max_height)
+        if max_height is not None and max_height < min_height:
+            raise ValueError("max_height must be greater than or equal to min_height")
 
     def set_content(self, content: ScreenContent) -> None:
         """Replace this panel's content without changing its identity."""

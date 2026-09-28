@@ -118,8 +118,8 @@ app = TerminalApp("Unicode App")
 menu = TerminalMenu(
     app,
     ScreenContext("main", "Menu界"),
-    content=ScreenContent.static("café 👨‍👩‍👧"),
 )
+menu.add_content_panel(ScreenContent.static("café 👨‍👩‍👧"))
 menu.add_command("Activate", lambda context: context.menu.stop())
 app.set_main_menu(menu)
 app.run()
@@ -171,9 +171,8 @@ app = TerminalApp("App")
 menu = TerminalMenu(
     app,
     ScreenContext("main", "Main"),
-    content=ScreenContent.static("alpha"),
 )
-menu.content_panels[0].set_description("Alpha")
+menu.add_content_panel(ScreenContent.static("alpha"), description="Alpha")
 menu.add_content_panel(ScreenContent.static("beta"), description="Beta")
 app.set_main_menu(menu)
 app.run()

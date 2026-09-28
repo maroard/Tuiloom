@@ -35,7 +35,6 @@ class EventLoop:
         input_handler: InputHandler,
         menu_renderer: MenuRenderer,
         terminal_renderer: TerminalRenderer,
-        content_renderer: ContentRenderer,
         *,
         clock: Callable[[], float] = monotonic,
         selector_factory: Callable[[], BaseSelector] = DefaultSelector,
@@ -45,7 +44,6 @@ class EventLoop:
         self._input_handler = input_handler
         self._menu_renderer = menu_renderer
         self._terminal_renderer = terminal_renderer
-        self._content_renderer = content_renderer
         self._clock = clock
         self._selector = selector_factory()
         self._wakeup_reader, self._wakeup_writer = socketpair()
@@ -55,25 +53,16 @@ class EventLoop:
         self._selector.register(self._wakeup_reader, EVENT_READ, "source")
 
         self._source_events: Queue[SourceEvent] = Queue(maxsize=self._SOURCE_QUEUE_SIZE)
-        self._generation = 0
-        self._source_worker: SourceWorker | None = None
-        self._pending_content: tuple[ScreenContent, str] | None = None
         self._retiring_panels: list[ContentPanel] = []
         self._dirty = True
         now = self._clock()
         self._next_frame_at = now
         self._next_state_check_at = now
-        self._dynamic_in_flight = False
-        self._next_dynamic_at = now
         self._terminal_size = get_terminal_size()
         self._closed = False
 
-        primary = menu._primary_content_panel
-        if primary is not None:
-            primary._renderer = content_renderer
         for panel in menu.content_panels:
             self._install_panel_worker(panel)
-        self._sync_primary_aliases()
 
     def run(self) -> None:
         """Process events until the owning menu stops."""
@@ -144,7 +133,6 @@ class EventLoop:
     def add_content_panel(self, panel: ContentPanel) -> None:
         """Start runtime work for a panel added while the loop is active."""
         self._install_panel_worker(panel)
-        self._sync_primary_aliases()
         self.request_render(immediate=True)
 
     def update_content_panel_size(
@@ -184,7 +172,6 @@ class EventLoop:
         panel._dynamic_in_flight = True
         panel._next_dynamic_at = self._clock() + self._FRAME_INTERVAL
         worker.request_responsive_update(panel._responsive_request_id, size)
-        self._sync_primary_aliases()
 
     def replace_content_panel(
         self,
@@ -193,8 +180,7 @@ class EventLoop:
     ) -> None:
         """Replace one panel only after its previous worker terminates."""
         panel._pending_content = content
-        self._generation += 1
-        panel._generation = self._generation
+        panel._generation += 1
         panel._dynamic_in_flight = False
         worker = panel._worker
         if worker is not None and worker.is_alive():
@@ -204,7 +190,6 @@ class EventLoop:
             if worker is not None:
                 worker.join()
             self._apply_panel_content(panel, content)
-        self._sync_primary_aliases()
         self.request_render(immediate=True)
 
     def retire_content_panel(self, panel: ContentPanel) -> None:
@@ -219,39 +204,7 @@ class EventLoop:
         elif worker is not None:
             worker.join()
             panel._retiring = False
-        self._sync_primary_aliases()
         self.request_render(immediate=True)
-
-    def install_content(
-        self,
-        content: ScreenContent,
-        *,
-        description: str = "Content in progress",
-    ) -> None:
-        """Schedule replacement after the previous source has really stopped."""
-        panel = self._menu._primary_content_panel
-        if panel is None:
-            panel = self._menu.add_content_panel(content, description=description)
-            self._menu._primary_content_panel = panel
-            self._menu._content = content
-            self._content_renderer = panel._renderer
-            self._menu._content_renderer = panel._renderer
-            self._terminal_renderer.set_content_renderer(panel._renderer)
-            self._sync_primary_aliases()
-            return
-        panel.set_description(description)
-        self.replace_content_panel(panel, content)
-        self._pending_content = (content, description)
-
-    def _apply_content(self, content: ScreenContent, description: str) -> None:
-        """Install content once no previous worker can still execute."""
-        panel = self._menu._primary_content_panel
-        if panel is None:
-            panel = self._menu.add_content_panel(content, description=description)
-            self._menu._primary_content_panel = panel
-            return
-        panel._description = description
-        self._apply_panel_content(panel, content)
 
     def close(self) -> None:
         """Cancel and join source work before releasing selectable resources."""
@@ -259,7 +212,6 @@ class EventLoop:
             return
 
         self._closed = True
-        self._pending_content = None
         panels = tuple(
             dict.fromkeys((*self._menu.content_panels, *self._retiring_panels))
         )
@@ -278,7 +230,6 @@ class EventLoop:
             return
 
         self._closed = True
-        self._pending_content = None
         self._close_resources()
 
     def _close_resources(self) -> None:
@@ -289,8 +240,7 @@ class EventLoop:
 
     def _install_panel_worker(self, panel: ContentPanel) -> None:
         """Start the worker for one already-safe panel source."""
-        self._generation += 1
-        panel._generation = self._generation
+        panel._generation += 1
         panel._worker = None
         panel._dynamic_in_flight = False
         panel._next_dynamic_at = self._clock()
@@ -311,7 +261,7 @@ class EventLoop:
 
         panel._worker = SourceWorker(
             panel=panel,
-            generation=self._generation,
+            generation=panel._generation,
             kind=panel._renderer.state,
             source=source,
             events=self._source_events,
@@ -334,16 +284,7 @@ class EventLoop:
         panel._smart_auto_scroll_active = True
         panel._pending_auto_scroll = None
         self._install_panel_worker(panel)
-        if panel is self._menu._primary_content_panel:
-            self._content_renderer = panel._renderer
-            self._menu._content_renderer = panel._renderer
-            self._terminal_renderer.set_content_renderer(panel._renderer)
-        self._sync_primary_aliases()
         self.request_render(immediate=True)
-
-    def _progress_source_replacement(self) -> None:
-        """Install only the latest request after the cancelled worker exits."""
-        self._progress_panel_transitions()
 
     def _progress_panel_transitions(self) -> None:
         for panel in tuple(self._retiring_panels):
@@ -365,19 +306,6 @@ class EventLoop:
             if worker is not None:
                 worker.join()
             self._apply_panel_content(panel, content)
-        self._pending_content = None
-        self._sync_primary_aliases()
-
-    def _sync_primary_aliases(self) -> None:
-        panel = self._menu._primary_content_panel
-        if panel is None:
-            self._source_worker = None
-            self._dynamic_in_flight = False
-            return
-        self._content_renderer = panel._renderer
-        self._source_worker = panel._worker
-        self._dynamic_in_flight = panel._dynamic_in_flight
-        self._next_dynamic_at = panel._next_dynamic_at
 
     def _clear_source_events(self) -> None:
         """Discard queued results belonging to a replaced source."""
@@ -464,7 +392,6 @@ class EventLoop:
 
             for event in events:
                 self._handle_source_event(event)
-        self._sync_primary_aliases()
 
     def _handle_source_event(self, event: SourceEvent) -> None:
         """Handle completion and failures after applying source data."""
@@ -506,7 +433,6 @@ class EventLoop:
                 and panel._effective_size is not None
             ):
                 self._request_responsive_update(panel, panel._effective_size)
-        self._sync_primary_aliases()
 
     def _render_if_due(self) -> None:
         """Render dirty state no faster than the configured frame interval."""

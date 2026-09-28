@@ -434,11 +434,23 @@ class EventLoop:
             ):
                 self._request_responsive_update(panel, panel._effective_size)
 
+    def _has_dynamic_status(self) -> bool:
+        status = self._menu.status_bar
+        stack = self._menu.app._menu_stack
+        return (
+            self._menu.show
+            and status is not None
+            and status._kind == "dynamic"
+            and (not stack or stack[-1] is self._menu)
+        )
+
     def _render_if_due(self) -> None:
         """Render dirty state no faster than the configured frame interval."""
         now = self._clock()
 
-        if not self._dirty or now < self._next_frame_at:
+        if (
+            not self._dirty and not self._has_dynamic_status()
+        ) or now < self._next_frame_at:
             return
 
         self._menu_renderer.update()
@@ -451,7 +463,7 @@ class EventLoop:
         now = self._clock()
         deadlines = [self._next_state_check_at]
 
-        if self._dirty:
+        if self._dirty or self._has_dynamic_status():
             deadlines.append(self._next_frame_at)
 
         input_timeout = self._input_handler.get_pending_timeout(now)

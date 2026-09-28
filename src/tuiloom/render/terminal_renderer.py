@@ -42,15 +42,21 @@ class TerminalRenderer:
         self._previous_lines: list[str] | None = None
         self._previous_terminal_size: terminal_size | None = None
         self._last_render_key: tuple[object, ...] | None = None
+        self._status_key: tuple[object, ...] | None = None
+        self._status_line: str | None = None
+        self._body_cursor: tuple[int, int] | None = None
 
     def render(self, input_buffer: str = "") -> None:
         """Render and write one complete terminal frame."""
         self._menu_renderer.update()
         current_size = get_terminal_size()
-        render_key = self._get_render_key(current_size)
+        status_line = self._render_status_line(current_size.columns)
+        render_key = self._get_render_key(current_size) + (status_line,)
         if render_key == self._last_render_key:
             return
-        lines = self._compose_frame(current_size.columns, current_size.lines)
+        lines = self._compose_frame_with_status(
+            current_size.columns, current_size.lines, status_line
+        )
         if self._previous_lines is None or self._previous_terminal_size != current_size:
             self._write_full_frame(lines)
         else:
@@ -81,7 +87,42 @@ class TerminalRenderer:
             self._content_spacing,
         )
 
+    def _render_status_line(self, width: int) -> str | None:
+        status = self._menu.status_bar
+        if status is None or not self._menu.show:
+            return None
+        width = max(0, width)
+        key = (status, width, self._menu._status_bar_revision)
+        if key != self._status_key or status._kind == "dynamic":
+            value = status._producer(width)
+            if not isinstance(value, str):
+                raise TypeError("StatusBar renderer must return a str")
+            self._status_line = clip_display(normalize_line(value), 0, width)
+            self._status_key = key
+        return self._status_line
+
     def _compose_frame(self, terminal_width: int, terminal_height: int) -> list[str]:
+        return self._compose_frame_with_status(
+            terminal_width, terminal_height, self._render_status_line(terminal_width)
+        )
+
+    def _compose_frame_with_status(
+        self, terminal_width: int, terminal_height: int, status_line: str | None
+    ) -> list[str]:
+        self._body_cursor = None
+        if status_line is None:
+            return self._compose_body(terminal_width, terminal_height)
+        if terminal_width <= 0 or terminal_height <= 0:
+            return [""]
+        available = terminal_height - 1
+        body = self._compose_body(terminal_width, available)
+        if body == self._render_terminal_too_small():
+            body = [clip_display(line, 0, terminal_width) for line in body[:available]]
+        else:
+            self._body_cursor = (len(body), display_width(body[-1]) + 1)
+        return body + [""] * (available - len(body)) + [status_line]
+
+    def _compose_body(self, terminal_width: int, terminal_height: int) -> list[str]:
         if not self._menu.show:
             return [""]
         menu_lines = self._menu_renderer.render(
@@ -202,8 +243,14 @@ class TerminalRenderer:
         if self._menu._input_behavior is None or self._menu._alert_text is not None:
             stdout.write("\033[?25l")
             return
-        row = len(lines)
-        column = display_width(lines[-1]) + 1
+        if self._menu.status_bar is not None:
+            if self._body_cursor is None:
+                stdout.write("\033[?25l")
+                return
+            row, column = self._body_cursor
+        else:
+            row = len(lines)
+            column = display_width(lines[-1]) + 1
         stdout.write(f"\033[{row};{column}H\033[?25h")
 
     def invalidate(self) -> None:

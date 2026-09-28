@@ -31,6 +31,7 @@ from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import AutoScrollMode, TerminalRenderer
 from tuiloom.screen_content import ScreenContent
 from tuiloom.screen_context.screen_context import ScreenContext
+from tuiloom.status_bar import StatusBar
 from tuiloom.task_exit import TaskExitView
 
 if TYPE_CHECKING:
@@ -88,6 +89,8 @@ class TerminalMenu:
         self._menu_renderer: MenuRenderer | None = None
         self._terminal_renderer: TerminalRenderer | None = None
         self._event_loop: EventLoop | None = None
+        self._status_bar: StatusBar | None = None
+        self._status_bar_revision = 0
         self._content_panels: list[ContentPanel] = []
         if app.global_content is not None:
             self.add_content_panel(app.global_content)
@@ -111,6 +114,37 @@ class TerminalMenu:
     def content_panels(self) -> tuple[ContentPanel, ...]:
         """Return an immutable ordered view of this menu's content panels."""
         return tuple(self._content_panels)
+
+    @property
+    def status_bar(self) -> StatusBar | None:
+        """Return this menu's optional single-line status configuration."""
+        return self._status_bar
+
+    def set_status_bar(self, content: str | StatusBar) -> None:
+        """Install or replace a status line; a string is shorthand for static."""
+        if isinstance(content, str):
+            content = StatusBar.static(content)
+        if not isinstance(content, StatusBar):
+            raise TypeError("status content must be a str or StatusBar")
+        self._status_bar = content
+        self._status_bar_changed()
+
+    def clear_status_bar(self) -> None:
+        """Remove the status line and restore its row to the body layout."""
+        self._status_bar = None
+        self._status_bar_changed()
+
+    def refresh_status_bar(self) -> None:
+        """Reevaluate a responsive status on the next frame, even at equal width."""
+        if self._status_bar is None or self._status_bar._kind != "responsive":
+            raise RuntimeError("Only responsive status can be refreshed")
+        self._status_bar_changed()
+
+    def _status_bar_changed(self) -> None:
+        self._status_bar_revision += 1
+        self._invalidate_renderer()
+        if self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
 
     @property
     def is_main(self) -> bool:

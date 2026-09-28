@@ -15,6 +15,7 @@ from tuiloom import (
     MenuCommand,
     ScreenContent,
     ScreenContext,
+    StatusBar,
     TerminalApp,
     TerminalMenu,
 )
@@ -42,6 +43,7 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "MessageKey",
         "ScreenContext",
         "ScreenContent",
+        "StatusBar",
         "TerminalApp",
         "TerminalMenu",
         "TextColor",
@@ -74,6 +76,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
         MenuChoice,
         ScreenContext,
         ScreenContent,
+        StatusBar,
         TerminalApp,
         TerminalMenu,
     )
@@ -106,6 +109,10 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "is_main",
             "show",
             "content_panels",
+            "status_bar",
+            "set_status_bar",
+            "clear_status_bar",
+            "refresh_status_bar",
             "add_content_panel",
             "add_command",
             "add_choice",
@@ -158,6 +165,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "move",
             "remove",
         ),
+        StatusBar: ("static", "dynamic", "responsive"),
         KeyMap: ("bindings", "set_binding", "action_for"),
     }
     for public_type, names in methods.items():

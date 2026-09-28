@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.7.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.8.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -22,6 +22,7 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Screen state and visibility](#screen-state-and-visibility)
 - [Commands and submenus](#commands-and-submenus)
 - [Screen content](#screen-content)
+- [Status bar](#status-bar)
 - [Captured task output](#captured-task-output)
 - [Safe shutdown](#safe-shutdown)
 - [Free-form and hidden input](#free-form-and-hidden-input)
@@ -45,7 +46,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.7.0
+python -m pip install tuiloom==0.8.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -96,7 +97,7 @@ A Tuiloom application has three main layers:
 1. `TerminalApp` owns application-wide configuration, global commands,
    messages, captured-output state, and the root menu.
 2. `TerminalMenu` owns selectable commands, content panels, input, alerts,
-   local overrides, and its event loop.
+   an optional status bar, local overrides, and its event loop.
 3. `ScreenContext` is the mutable visible state of one menu: name, title,
    minimum width, descriptive text, and footer message.
 
@@ -601,6 +602,71 @@ its handle, and use `panel.set_content()`, `panel.set_description()`,
 `TerminalApp.global_content` remains supported; access its automatically added
 panel through `menu.content_panels`.
 
+## Status bar
+
+A menu can display one persistent status line at the bottom of the terminal,
+separate from its content panels and menu box:
+
+```python
+from tuiloom import StatusBar
+
+menu.set_status_bar("READY │ [L] Logs │ [Q] Quit")
+menu.set_status_bar(StatusBar.dynamic(lambda: f"RUNNING │ Turn {turn}/80"))
+
+
+def render_status(width: int) -> str:
+    if width < 65:
+        return f"RUNNING │ {turn}/80 │ {delivered}/10 │ [L] Logs"
+    return (
+        f"RUNNING │ Turn {turn}/80 │ {delivered}/10 delivered"
+        " │ [Space] Pause │ [L] Logs │ [Q] Quit"
+    )
+
+
+menu.set_status_bar(StatusBar.responsive(render_status))
+menu.refresh_status_bar()  # state changed without a width change
+menu.clear_status_bar()
+```
+
+The application owns `turn` and `delivered` in this example. Shortcut labels are
+text only; register their behaviors separately as commands or global commands.
+Tuiloom does not choose shorter labels or introduce application-specific logic.
+
+| Factory | Evaluation |
+| --- | --- |
+| `StatusBar.static(str)` | Fixed text; a plain string passed to `set_status_bar()` is equivalent |
+| `StatusBar.dynamic(Callable[[], str])` | On scheduled visible UI frames, up to 60 Hz |
+| `StatusBar.responsive(Callable[[int], str])` | On first display, replacement, terminal width changes, or `menu.refresh_status_bar()` |
+
+Status producers are lightweight renderers running synchronously in the UI
+loop. They must read current state and return a string quickly, without I/O,
+blocking calls, or expensive computation. Perform slow work in an application
+task or worker, then update state for the renderer to read. No status worker is
+created. Callback exceptions propagate through the normal terminal-restoration
+path. Producers are not evaluated while the menu is hidden or covered by a
+submenu. Responsive output is cached; use `refresh_status_bar()` when application
+state changes at the same width. Height changes alone do not reevaluate it.
+
+The status line reserves exactly one physical row before panel and menu layout.
+It stays on the final terminal row even with no panels, capped panels, or all
+panels collapsed; any unused rows above it are blank. It has no focus, scrolling,
+borders, or virtual minimum size. The responsive width is the full available
+terminal width in cells. An empty string still reserves the row.
+
+Text is sanitized and clipped with the existing Unicode/ANSI utilities, without
+wrapping or splitting graphemes. Tabs are expanded and newline/carriage-return
+controls are removed by single-line normalization. Strings longer than the
+terminal width are clipped; responsive callbacks can select their own shorter
+representation. When the body cannot fit, a clipped terminal-too-small message
+appears above the status; when only one row is available, only the status appears.
+A terminal reporting zero rows or columns receives an empty frame.
+
+Each menu owns its own status configuration, retained when returning from a
+submenu. Changes take effect without recreating the menu. `ScreenContext.message`
+continues to render independently inside the menu box. `menu.show = False`
+clears the entire frame, including the status line. Without a status bar, frame
+composition and sizing remain unchanged from v0.7.
+
 ## Captured task output
 
 `run_with_output()` runs blocking Python work on a non-daemon worker and uses
@@ -967,6 +1033,7 @@ from tuiloom import (
     MessageKey,
     ScreenContent,
     ScreenContext,
+    StatusBar,
     TerminalApp,
     TerminalMenu,
     TextColor,
@@ -993,6 +1060,21 @@ type TextColor = str | int | tuple[int, int, int]
 `ScreenContent` is an immutable configuration created with `static()`,
 `lines()`, `stream()`, `dynamic()`, or `responsive()`. Responsive minimums are
 positive integers or `None`; its refresh mode is `"resize"` or `"continuous"`.
+
+### `StatusBar`
+
+An immutable current-state configuration created through named factories:
+
+```text
+StatusBar.static(text: str) -> StatusBar
+StatusBar.dynamic(renderer: Callable[[], str]) -> StatusBar
+StatusBar.responsive(renderer: Callable[[int], str]) -> StatusBar
+```
+
+Direct construction raises `TypeError`. `static()` requires a string; dynamic
+and responsive factories require a callable. Producers must return a string;
+invalid results raise `TypeError` during rendering. See [Status bar](#status-bar)
+for evaluation, refresh, normalization, and layout behavior.
 
 ### `ScreenContext`
 
@@ -1293,7 +1375,24 @@ Properties:
 - `is_main -> bool`: whether this is the registered root;
 - `show -> bool`: readable and writable visibility state;
 - `content_panels -> tuple[ContentPanel, ...]`: immutable ordered panel-handle
-  view.
+  view;
+- `status_bar -> StatusBar | None`: read-only optional status configuration.
+
+#### Status bar methods
+
+```text
+set_status_bar(content: str | StatusBar) -> None
+clear_status_bar() -> None
+refresh_status_bar() -> None
+```
+
+Install or replace the status configuration with `set_status_bar()`; a string
+is shorthand for `StatusBar.static()`. Other types raise `TypeError` without
+changing the current configuration. `clear_status_bar()` is idempotent and
+returns the reserved row to the layout. `refresh_status_bar()` requests a new
+responsive result on the next visible frame; it raises `RuntimeError` if there
+is no status or its kind is static or dynamic. These methods preserve panels,
+focus, scroll state, and messages.
 
 #### Command methods
 

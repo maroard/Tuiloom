@@ -278,3 +278,64 @@ app.run()
         if process.poll() is None:
             process.kill()
             process.wait(timeout=2)
+
+
+def test_pty_status_resize_update_and_navigation_preserve_terminal() -> None:
+    import termios
+
+    script = """
+from tuiloom import ScreenContext, StatusBar, TerminalApp, TerminalMenu
+app = TerminalApp("App")
+root = TerminalMenu(app, ScreenContext("root", "Root"))
+child = TerminalMenu(app, ScreenContext("child", "Child"))
+root.set_status_bar(StatusBar.responsive(lambda width: f"WIDTH={width}"))
+child.set_status_bar("CHILD STATUS")
+root.add_menu(child, "Open child")
+child.add_command("Clear status", lambda context: child.clear_status_bar())
+app.set_main_menu(root)
+app.run()
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    try:
+        termios.tcsetwinsize(master, (24, 60))
+        _read_until(master, process, b"WIDTH=60")
+        termios.tcsetwinsize(master, (18, 30))
+        _read_until(master, process, b"WIDTH=30")
+        os.write(master, b"\r")
+        _read_until(master, process, b"CHILD STATUS")
+        os.write(master, b"\r")
+        cleared = _read_until(master, process, b"Clear status")
+        assert b"CHILD STATUS" not in cleared
+        os.write(master, b"\x1b")
+        _read_until(master, process, b"WIDTH=30")
+        os.write(master, b"\x1b")
+        final = _read_until(master, process, b"RESTORED")
+        assert process.wait(timeout=2) == 0
+        assert b"\x1b[?1049l" in final
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=2)
+
+
+def test_pty_status_callback_failure_restores_terminal() -> None:
+    script = """
+from tuiloom import ScreenContext, StatusBar, TerminalApp, TerminalMenu
+app = TerminalApp("App")
+menu = TerminalMenu(app, ScreenContext("main", "Main"))
+def fail():
+    raise ValueError("status failure")
+menu.set_status_bar(StatusBar.dynamic(fail))
+app.set_main_menu(menu)
+try:
+    app.run()
+except ValueError as error:
+    print(str(error))
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    final = _finish(process, master)
+    assert b"status failure" in final
+    assert b"\x1b[?1049l" in final

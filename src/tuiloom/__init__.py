@@ -19,6 +19,7 @@ from tuiloom.render.terminal_renderer import AutoScrollMode
 from tuiloom.render.terminal_text import display_width
 from tuiloom.screen_content import ContentRefreshMode, ContentSize, ScreenContent
 from tuiloom.screen_context.screen_context import ScreenContext
+from tuiloom.status_bar import StatusBar
 from tuiloom.terminal_app import TerminalApp
 from tuiloom.terminal_menu import TerminalMenu
 
@@ -41,6 +42,7 @@ __all__ = [
     "hyperlink",
     "ScreenContent",
     "ScreenContext",
+    "StatusBar",
     "TerminalApp",
     "TerminalMenu",
     "MessageKey",

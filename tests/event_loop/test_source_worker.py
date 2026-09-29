@@ -5,7 +5,14 @@ from typing import cast
 
 import pytest
 
-from tuiloom import ContentSize, MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
+from tuiloom import (
+    AnimationFrame,
+    ContentSize,
+    MenuDisplay,
+    ScreenContent,
+    TerminalApp,
+    TerminalMenu,
+)
 from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
@@ -182,6 +189,37 @@ def test_responsive_worker_serializes_and_coalesces_pending_requests() -> None:
     worker.join(1)
 
     assert calls == [ContentSize(10, 10), ContentSize(30, 30)]
+    assert (first.request_id, latest.request_id) == (1, 3)
+
+
+def test_animated_worker_serializes_and_coalesces_latest_frame() -> None:
+    entered = Event()
+    release = Event()
+    calls: list[tuple[ContentSize, AnimationFrame]] = []
+
+    def animated(size: ContentSize, frame: AnimationFrame) -> str:
+        calls.append((size, frame))
+        if len(calls) == 1:
+            entered.set()
+            release.wait(1)
+        return f"{size.width}:{frame.index}"
+
+    events: Queue[SourceEvent] = Queue(maxsize=8)
+    worker = SourceWorker(
+        make_panel(), 1, animated, events, lambda: None, kind="animated"
+    )
+    worker.start()
+    worker.request_animated_update(1, ContentSize(10, 10), AnimationFrame(0, 0))
+    assert entered.wait(1)
+    worker.request_animated_update(2, ContentSize(20, 20), AnimationFrame(0.1, 1))
+    worker.request_animated_update(3, ContentSize(30, 30), AnimationFrame(0.2, 2))
+    release.set()
+    first = events.get(timeout=1)
+    latest = events.get(timeout=1)
+    worker.cancel()
+    worker.join(1)
+
+    assert [frame.index for _, frame in calls] == [0, 2]
     assert (first.request_id, latest.request_id) == (1, 3)
 
 

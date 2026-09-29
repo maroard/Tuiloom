@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import floor
 from typing import TYPE_CHECKING
 
+from tuiloom.animation import AnimatedText, AnimationFrame, TextSource
 from tuiloom.choice_layout import (
     choice_indent,
     choice_lines,
@@ -37,7 +39,8 @@ class _MenuState:
     text: str | None
     message: str | None
     commands: tuple[tuple[str, bool], ...]
-    choice: tuple[int, MenuChoice, int | None, int] | None
+    choice: tuple[int, MenuChoice, int | None, int | None] | None
+    choice_labels: tuple[str, ...] | None
     exit_label: str | None
     selected_index: int
     focus: str
@@ -59,7 +62,66 @@ class MenuRenderer:
         self._cached_result: RenderResult | None = None
         self._cached_width: int | None = None
         self._revision = 0
+        self._animation_elapsed = 0.0
+        self._animated_cache: dict[int, tuple[AnimatedText, int, str]] = {}
         self.update()
+
+    def set_animation_elapsed(self, elapsed: float) -> None:
+        """Resolve animated menu text for the current active-time snapshot."""
+        self._animation_elapsed = elapsed
+        self.update()
+
+    def resolve_text(self, source: TextSource) -> str:
+        """Resolve one static or animated string at the current frame index."""
+        if not isinstance(source, AnimatedText):
+            return source
+        index = floor(self._animation_elapsed * source.fps + 1e-9)
+        cached = self._animated_cache.get(id(source))
+        if cached is not None and cached[0] is source and cached[1] == index:
+            return cached[2]
+        value = source.renderer(AnimationFrame(self._animation_elapsed, index))
+        if not isinstance(value, str):
+            raise TypeError("AnimatedText renderer must return a str")
+        self._animated_cache[id(source)] = (source, index, value)
+        return value
+
+    def animation_rates(self) -> tuple[float, ...]:
+        """Return rates of visible animated menu text sources."""
+        if not self._menu._menu_box_visible:
+            return ()
+        return tuple(source.fps for source in self._animated_sources())
+
+    def _animated_sources(self) -> tuple[AnimatedText, ...]:
+        """Collect text sources actually visible in the menu box."""
+        menu = self._menu
+        if not menu._menu_box_visible or menu._task_exit is not None:
+            return ()
+        sources: list[TextSource | None] = [menu.display_state.title]
+        hover_message = menu._hover_message()
+        sources.append(
+            hover_message if hover_message is not None else menu.display_state.message
+        )
+        if menu._alert is None:
+            sources.append(menu.display_state.text)
+            sources.extend(command.label for command in menu.commands)
+            active = menu._active_choice()
+            if active is not None:
+                sources.extend(option.label for option in active.options)
+        return tuple(source for source in sources if isinstance(source, AnimatedText))
+
+    def _configured_animated_sources(self) -> tuple[AnimatedText, ...]:
+        """Retain frame cache for sources hidden by alerts or menu visibility."""
+        menu = self._menu
+        sources: list[TextSource | None] = [
+            menu.display_state.title,
+            menu.display_state.text,
+            menu.display_state.message,
+            *(command.label for command in menu.commands),
+        ]
+        for command in menu.commands:
+            if isinstance(command, MenuChoice):
+                sources.extend(option.label for option in command.options)
+        return tuple(source for source in sources if isinstance(source, AnimatedText))
 
     @property
     def revision(self) -> int:
@@ -102,16 +164,32 @@ class MenuRenderer:
         )
         if state.choice is not None:
             _, choice, _, _ = state.choice
-            for row in range(choice.rows):
-                labels = [
-                    option.label for option in choice.options if option.row == row
-                ]
-                if labels:
-                    requirements.append(
-                        sum(choice_slot_width(label) for label in labels)
-                        + 2
-                        + 2 * (len(labels) - 1)
+            choice_labels = state.choice_labels
+            if choice_labels is None:
+                raise RuntimeError("Choice labels are missing")
+            if choice.vertical:
+                requirements.extend(
+                    2
+                    + max(
+                        choice_slot_width(line) for line in normalize_text_lines(label)
                     )
+                    for label in choice_labels
+                )
+            else:
+                for row in range(choice.rows):
+                    row_labels = [
+                        label
+                        for option, label in zip(
+                            choice.options, choice_labels, strict=True
+                        )
+                        if option.row == row
+                    ]
+                    if row_labels:
+                        requirements.append(
+                            sum(choice_slot_width(label) for label in row_labels)
+                            + 2
+                            + 2 * (len(row_labels) - 1)
+                        )
         if state.exit_label is not None:
             requirements.append(display_width(f"> {state.exit_label}"))
         if state.input_prompt is not None:
@@ -126,12 +204,22 @@ class MenuRenderer:
         context = menu.display_state
         exit_view = menu._task_exit
         if exit_view is None:
-            title = context.title
-            text = context.text
+            visible = menu._menu_box_visible
+            body_visible = visible and menu._alert is None
+            resolve_heading = self.resolve_text if visible else str
+            resolve_body = self.resolve_text if body_visible else str
+            title = resolve_heading(context.title)
+            text = resolve_body(context.text) if context.text is not None else None
             hover_message = menu._hover_message()
-            message = hover_message if hover_message is not None else context.message
+            message_source = (
+                hover_message if hover_message is not None else context.message
+            )
+            message = (
+                resolve_heading(message_source) if message_source is not None else None
+            )
             commands = tuple(
-                (command.label, command.enabled) for command in menu.commands
+                (resolve_body(command.label), command.enabled)
+                for command in menu.commands
             )
             exit_label: str | None = menu._exit_label
             selected_index = menu._selected_index
@@ -153,6 +241,11 @@ class MenuRenderer:
                 if active is not None
                 else None
             )
+            choice_labels = (
+                tuple(resolve_body(option.label) for option in active.options)
+                if active is not None
+                else None
+            )
         else:
             title = exit_view.visible_title(len(menu._current_exit_panels()))
             text = None
@@ -164,6 +257,7 @@ class MenuRenderer:
             alert_prompt = None
             input_prompt = None
             choice = None
+            choice_labels = None
         state = _MenuState(
             app_name=menu.app.name,
             title=title,
@@ -175,6 +269,7 @@ class MenuRenderer:
             message=message,
             commands=commands,
             choice=choice,
+            choice_labels=choice_labels,
             exit_label=exit_label,
             selected_index=selected_index,
             focus="menu" if menu._focused_panel is None else "content",
@@ -185,6 +280,12 @@ class MenuRenderer:
             input_prompt=input_prompt,
             input_text=menu._display_input_buffer(),
         )
+        active_ids = {id(source) for source in self._configured_animated_sources()}
+        self._animated_cache = {
+            key: value
+            for key, value in self._animated_cache.items()
+            if key in active_ids
+        }
         if state == self._state:
             return
         self._state = state
@@ -258,10 +359,13 @@ class MenuRenderer:
                 )
                 if state.choice is not None and state.choice[0] == index:
                     _, choice, cursor, selected = state.choice
-                    for visual in choice_lines(choice, width):
+                    labels = state.choice_labels
+                    if labels is None:
+                        raise RuntimeError("Choice labels are missing")
+                    for visual in choice_lines(choice, width, labels):
                         tokens = []
                         for position, option in enumerate(visual.indices):
-                            label = choice.options[option].label
+                            label = labels[option]
                             token = choice_token(
                                 label,
                                 selected=selected == option,

@@ -91,7 +91,10 @@ def main() -> None:
         simulation.seconds_per_turn = (0.5, 1.0)[context.index]
 
     settings.add_choice(
-        "Speed", [ChoiceOption("Fast"), ChoiceOption("Slow")], set_speed
+        "Speed",
+        [ChoiceOption("Fast"), ChoiceOption("Slow")],
+        set_speed,
+        selected_index=0,
     )
     menu.add_command("Run simulation", run)
     menu.add_submenu(settings, "Settings")

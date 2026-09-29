@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from tuiloom.animation import TextSource
 from tuiloom.key_binding import KeyBinding
 
 if TYPE_CHECKING:
@@ -127,7 +128,7 @@ class ChoiceOption:
             and its registered identity unchanged.
     """
 
-    label: str
+    label: TextSource
     row: int = field(default=0, kw_only=True)
     on_hover: ChoiceCallback | None = field(default=None, kw_only=True)
     hover_message: str | None = field(default=None, kw_only=True)
@@ -158,7 +159,7 @@ class MenuCommand:
     def __init__(
         self,
         menu: TerminalMenu,
-        label: str,
+        label: TextSource,
         callback: CommandCallback,
         on_hover: CommandCallback | None = None,
     ) -> None:
@@ -195,7 +196,7 @@ class MenuCommand:
         self._on_hover = on_hover
 
     @property
-    def label(self) -> str:
+    def label(self) -> TextSource:
         """Read the command's current visible text.
 
         Returns:
@@ -264,31 +265,37 @@ class MenuChoice(MenuCommand):
         callback: Read-only activation adapter accepting ``CommandContext`` and
             invoking ``on_select`` for the committed option. Direct calls run on
             the caller's thread and bypass navigation and enabled-state checks.
+            Calling it before confirmation raises ``RuntimeError``.
         position: Read-only current index among user commands, excluding
             Back/Quit; accessing it after removal raises ``ValueError``.
         enabled: Read-only local enablement, changed through the menu's
             ``enable_command()`` and ``disable_command()`` methods.
         options: Read-only immutable option tuple in its original index order.
-        rows: Read-only configured number of logical option rows.
-        selected_index: Read-only committed index, independent of keyboard
-            preview; change with ``menu.set_choice_index()`` without callbacks.
+        rows: Read-only number of logical option rows. In vertical mode, this
+            equals the number of options.
+        vertical: Read-only flag placing each option on its own logical row.
+        selected_index: Read-only committed index, or ``None`` before the first
+            confirmation; independent of keyboard preview. Change with
+            ``menu.set_choice_index()`` without callbacks.
         on_select: Read-only confirmation callback; replace with
             ``menu.set_choice_callback()``.
-        selected_option: Read-only option at the committed index.
-        selected_label: Read-only displayed label of the committed option.
+        selected_option: Read-only option at the committed index, or ``None``.
+        selected_label: Read-only fallback label of the committed option, or
+            ``None``.
     """
 
-    __slots__ = ("_options", "_rows", "_selected_index", "_on_select")
+    __slots__ = ("_options", "_rows", "_vertical", "_selected_index", "_on_select")
 
     def __init__(
         self,
         menu: TerminalMenu,
-        label: str,
+        label: TextSource,
         options: tuple[ChoiceOption, ...],
         rows: int,
-        selected_index: int,
+        selected_index: int | None,
         on_select: ChoiceCallback,
         on_hover: CommandCallback | None,
+        vertical: bool = False,
     ) -> None:
         """Store a choice's metadata without registration or selection callbacks.
 
@@ -305,8 +312,10 @@ class MenuChoice(MenuCommand):
                 stores them without validation.
             rows: Positive number of logical rows in the expanded choice;
                 validated by ``add_choice()``, not by direct construction.
-            selected_index: Initial committed zero-based index in ``options``;
-                validated by ``add_choice()``, not by direct construction.
+            vertical: Whether every option occupies its own logical row.
+            selected_index: Initial committed zero-based index in ``options``,
+                or ``None`` when no option is confirmed; validated by
+                ``add_choice()``, not by direct construction.
             on_select: Callable ``callback(context: ChoiceContext) -> None`` on
                 confirmation. UI dispatch is synchronous on the UI thread,
                 ignores returns, and propagates exceptions through the
@@ -326,6 +335,7 @@ class MenuChoice(MenuCommand):
         super().__init__(menu, label, self._invoke_selection, on_hover)
         self._options = options
         self._rows = rows
+        self._vertical = vertical
         self._selected_index = selected_index
         self._on_select = on_select
 
@@ -342,7 +352,7 @@ class MenuChoice(MenuCommand):
 
     @property
     def rows(self) -> int:
-        """Read the declared row count of the expanded selector.
+        """Read the logical row count of the expanded selector.
 
         Returns:
             The number of logical option rows. A logical row may wrap onto
@@ -351,12 +361,18 @@ class MenuChoice(MenuCommand):
         return self._rows
 
     @property
-    def selected_index(self) -> int:
+    def vertical(self) -> bool:
+        """Read whether options use one logical row each."""
+        return self._vertical
+
+    @property
+    def selected_index(self) -> int | None:
         """Read the committed option index without inspecting keyboard preview.
 
         Returns:
-            Zero-based index in ``options``. Keyboard confirmation and
-            ``menu.set_choice_index()`` update this value; hover leaves it unchanged.
+            Zero-based index in ``options``, or ``None`` before confirmation.
+            Keyboard confirmation and ``menu.set_choice_index()`` update this
+            value; hover leaves it unchanged.
         """
         return self._selected_index
 
@@ -372,41 +388,53 @@ class MenuChoice(MenuCommand):
         return self._on_select
 
     @property
-    def selected_option(self) -> ChoiceOption:
+    def selected_option(self) -> ChoiceOption | None:
         """Read the committed option independently of the keyboard preview.
 
         Returns:
-            The ``ChoiceOption`` at ``selected_index`` in the option tuple.
+            The ``ChoiceOption`` at ``selected_index`` in the option tuple,
+            or ``None`` before confirmation.
 
         Raises:
             IndexError: If direct construction supplied an out-of-range index
                 or empty tuple. Registered choices validate these values.
         """
+        if self._selected_index is None:
+            return None
         return self._options[self._selected_index]
 
     @property
-    def selected_label(self) -> str:
-        """Read the displayed text of the committed option.
+    def selected_label(self) -> str | None:
+        """Read the fallback text of the committed option.
 
         Returns:
-            ``selected_option.label``, which may differ from the hovered option's
-            label while keyboard navigation is previewing another option.
+            ``selected_option.label`` as a plain string, or ``None`` before
+            confirmation. This may differ from the hovered option's label while
+            keyboard navigation is previewing another option. Animated labels
+            render only inside the menu.
 
         Raises:
             IndexError: If direct construction supplied an out-of-range index
                 or empty tuple. Registered choices validate these values.
         """
-        return self.selected_option.label
+        option = self.selected_option
+        return str(option.label) if option is not None else None
 
     def _invoke_selection(self, context: CommandContext) -> None:
         """Adapt command invocation to the currently validated choice option."""
+        option = self.selected_option
+        index = self.selected_index
+        if option is None or index is None:
+            raise RuntimeError(
+                "Cannot invoke choice callback without a selected option"
+            )
         self._on_select(
             ChoiceContext(
                 self._menu.app,
                 self._menu,
                 self,
-                self.selected_option,
-                self.selected_index,
+                option,
+                index,
                 context.binding,
             )
         )

@@ -3,7 +3,10 @@ from __future__ import annotations
 import pytest
 
 from tuiloom import (
+    AnimatedText,
+    AnimationFrame,
     ChoiceOption,
+    CommandContext,
     KeyBinding,
     MenuDisplay,
     ScreenContent,
@@ -24,6 +27,97 @@ def press(target: TerminalMenu, key: str) -> None:
     target._handle_event(InputEvent(KeyBinding(key), None))
 
 
+@pytest.mark.parametrize("vertical", [False, True])
+def test_choice_starts_unchecked_until_confirmation(vertical: bool) -> None:
+    target = menu()
+    calls: list[int] = []
+    choice = target.add_choice(
+        "Mode",
+        [ChoiceOption("Fast"), ChoiceOption("Accurate")],
+        lambda context: calls.append(context.index),
+        vertical=vertical,
+    )
+    target._prepare_open()
+
+    assert choice.selected_index is None
+    assert choice.selected_option is None
+    assert choice.selected_label is None
+    assert "✓" not in MenuRenderer(target).render()
+
+    press(target, "enter")
+    assert target._choice_index == 0
+    assert choice.selected_index is None
+    assert "✓" not in MenuRenderer(target).render()
+    assert calls == []
+
+    press(target, "down" if vertical else "right")
+    assert target._choice_index == 1
+    assert choice.selected_option is None
+    assert "✓" not in MenuRenderer(target).render()
+    press(target, "enter")
+    assert choice.selected_index == 1
+    assert choice.selected_option is choice.options[1]
+    assert choice.selected_label == "Accurate"
+    assert calls == [1]
+    assert "> Accurate ✓" in MenuRenderer(target).render()
+
+    press(target, "left")
+    assert choice.selected_index == 1
+    assert "Accurate ✓" in MenuRenderer(target).render()
+
+
+def test_choice_explicit_default_and_programmatic_selection() -> None:
+    target = menu()
+    calls: list[int] = []
+    initial = target.add_choice(
+        "Initial",
+        [ChoiceOption("One"), ChoiceOption("Two")],
+        lambda context: calls.append(context.index),
+        selected_index=0,
+    )
+    assert initial.selected_index == 0
+    assert "One ✓" in MenuRenderer(target).render()
+
+    unset = target.add_choice(
+        "Unset",
+        [ChoiceOption("One"), ChoiceOption("Two")],
+        lambda context: calls.append(context.index),
+    )
+    target.set_choice_index(unset, 1)
+    assert unset.selected_index == 1
+    assert unset.selected_option is unset.options[1]
+    assert calls == []
+    with pytest.raises(ValueError, match="selected_index"):
+        target.set_choice_index(unset, None)  # type: ignore[arg-type]
+    assert unset.selected_index == 1
+
+
+def test_choice_direct_callback_requires_confirmation() -> None:
+    target = menu()
+    calls: list[int] = []
+    choice = target.add_choice(
+        "Mode", [ChoiceOption("One")], lambda context: calls.append(context.index)
+    )
+    with pytest.raises(RuntimeError, match="selected"):
+        choice.callback(CommandContext(target.app, target, choice, None))
+    assert calls == []
+
+
+def test_enter_twice_confirms_first_option_without_a_default() -> None:
+    target = menu()
+    calls: list[int] = []
+    choice = target.add_choice(
+        "Mode", [ChoiceOption("One")], lambda context: calls.append(context.index)
+    )
+    target._prepare_open()
+    press(target, "enter")
+    assert choice.selected_index is None
+    assert calls == []
+    press(target, "enter")
+    assert choice.selected_index == 0
+    assert calls == [0]
+
+
 def test_choice_hover_and_deferred_selection() -> None:
     target = menu()
     events: list[tuple[str, int | None]] = []
@@ -37,6 +131,7 @@ def test_choice_hover_and_deferred_selection() -> None:
         ],
         lambda c: events.append(("select", c.index)),
         on_hover=lambda c: events.append(("label", None)),
+        selected_index=0,
     )
     target._prepare_open()
     assert events == [("label", None)]
@@ -63,6 +158,40 @@ def test_choice_hover_and_deferred_selection() -> None:
     press(target, "left")
     press(target, "left")
     assert events.count(("label", None)) == 2
+
+
+def test_choice_options_animate_without_changing_selection() -> None:
+    target = menu()
+    source = AnimatedText("Option", lambda frame: f"Option {frame.index}", fps=5)
+    choice = target.add_choice(
+        "Mode",
+        [ChoiceOption(source), ChoiceOption("Static")],
+        lambda c: None,
+        selected_index=0,
+    )
+    renderer = MenuRenderer(target)
+    target._menu_renderer = renderer
+    assert "Option 0 ✓" in renderer.render()
+    renderer.set_animation_elapsed(0.21)
+    assert "Option 1 ✓" in renderer.render()
+    assert choice.selected_index == 0
+    assert choice.selected_label == "Option"
+
+
+def test_animated_choice_selected_label_does_not_render() -> None:
+    target = menu()
+    calls: list[int] = []
+
+    def render(frame: AnimationFrame) -> str:
+        calls.append(frame.index)
+        return "Rendered"
+
+    source = AnimatedText("Fallback", render)
+    choice = target.add_choice(
+        "Mode", [ChoiceOption(source)], lambda c: None, selected_index=0
+    )
+    assert choice.selected_label == "Fallback"
+    assert calls == []
 
 
 def test_leftmost_option_cursor_is_indented_and_check_follows_label() -> None:
@@ -132,6 +261,124 @@ def test_visual_rows_and_resize_drive_navigation() -> None:
     assert target._choice_index == 1
     assert "│  > Beta" in renderer.render()
     assert all(display_width(line) == 14 for line in renderer.render().splitlines())
+
+
+def test_vertical_choice_renders_one_option_per_row_and_sizes_to_longest() -> None:
+    target = menu()
+    options = [ChoiceOption("Fast"), ChoiceOption("Accurate"), ChoiceOption("Custom")]
+    choice = target.add_choice(
+        "Mode", options, lambda c: None, vertical=True, selected_index=0
+    )
+    target._prepare_open()
+    press(target, "right")
+
+    renderer = MenuRenderer(target)
+    lines = renderer.render().splitlines()
+    assert choice.vertical is True
+    assert choice.rows == len(options)
+    assert all(
+        actual is original
+        for actual, original in zip(choice.options, options, strict=True)
+    )
+    assert renderer.width == 2 + 4 + display_width("Accurate")
+    option_lines = [
+        line.strip("│ ") for line in lines if any(o.label in line for o in options)
+    ]
+    assert option_lines == [
+        "> Fast ✓",
+        "Accurate",
+        "Custom",
+    ]
+
+
+def test_vertical_choice_navigation_keeps_original_indices_and_callbacks() -> None:
+    target = menu()
+    events: list[tuple[str, int, ChoiceOption]] = []
+    options = [
+        ChoiceOption(
+            label,
+            on_hover=lambda c: events.append(("hover", c.index, c.option)),
+        )
+        for label in ("Fast", "Accurate", "Custom")
+    ]
+    choice = target.add_choice(
+        "Mode",
+        options,
+        lambda c: events.append(("select", c.index, c.option)),
+        vertical=True,
+        selected_index=0,
+    )
+    target._prepare_open()
+    press(target, "right")
+    press(target, "down")
+    press(target, "down")
+    assert target._choice_index == 2
+    assert choice.selected_option is options[0]
+    assert events == [
+        ("hover", 0, options[0]),
+        ("hover", 1, options[1]),
+        ("hover", 2, options[2]),
+    ]
+    press(target, "enter")
+    assert choice.selected_index == 2
+    assert choice.selected_option is options[2]
+    assert events[-1] == ("select", 2, options[2])
+    press(target, "left")
+    assert target._choice_index == 1
+    press(target, "right")
+    assert target._choice_index == 2
+
+
+def test_vertical_choice_narrow_menu_wraps_label_without_extra_navigation() -> None:
+    target = menu()
+    target.display_state.width = 6
+    target.display_state.strict_width = True
+    target.add_choice(
+        "Mode",
+        [ChoiceOption("abcdefghij"), ChoiceOption("Next"), ChoiceOption("Last")],
+        lambda c: None,
+        vertical=True,
+    )
+    target._prepare_open()
+    press(target, "right")
+    rendered = MenuRenderer(target).render()
+    assert "abcdefghij" in "".join(line[1:-1].strip() for line in rendered.splitlines())
+    assert all(display_width(line) == 8 for line in rendered.splitlines())
+    press(target, "down")
+    assert target._choice_index == 1
+    press(target, "down")
+    assert target._choice_index == 2
+
+
+def test_vertical_choice_multiline_label_sizes_to_widest_physical_line() -> None:
+    target = menu()
+    target.add_choice(
+        "Mode", [ChoiceOption("A\n123456789")], lambda c: None, vertical=True
+    )
+    target._prepare_open()
+    press(target, "right")
+    assert MenuRenderer(target).width == 2 + 4 + display_width("123456789")
+
+
+@pytest.mark.parametrize(
+    ("rows", "options"),
+    [
+        (2, [ChoiceOption("One"), ChoiceOption("Two")]),
+        (2, [ChoiceOption("One", row=1), ChoiceOption("Two")]),
+    ],
+)
+def test_vertical_choice_rejects_explicit_rows(
+    rows: int, options: list[ChoiceOption]
+) -> None:
+    target = menu()
+    with pytest.raises(ValueError):
+        target.add_choice("Mode", options, lambda c: None, rows=rows, vertical=True)
+
+
+def test_vertical_choice_requires_bool() -> None:
+    target = menu()
+    with pytest.raises(TypeError, match="vertical must be a bool"):
+        target.add_choice("Mode", [ChoiceOption("One")], lambda c: None, vertical=1)  # type: ignore[arg-type]
 
 
 def test_choice_mutations_and_validation() -> None:

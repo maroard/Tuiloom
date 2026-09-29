@@ -60,7 +60,9 @@ def test_choice_command_callback_adapts_to_the_selected_option() -> None:
 def test_choice_selection_callback_has_a_distinct_mutation_method() -> None:
     menu = make_menu()
     calls: list[str] = []
-    choice = menu.add_choice("Mode", [ChoiceOption("One")], lambda context: None)
+    choice = menu.add_choice(
+        "Mode", [ChoiceOption("One")], lambda context: None, selected_index=0
+    )
     menu.set_choice_callback(choice, lambda context: calls.append(context.option.label))
     choice.callback(CommandContext(menu.app, menu, choice, None))
     assert calls == ["One"]

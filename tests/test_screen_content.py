@@ -2,7 +2,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from tuiloom import ContentSize, ScreenContent
+from tuiloom import AnimationFrame, ContentSize, ScreenContent
 from tuiloom.render.content_renderer import ContentRenderer
 
 
@@ -91,6 +91,27 @@ def test_responsive_configuration_is_frozen_and_explicit() -> None:
     assert content.refresh_mode == "continuous"
     with pytest.raises(AttributeError):
         content.min_width = 1  # type: ignore[misc]
+
+
+def test_animated_content_configuration_has_rate_size_and_renderer() -> None:
+    def renderer(size: ContentSize, frame: AnimationFrame) -> str:
+        return f"{size.width}:{frame.index}"
+
+    content = ScreenContent.animated(renderer, fps=12, min_width=40, min_height=20)
+    assert content._kind == "animated"
+    assert ContentRenderer(content).state == "animated"
+    assert content._animated() is renderer
+    assert content.fps == 12
+    assert (content.min_width, content.min_height) == (40, 20)
+
+
+@pytest.mark.parametrize("fps", [0, -1, 61, True, float("inf"), "12"])
+def test_animated_content_rejects_invalid_rate(fps: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        ScreenContent.animated(
+            lambda size, frame: "",
+            fps=fps,  # type: ignore[arg-type]
+        )
 
 
 def test_responsive_rejects_unknown_refresh_mode() -> None:

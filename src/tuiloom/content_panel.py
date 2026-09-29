@@ -141,7 +141,7 @@ class ContentPanel:
         self._removed = False
         self._runtime = PanelRuntime(
             ContentRenderer(content),
-            responsive_refresh_pending=content._kind == "responsive",
+            responsive_refresh_pending=content._kind in ("responsive", "animated"),
         )
 
     @property
@@ -475,7 +475,7 @@ class ContentPanel:
         self._menu._set_content_panel_content(self, content)
 
     def refresh(self) -> None:
-        """Request another responsive snapshot at the current virtual panel size.
+        """Request another responsive or animated snapshot at the current size.
 
         This works with both ``"resize"`` and ``"continuous"`` refresh modes,
         including when the size has not changed. It does not evaluate the
@@ -489,7 +489,8 @@ class ContentPanel:
 
         Raises:
             RuntimeError: If mounted content is fixed text, fixed lines, a
-                dynamic producer, or a stream rather than responsive content.
+                dynamic producer, or a stream rather than responsive or
+                animated content.
             ValueError: If the panel has been removed or is not registered in its
                 owning menu.
         """

@@ -2,7 +2,15 @@ from typing import cast
 
 import pytest
 
-from tuiloom import MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
+from tuiloom import (
+    AnimatedText,
+    AnimationFrame,
+    ChoiceOption,
+    MenuDisplay,
+    ScreenContent,
+    TerminalApp,
+    TerminalMenu,
+)
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_text import display_width, visual_cells
@@ -40,6 +48,115 @@ def test_menu_render_uses_name_title_text_and_selected_indicator() -> None:
         display_width(line) == renderer.width + 2 for line in rendered.splitlines()
     )
     assert menu._selected_index == 0
+
+
+def test_menu_animates_title_text_message_and_command_at_frame_boundaries() -> None:
+    calls: list[int] = []
+
+    def animated(frame: object) -> str:
+        index = frame.index  # type: ignore[attr-defined]
+        calls.append(index)
+        return f"frame-{index}"
+
+    menu, renderer = make_renderer(width=12)
+    source = AnimatedText("fallback", animated, fps=10)
+    menu.display_state.title = source
+    menu.display_state.text = source
+    menu.display_state.message = source
+    menu.set_command_label(menu.commands[0], source)
+    renderer.update()
+    assert "frame-0" in renderer.render()
+    assert calls == [0]
+    first_revision = renderer.revision
+
+    renderer.set_animation_elapsed(0.05)
+    assert renderer.revision == first_revision
+    assert calls == [0]
+
+    renderer.set_animation_elapsed(0.11)
+    assert "frame-1" in renderer.render()
+    assert calls == [0, 1]
+    assert renderer.width >= display_width("> frame-1")
+    assert menu.commands[0].label is source
+    assert menu._selected_index == 0
+
+
+def test_replaced_menu_animation_does_not_remain_cached() -> None:
+    menu, renderer = make_renderer()
+    source = AnimatedText("Static", lambda frame: "Animated", fps=2)
+    menu.display_state.title = source
+    renderer.update()
+    assert any(entry[0] is source for entry in renderer._animated_cache.values())
+    menu.display_state.title = "Static"
+    renderer.update()
+    assert renderer._animated_cache == {}
+
+
+def test_hidden_menu_does_not_evaluate_animated_text() -> None:
+    menu, renderer = make_renderer()
+    calls: list[int] = []
+
+    def animated(frame: AnimationFrame) -> str:
+        calls.append(frame.index)
+        return "Visible"
+
+    menu.display_state.title = AnimatedText("Fallback", animated, fps=10)
+    menu.hide_menu()
+    calls.clear()
+    renderer.set_animation_elapsed(0.21)
+    assert renderer.animation_rates() == ()
+    assert calls == []
+    menu.show_menu()
+    renderer.set_animation_elapsed(0.21)
+    assert calls == [2]
+
+
+def test_hiding_menu_preserves_cached_value_within_one_frame() -> None:
+    menu, renderer = make_renderer()
+    calls: list[int] = []
+
+    def animated(frame: AnimationFrame) -> str:
+        calls.append(frame.index)
+        return "Same"
+
+    menu.display_state.title = AnimatedText("Fallback", animated, fps=2)
+    renderer.update()
+    assert calls == [0]
+    menu.hide_menu()
+    renderer.update()
+    menu.show_menu()
+    renderer.update()
+    assert calls == [0]
+
+
+def test_alert_does_not_evaluate_covered_command_animation() -> None:
+    menu, renderer = make_renderer()
+    calls: list[int] = []
+
+    def animated(frame: AnimationFrame) -> str:
+        calls.append(frame.index)
+        return "Visible"
+
+    menu.set_command_label(
+        menu.commands[0],
+        AnimatedText("Fallback", animated, fps=10),
+    )
+    menu.show_alert("Notice")
+    calls.clear()
+    renderer.set_animation_elapsed(0.21)
+    assert renderer.animation_rates() == ()
+    assert calls == []
+
+
+def test_inactive_choice_options_do_not_schedule_animation() -> None:
+    menu, renderer = make_renderer()
+    menu.add_choice(
+        "Choice",
+        [ChoiceOption(AnimatedText("Fallback", lambda frame: "Visible", fps=10))],
+        lambda context: None,
+    )
+    renderer.update()
+    assert renderer.animation_rates() == ()
 
 
 def test_menu_border_reflects_focus_and_single_zone_is_solid() -> None:

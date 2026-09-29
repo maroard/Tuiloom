@@ -380,7 +380,7 @@ properties. Their current values reflect mutations performed through the menu.
 including the initial selection when opening a menu. It does not require a mouse.
 Its initial invocation has `context.binding is None`.
 
-### Horizontal choices
+### Horizontal and vertical choices
 
 Use `add_choice()` when a command should reveal several options on hover. The
 callback receives a `ChoiceContext` with `app`, `menu`, `command`, `option`,
@@ -398,6 +398,7 @@ def preview_accurate(context: ChoiceContext) -> None:
 def apply_mode(context: ChoiceContext) -> None:
     context.menu.display_state.message = f"Mode: {context.option.label}"
 
+
 app.add_message("fast_help", "Run the simulation to completion.")
 mode = menu.add_choice(
     "Simulation mode",
@@ -414,6 +415,24 @@ menu.set_choice_index(mode, 1)  # Update without calling on_select.
 menu.set_choice_callback(mode, apply_mode)
 ```
 
+Pass `vertical=True` to display the options in their original order, one per
+logical row:
+
+```python
+menu.add_choice(
+    "Simulation mode",
+    [ChoiceOption("Fast"), ChoiceOption("Accurate"), ChoiceOption("Custom")],
+    on_select=apply_mode,
+    vertical=True,
+)
+```
+
+Vertical choices use the width of the widest option. Their `rows` property is
+the number of options. `vertical=True` cannot be combined with `rows>1` or an
+option whose `row` is nonzero. A long option can wrap across physical terminal
+lines while remaining one logical navigation row. Left and Right retain their
+usual option order; Up and Down move between the vertical rows.
+
 `ChoiceOption(label, *, row=0, on_hover=None, hover_message=None)` uses zero-based
 declared rows. `hover_message` names a registered application message shown only
 while the cursor is on that option. It overlays the persistent footer without
@@ -423,12 +442,15 @@ the choice is added. `on_hover` remains available for other actions.
 Empty declared rows are skipped. A narrow terminal wraps between options, and
 arrow navigation follows those visible lines. Right from the label enters the
 options; Down moves to the next command. Enter from the label moves to the
-active option. Moving the cursor previews an option without changing
-`mode.selected_index` or `mode.selected_option`. `mode.selected_label` returns
-the validated option's display text. Enter on an option validates it and calls
-`on_select`, including
-when it is already active. The `>` marker follows the cursor; `✓` appears after
-the validated option's label. Option lines start two cells to the right of
+active option. With no `selected_index`, the first Enter previews the first
+option without checking it; a second Enter confirms it. Moving the cursor
+previews an option without changing `mode.selected_index` or
+`mode.selected_option`. Before confirmation, these properties and
+`mode.selected_label` are `None`. Once confirmed, `selected_label` returns the
+option's static label (the fallback for `AnimatedText`). Enter on an option
+confirms it and calls `on_select`, including when it is already selected. The
+`>` marker follows the cursor; `✓` remains after the confirmed option's label
+until another option is chosen. Option lines start two cells to the right of
 command markers when the width permits. Use the owning menu's command mutation
 methods to rename, move, disable, or remove a choice. Replace its selection
 callback with `set_choice_callback()`, which accepts `ChoiceCallback`.
@@ -438,7 +460,8 @@ callback with `set_choice_callback()`, which accepts `ChoiceCallback`.
 `mode.callback` is a real `CommandCallback` adapter: it creates a `ChoiceContext`
 for the currently validated option, preserving the triggering binding. Calling
 that adapter invokes `on_select` without opening the chooser or changing its
-selected index. An option's label is display text; use its index or your own
+selected index. Calling it before confirmation raises `RuntimeError`. An
+option's label is display text; use its index or your own
 mapping for application values.
 
 Every time a menu opens, its marker starts on the first enabled command from
@@ -500,6 +523,7 @@ The factories behave differently:
 | `stream(Iterator[str])` | A worker consumes chunks until exhaustion |
 | `dynamic(Callable[[], str \| list[str]])` | A worker evaluates the latest state up to 60 Hz |
 | `responsive(Callable[[ContentSize], str \| list[str]])` | A worker renders for the panel's effective size |
+| `animated(Callable[[ContentSize, AnimationFrame], str \| list[str]], fps=12)` | A worker renders due frames for the effective size |
 
 Static content is normalized immediately. Iterator chunks may contain partial
 lines and multiple newlines; carriage returns replace the unfinished line, which
@@ -842,14 +866,16 @@ Tuiloom does not choose shorter labels or introduce application-specific logic.
 | `StatusBar.static(str)` | Fixed text; a plain string passed to `set_status_bar()` is equivalent |
 | `StatusBar.dynamic(Callable[[], str])` | On scheduled visible UI frames, up to 60 Hz |
 | `StatusBar.responsive(Callable[[int], str])` | On first display, replacement, terminal width changes, or `menu.refresh_status_bar()` |
+| `StatusBar.animated(Callable[[int, AnimationFrame], str], fps=12)` | On its own active-time frame boundaries, up to 60 Hz |
 
 Status producers are lightweight renderers running synchronously in the UI
 loop. They must read current state and return a string quickly, without I/O,
 blocking calls, or expensive computation. Perform slow work in an application
 task or worker, then update state for the renderer to read. No status worker is
 created. Callback exceptions propagate through the normal terminal-restoration
-path. Producers are not evaluated while the menu is hidden or covered by a
-submenu. Responsive output is cached; use `refresh_status_bar()` when application
+path. Producers are not evaluated while the menu is covered by a submenu;
+hiding the menu box keeps its status bar visible. Responsive output is cached;
+use `refresh_status_bar()` when application
 state changes at the same width. Height changes alone do not reevaluate it.
 
 The status line reserves exactly one physical row before panel and menu layout.
@@ -1071,6 +1097,7 @@ Register a message once during application setup, then toggle it from a callback
 ```python
 app.add_message("credit", "Created by maroard")
 
+
 def credit(context: CommandContext) -> None:
     context.menu.toggle_message("credit")
 ```
@@ -1195,6 +1222,14 @@ ANSI palette. The following additional names use fixed RGB values for both
 | Name | RGB hexadecimal |
 | --- | --- |
 | `orange` | `#FFA500` |
+| `brown` | `#A52A2A` |
+| `crimson` | `#DC143C` |
+| `darkred` | `#8B0000` |
+| `gold` | `#FFD700` |
+| `lime` | `#00FF00` |
+| `maroon` | `#800000` |
+| `purple` | `#800080` |
+| `violet` | `#EE82EE` |
 | `gray` | `#808080` |
 | `dark_red` | `#7F0000` |
 | `dark_green` | `#007F00` |
@@ -1224,6 +1259,57 @@ Unicode, safe SGR sequences, newlines, tabs, and HTTP(S) terminal hyperlinks
 are retained, while unsafe controls are removed. If no effect or color is
 selected, `style()` returns only that sanitized text.
 
+## Animations
+
+Tuiloom animates menus, status bars, and content panels on one monotonic
+**active-time** timeline per menu. The timeline pauses when a child menu covers
+it and resumes at the same phase. An `AnimationFrame` contains `elapsed` seconds
+and an `index` at the source's requested rate. If rendering falls behind, the
+next callback receives the current index; missed frames are skipped.
+
+Use `AnimatedText(fallback, renderer, fps=12)` wherever a menu title,
+description, footer message, command label, or choice-option label accepts a
+string. It is a `str` subclass: code reading a label still gets its static
+fallback, while the menu displays `renderer(frame)`. A renderer may return safe
+ANSI styling made with `style()`. The same `AnimatedText` instance used in
+several menu fields is evaluated once per image. Replace the field or command
+label with a plain string to stop its animation.
+
+```python
+from tuiloom import AnimatedText, AnimationFrame, rainbow_color, style
+
+
+def title(frame: AnimationFrame) -> str:
+    color = rainbow_color(frame.elapsed, period=2.1)
+    return style("Fly-in", bold=True, foreground=color)
+
+
+menu.display_state.title = AnimatedText("Fly-in", title, fps=15)
+```
+
+`StatusBar.animated(renderer, fps=12)` calls `renderer(width, frame)` on the UI
+thread. `ScreenContent.animated(renderer, fps=12, min_width=None,
+min_height=None)` calls `renderer(size, frame)` on the panel's worker. They return
+the same types as their non-animated counterparts: `str` for status, and `str`
+or `list[str]` for content. Menu and status callbacks must be fast and
+non-blocking. Panel calls are serialized; if one takes too long, pending frames
+coalesce to the latest size and time. Replaced and removed sources cannot
+publish stale results. `ContentPanel.refresh()` also forces an animated panel
+to evaluate its current frame.
+
+The `fps` argument accepts a finite number greater than zero and at most 60.
+It is an upper bound, not a guarantee of terminal writes: unchanged output is
+cached, and a slow callback or terminal can lower the effective rate. All
+animations on a menu share its elapsed time, including sources added later.
+Their `index` values can differ because each source has its own `fps`.
+
+`rainbow_color(elapsed, period=2.1)` returns an RGB tuple cycling smoothly
+through red, orange, yellow, green, blue, indigo, and violet. Pass that tuple
+to `style(foreground=...)` or `style(background=...)`. `"rainbow"` itself is
+not a static color name for `style()`; a string cannot animate without a new
+rendered frame. See [animated_rainbow.py](examples/animated_rainbow.py) for a
+complete three-surface example.
+
 ## Terminal hyperlinks
 
 ```python
@@ -1248,6 +1334,8 @@ All supported imports come directly from `tuiloom`:
 
 ```python
 from tuiloom import (
+    AnimatedText,
+    AnimationFrame,
     AutoScrollMode,
     ChoiceCallback,
     ChoiceContext,
@@ -1274,6 +1362,7 @@ from tuiloom import (
     TextColor,
     display_width,
     hyperlink,
+    rainbow_color,
     style,
 )
 ```
@@ -1300,6 +1389,30 @@ type TextColor = str | int | tuple[int, int, int]
 
 `AutoScrollMode | None` is used where automatic scrolling may be disabled.
 
+### `AnimationFrame`, `AnimatedText`, and `rainbow_color`
+
+```text
+AnimationFrame(elapsed: float, index: int)
+AnimatedText(
+    fallback: str,
+    renderer: Callable[[AnimationFrame], str],
+    *,
+    fps: float = 12,
+) -> AnimatedText
+rainbow_color(elapsed: float, *, period: float = 2.1) -> tuple[int, int, int]
+```
+
+`AnimationFrame` is immutable. `elapsed` is the active number of seconds since
+the menu runtime began, and `index` is the integer frame number for that
+source's rate. `AnimatedText` is an immutable `str` subclass that displays its
+renderer output in menus and retains `fallback` as its ordinary string value.
+The callback runs on the UI thread once per source and index, must return a
+string, and must not block. Its output passes through the existing safe ANSI
+and Unicode layout pipeline. `rainbow_color()` interpolates between seven RGB
+stops and returns to red after each `period`; elapsed must be finite and
+non-negative, period finite and positive. See [Animations](#animations) for
+lifecycle and scheduling behavior.
+
 ### `ScreenContent` and `ContentSize`
 
 `ContentSize` is a frozen dataclass with integer `width` and `height` fields,
@@ -1318,6 +1431,13 @@ ScreenContent.responsive(
     min_height: int | None = None,
     refresh_mode: ContentRefreshMode = "resize",
 ) -> ScreenContent
+ScreenContent.animated(
+    renderer: Callable[[ContentSize, AnimationFrame], str | list[str]],
+    *,
+    fps: float = 12,
+    min_width: int | None = None,
+    min_height: int | None = None,
+) -> ScreenContent
 ```
 
 Direct construction raises `TypeError`. `lines()` copies its list into an
@@ -1329,6 +1449,11 @@ rather than physical panel allocation. Its refresh mode is `"resize"` or
 `"continuous"`. See [Screen content](#screen-content) for replacement and refresh
 timing.
 
+Animated callbacks use the same size rules as responsive callbacks. They run
+on a separate panel worker at their requested maximum rate and receive the
+menu's active-time frame. `ContentPanel.refresh()` forces either a responsive
+or animated snapshot.
+
 ### `StatusBar`
 
 An immutable current-state configuration created through named factories:
@@ -1337,6 +1462,9 @@ An immutable current-state configuration created through named factories:
 StatusBar.static(text: str) -> StatusBar
 StatusBar.dynamic(renderer: Callable[[], str]) -> StatusBar
 StatusBar.responsive(renderer: Callable[[int], str]) -> StatusBar
+StatusBar.animated(
+    renderer: Callable[[int, AnimationFrame], str], *, fps: float = 12
+) -> StatusBar
 ```
 
 Direct construction raises `TypeError`. `static()` requires a string; dynamic
@@ -1446,12 +1574,18 @@ row within the expanded choice, and `hover_message` is a registered message key.
 The menu validates option rows and message keys when the choice is added.
 
 Obtain a `MenuChoice` from `add_choice()`. It extends `MenuCommand` with read-only
-`options`, `rows`, `selected_index`, `selected_option`, `selected_label`, and
-`on_select`. `selected_option` is a `ChoiceOption`; `selected_label` is its text.
+`options`, `rows`, `vertical`, `selected_index`, `selected_option`, `selected_label`, and
+`on_select`. Before confirmation, `selected_index`, `selected_option`, and
+`selected_label` are `None`. After confirmation, `selected_option` is a
+`ChoiceOption` and `selected_label` is its text.
+In vertical mode, `rows` equals the number of options.
+For an animated option, `selected_label` returns its fallback without invoking
+the animation callback.
 `on_select` receives `ChoiceContext`. Its inherited `callback` receives
 `CommandContext` and adapts it to `on_select` using the currently committed
 option and the triggering binding. It does not change the selection or open the
-chooser. Use `set_choice_callback()` to replace `on_select`.
+chooser. Calling it before any option is selected raises `RuntimeError`. Use
+`set_choice_callback()` to replace `on_select`.
 
 ### `MenuCommand`
 
@@ -1560,8 +1694,9 @@ sentinel, not a value callers need to import.
 the expanded bounds. See [Collapsible content panels](#collapsible-content-panels)
 for allocation and runtime behavior. These methods can be called before or
 during application execution.
-`refresh()` forces a responsive evaluation and raises `RuntimeError` for other
-content variants. Calling a mutation method after removal raises `ValueError`.
+`refresh()` forces a responsive or animated evaluation and raises `RuntimeError`
+for other content variants. Calling a mutation method after removal raises
+`ValueError`.
 
 ### `TerminalApp`
 
@@ -1751,7 +1886,8 @@ add_choice(
     on_select: ChoiceCallback,
     *,
     rows: int = 1,
-    selected_index: int = 0,
+    vertical: bool = False,
+    selected_index: int | None = None,
     on_hover: CommandCallback | None = None,
     position: int | None = None,
 ) -> MenuChoice
@@ -1773,8 +1909,13 @@ Invalid positions raise `TypeError` or `ValueError`; foreign submenus raise
 the application's navigation stack without starting another application loop.
 
 `add_choice()` validates a nonempty set of `ChoiceOption` objects, positive
-`rows`, each option's row, and the initial `selected_index` before registration.
+`rows`, each option's row, and any initial `selected_index` before registration.
+The default `None` leaves all options unchecked; pass `selected_index=0` to
+check the first option initially.
+With `vertical=True`, it places each option on its own logical row and rejects
+`rows>1` or a nonzero option `row`. `vertical` must be a bool.
 `set_choice_index()` changes the committed option without invoking `on_select`.
+It requires a valid integer index and cannot clear a confirmed selection.
 `set_choice_callback()` replaces that callback without invoking it or changing
 the selection. Invalid indices/layouts and foreign or removed handles raise
 `ValueError`; non-callable callbacks raise `TypeError`.

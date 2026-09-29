@@ -7,6 +7,8 @@ callback execution metadata is supplied separately through ``CommandContext``.
 
 from dataclasses import dataclass, field
 
+from tuiloom.animation import TextSource
+
 
 @dataclass
 class MenuDisplay:
@@ -27,13 +29,16 @@ class MenuDisplay:
         menu_name: Mutable ``str`` name used in contextual messages, independent
             of global menu identity; need not be globally unique. Has no default.
         title: Mutable ``str`` heading displayed in the menu box; has no default.
+            An ``AnimatedText`` is also accepted because it subclasses ``str``.
         width: Mutable positive ``int`` inner width in terminal cells, excluding
             borders, or ``None`` for automatic sizing. Defaults to ``None``;
             bool values are rejected. It is a minimum unless ``strict_width`` is
             true. Invalid assignments leave the previous value unchanged.
         text: Mutable ``str`` descriptive text above commands, or ``None`` by
-            default. Text can span multiple lines and wraps to the inner width.
+            default. An ``AnimatedText`` is also accepted. Text can span
+            multiple lines and wraps to the inner width.
         message: Mutable ``str`` persistent footer text, or ``None`` by default.
+            An ``AnimatedText`` is also accepted.
             Option hover previews may temporarily cover it without changing it.
             Assignment clears a registered message's identity, even when the
             visible text is unchanged. Use ``menu.show_message()`` to retain a
@@ -50,10 +55,10 @@ class MenuDisplay:
     """
 
     menu_name: str
-    title: str
+    title: TextSource
     width: int | None = None
-    text: str | None = None
-    message: str | None = None
+    text: TextSource | None = None
+    message: TextSource | None = None
     strict_width: bool = False
     _active_message_key: str | None = field(
         default=None, init=False, repr=False, compare=False

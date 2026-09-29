@@ -30,6 +30,7 @@ Attributes:
 """
 
 from tuiloom._message_registry import MessageKey
+from tuiloom.animation import AnimatedText, AnimationFrame, rainbow_color
 from tuiloom.command import (
     ChoiceCallback,
     ChoiceContext,
@@ -53,6 +54,8 @@ from tuiloom.terminal_app import TerminalApp
 from tuiloom.terminal_menu import TerminalMenu
 
 __all__ = [
+    "AnimatedText",
+    "AnimationFrame",
     "AutoScrollMode",
     "CommandCallback",
     "ChoiceCallback",
@@ -79,5 +82,6 @@ __all__ = [
     "MessageKey",
     "TextColor",
     "display_width",
+    "rainbow_color",
     "style",
 ]

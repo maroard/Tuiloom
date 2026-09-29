@@ -18,7 +18,7 @@ from tuiloom.render.terminal_text import (
 )
 from tuiloom.screen_content import ScreenContent
 
-type RendererState = Literal["static", "streaming", "dynamic", "responsive"]
+type RendererState = Literal["static", "streaming", "dynamic", "responsive", "animated"]
 
 
 class _StreamingTextBuffer:
@@ -278,6 +278,8 @@ class ContentRenderer:
             self.state = "dynamic"
         elif content._kind == "responsive":
             self.state = "responsive"
+        elif content._kind == "animated":
+            self.state = "animated"
         else:
             raise RuntimeError(f"Unknown ScreenContent kind: {content._kind}")
 
@@ -315,8 +317,8 @@ class ContentRenderer:
         self.rendered_content.revision += 1
 
     def replace_generated_content(self, content: str | list[str]) -> None:
-        """Replace dynamic or responsive content when its value changed."""
-        if self.state not in ("dynamic", "responsive"):
+        """Replace dynamic, responsive, or animated content when its value changed."""
+        if self.state not in ("dynamic", "responsive", "animated"):
             raise RuntimeError("Cannot replace generated content on this renderer")
 
         previous = (

@@ -3,15 +3,17 @@ from queue import Full, Queue
 from threading import Event, Lock, Thread
 from typing import Literal, cast
 
+from tuiloom.animation import AnimationFrame
 from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.screen_content import ContentSize
 
-type WorkerKind = Literal["streaming", "dynamic", "responsive"]
+type WorkerKind = Literal["streaming", "dynamic", "responsive", "animated"]
 type WorkerSource = (
     Iterator[str]
     | Callable[[], str | list[str]]
     | Callable[[ContentSize], str | list[str]]
+    | Callable[[ContentSize, AnimationFrame], str | list[str]]
 )
 
 
@@ -42,6 +44,7 @@ class SourceWorker:
         self._dynamic_requested = Event()
         self._responsive_lock = Lock()
         self._responsive_request: tuple[int, ContentSize] | None = None
+        self._animated_request: tuple[int, ContentSize, AnimationFrame] | None = None
         self._active_request_id: int | None = None
         self._thread = Thread(target=self._run)
 
@@ -88,6 +91,16 @@ class SourceWorker:
             self._responsive_request = (request_id, size)
         self._dynamic_requested.set()
 
+    def request_animated_update(
+        self, request_id: int, size: ContentSize, frame: AnimationFrame
+    ) -> None:
+        """Coalesce animated work to the newest numbered size and frame."""
+        if self.kind != "animated":
+            return
+        with self._responsive_lock:
+            self._animated_request = (request_id, size, frame)
+        self._dynamic_requested.set()
+
     def _run(self) -> None:
         """Dispatch the configured source and transport its failures."""
         try:
@@ -95,9 +108,16 @@ class SourceWorker:
                 self._run_iterator(cast(Iterator[str], self.source))
             elif self.kind == "dynamic":
                 self._run_dynamic(cast(Callable[[], str | list[str]], self.source))
-            else:
+            elif self.kind == "responsive":
                 self._run_responsive(
                     cast(Callable[[ContentSize], str | list[str]], self.source)
+                )
+            else:
+                self._run_animated(
+                    cast(
+                        Callable[[ContentSize, AnimationFrame], str | list[str]],
+                        self.source,
+                    )
                 )
 
         except BaseException as error:
@@ -196,6 +216,60 @@ class SourceWorker:
                 ):
                     raise TypeError(
                         "Responsive content must be str or list[str], "
+                        f"got {type(content).__name__}"
+                    )
+            except BaseException as error:
+                if not self._publish(
+                    SourceEvent(
+                        panel=self.panel,
+                        generation=self.generation,
+                        kind="error",
+                        request_id=request_id,
+                        error=error,
+                        traceback=error.__traceback__,
+                    )
+                ):
+                    return
+                self._active_request_id = None
+                continue
+            if not self._publish(
+                SourceEvent(
+                    self.panel,
+                    self.generation,
+                    "data",
+                    content,
+                    request_id=request_id,
+                )
+            ):
+                return
+            self._active_request_id = None
+
+    def _run_animated(
+        self,
+        source: Callable[[ContentSize, AnimationFrame], str | list[str]],
+    ) -> None:
+        """Evaluate only the latest pending animated request serially."""
+        while not self._cancelled.is_set():
+            self._dynamic_requested.wait()
+            self._dynamic_requested.clear()
+            if self._cancelled.is_set():
+                return
+            with self._responsive_lock:
+                request = self._animated_request
+                self._animated_request = None
+            if request is None:
+                continue
+            request_id, size, frame = request
+            self._active_request_id = request_id
+            try:
+                content = source(size, frame)
+                if (
+                    not isinstance(content, (str, list))
+                    or isinstance(content, list)
+                    and not all(isinstance(line, str) for line in content)
+                ):
+                    raise TypeError(
+                        "Animated content must be str or list[str], "
                         f"got {type(content).__name__}"
                     )
             except BaseException as error:

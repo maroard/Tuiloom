@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from wcwidth import iter_graphemes
 
 from tuiloom._message_registry import MessageKey
+from tuiloom.animation import TextSource
 from tuiloom.choice_layout import ChoiceLine, choice_lines
 from tuiloom.command import (
     ChoiceCallback,
@@ -441,10 +442,10 @@ class TerminalMenu:
         self._invalidate_renderer()
 
     def _refresh_content_panel(self, panel: ContentPanel) -> None:
-        """Force one responsive panel to produce a new value."""
+        """Force one responsive or animated panel to produce a new value."""
         self._require_content_panel(panel)
-        if panel._content._kind != "responsive":
-            raise RuntimeError("Only responsive content can be refreshed")
+        if panel._content._kind not in ("responsive", "animated"):
+            raise RuntimeError("Only responsive or animated content can be refreshed")
         panel._runtime.responsive_refresh_pending = True
         if self._running and self._event_loop is not None:
             self._event_loop.refresh_content_panel(panel)
@@ -544,7 +545,7 @@ class TerminalMenu:
 
     def add_command(
         self,
-        label: str,
+        label: TextSource,
         callback: CommandCallback,
         *,
         on_hover: CommandCallback | None = None,
@@ -597,12 +598,13 @@ class TerminalMenu:
 
     def add_choice(
         self,
-        label: str,
+        label: TextSource,
         options: list[ChoiceOption] | tuple[ChoiceOption, ...],
         on_select: ChoiceCallback,
         *,
         rows: int = 1,
-        selected_index: int = 0,
+        vertical: bool = False,
+        selected_index: int | None = None,
         on_hover: CommandCallback | None = None,
         position: int | None = None,
     ) -> MenuChoice:
@@ -625,8 +627,13 @@ class TerminalMenu:
                 triggering key binding, together with app, menu and choice.
             rows: Positive count of logical option rows. Defaults to ``1``;
                 rendering may wrap each logical row to fit available width.
-            selected_index: Initial committed zero-based index in ``options``.
-                Defaults to ``0``; construction does not invoke ``on_select``.
+                Must remain ``1`` when ``vertical=True``.
+            vertical: Place each option on its own logical row in the given
+                order. Defaults to ``False``. Requires every option's ``row``
+                to be ``0``; long labels may still wrap physically.
+            selected_index: Initial committed zero-based index in ``options``,
+                or ``None`` to start without a selection. Defaults to ``None``;
+                construction does not invoke ``on_select``.
             on_hover: Optional command-level callable taking ``CommandContext``
                 when keyboard selection reaches the choice label, including
                 initial opening with ``binding=None``. Option-level previews
@@ -641,15 +648,19 @@ class TerminalMenu:
             ``selected_index``, ``selected_option`` and ``selected_label``.
 
         Raises:
-            TypeError: If ``on_select`` or ``on_hover`` is not callable, or
-                ``position`` is neither an integer nor ``None`` (bool excluded).
+            TypeError: If ``vertical`` is not a bool, ``on_select`` or
+                ``on_hover`` is not callable, or ``position`` is neither an
+                integer nor ``None`` (bool excluded).
             ValueError: If options are empty or contain non-``ChoiceOption``
                 objects, rows or option rows are invalid, ``selected_index`` is
-                invalid, or ``position`` is outside the insertion range.
+                invalid, ``vertical`` is combined with explicit rows, or
+                ``position`` is outside the insertion range.
             KeyError: If an option's ``hover_message`` key is not registered.
         """
         if not callable(on_select):
             raise TypeError("on_select must be callable")
+        if not isinstance(vertical, bool):
+            raise TypeError("vertical must be a bool")
         insert_at = self._validate_position(position, allow_end=True)
         if isinstance(rows, bool) or not isinstance(rows, int) or rows < 1:
             raise ValueError("rows must be a positive integer")
@@ -657,6 +668,8 @@ class TerminalMenu:
             not isinstance(option, ChoiceOption) for option in options
         ):
             raise ValueError("options must be a nonempty list of ChoiceOption")
+        if vertical and (rows != 1 or any(option.row != 0 for option in options)):
+            raise ValueError("vertical choices cannot use explicit option rows")
         if any(
             isinstance(option.row, bool)
             or not isinstance(option.row, int)
@@ -665,7 +678,7 @@ class TerminalMenu:
             for option in options
         ):
             raise ValueError("option row is outside declared rows")
-        if (
+        if selected_index is not None and (
             isinstance(selected_index, bool)
             or not isinstance(selected_index, int)
             or not 0 <= selected_index < len(options)
@@ -680,7 +693,14 @@ class TerminalMenu:
             else None
         )
         choice = MenuChoice(
-            self, label, tuple(options), rows, selected_index, on_select, on_hover
+            self,
+            label,
+            tuple(options),
+            len(options) if vertical else rows,
+            selected_index,
+            on_select,
+            on_hover,
+            vertical,
         )
         self._commands.insert(insert_at, choice)
         if selected is not None:
@@ -740,7 +760,7 @@ class TerminalMenu:
     def add_submenu(
         self,
         submenu: TerminalMenu,
-        label: str,
+        label: TextSource,
         *,
         on_hover: CommandCallback | None = None,
         position: int | None = None,
@@ -780,7 +800,7 @@ class TerminalMenu:
             position=position,
         )
 
-    def set_command_label(self, command: MenuCommand, label: str) -> None:
+    def set_command_label(self, command: MenuCommand, label: TextSource) -> None:
         """Rename a registered command or choice while preserving its identity.
 
         Args:
@@ -1460,7 +1480,8 @@ class TerminalMenu:
         renderer = self._menu_renderer or MenuRenderer(self)
         renderer.update()
         width = renderer.effective_width(get_terminal_size().columns - 2)
-        return choice_lines(choice, width)
+        labels = tuple(renderer.resolve_text(option.label) for option in choice.options)
+        return choice_lines(choice, width, labels)
 
     def _hover_current(self, binding: KeyBinding | None) -> None:
         choice = self._active_choice()
@@ -1678,7 +1699,9 @@ class TerminalMenu:
             return
         if isinstance(command, MenuChoice):
             if self._choice_index is None:
-                self._choice_index = command.selected_index
+                self._choice_index = (
+                    command.selected_index if command.selected_index is not None else 0
+                )
                 self._hover_current(binding)
             else:
                 index = self._choice_index

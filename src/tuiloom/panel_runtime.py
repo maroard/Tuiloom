@@ -30,6 +30,7 @@ class PanelRuntime:
     pending_content: ScreenContent | None = None
     dynamic_in_flight: bool = False
     next_dynamic_at: float = 0.0
+    last_animation_index: int | None = None
     effective_size: ContentSize | None = None
     responsive_request_id: int = 0
     responsive_refresh_pending: bool = False
@@ -68,6 +69,7 @@ class PanelRuntime:
         self.renderer = ContentRenderer(content)
         self.viewport = None
         self.effective_size = None
-        self.responsive_refresh_pending = content._kind == "responsive"
+        self.responsive_refresh_pending = content._kind in ("responsive", "animated")
+        self.last_animation_index = None
         self.smart_auto_scroll_active = True
         self.pending_auto_scroll = None

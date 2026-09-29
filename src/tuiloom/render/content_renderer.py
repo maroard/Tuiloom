@@ -2,15 +2,19 @@
 
 from typing import Literal
 
-from wcwidth import iter_graphemes, iter_sequences, propagate_sgr
+from wcwidth import iter_graphemes, iter_sequences
 
 from tuiloom.render.rendered_content import RenderedContent
 from tuiloom.render.terminal_text import (
+    CLOSE_HYPERLINK,
     RESET_SGR,
     display_width,
+    expand_tabs,
+    hyperlink_continuation,
     normalize_line,
     normalize_text_lines,
     sanitize_terminal_text,
+    sgr_continuation,
 )
 from tuiloom.screen_content import ScreenContent
 
@@ -23,16 +27,20 @@ class _StreamingTextBuffer:
     def __init__(self) -> None:
         """Create an empty streaming text buffer."""
         self._completed_lines: list[str] = []
-        self._completed_widths: list[int] = []
+        self._completed_max_width = 0
         self._active_fragments: list[str] = []
         self._active_width = 0
+        self._active_has_content = False
         self._raw_tail = ""
+        self._sequence_tail = ""
         self._style_prefix = ""
+        self._hyperlink_prefix = ""
+        self._active_has_sgr = False
         self._pending_carriage_return = False
 
     def append(self, chunks: list[str]) -> tuple[list[str], int]:
         """Append chunks and return current normalized lines and width."""
-        chunk_text = "".join(chunks)
+        chunk_text = self._take_stable_text(self._sequence_tail + "".join(chunks))
 
         if self._pending_carriage_return and not chunk_text:
             return self._render()
@@ -68,6 +76,57 @@ class _StreamingTextBuffer:
         """Return final stream geometry without inventing a trailing line."""
         return self._render()
 
+    def _take_stable_text(self, text: str) -> str:
+        """Retain incomplete escapes and sanitize complete terminal tokens."""
+        self._sequence_tail = ""
+        stable: list[str] = []
+        position = 0
+        while position < len(text):
+            escape = text.find("\x1b", position)
+            if escape < 0:
+                stable.append(text[position:])
+                break
+            stable.append(text[position:escape])
+            end = self._sequence_end(text, escape)
+            if end is None:
+                self._sequence_tail = text[escape:]
+                break
+            stable.append(sanitize_terminal_text(text[escape:end]))
+            position = end
+        return "".join(stable)
+
+    @staticmethod
+    def _sequence_end(text: str, start: int) -> int | None:
+        """Find a complete CSI, control string, or ordinary ESC sequence."""
+        position = start + 1
+        if position == len(text):
+            return None
+        introducer = text[position]
+        position += 1
+        if introducer in "]PX^_":
+            while position < len(text):
+                if text.startswith("\x1b\\", position):
+                    return position + 2
+                if introducer == "]" and text[position] == "\x07":
+                    return position + 1
+                position += 1
+            return None
+        if introducer == "[":
+            while position < len(text):
+                character = text[position]
+                if "@" <= character <= "~":
+                    return position + 1
+                if not " " <= character <= "?":
+                    # An invalid CSI ends before the next ordinary character.
+                    return position
+                position += 1
+            return None
+        if " " <= introducer <= "/":
+            while position < len(text) and " " <= text[position] <= "/":
+                position += 1
+            return position + 1 if position < len(text) else None
+        return position
+
     def _consume_progress_part(self, part: str, retain_tail: bool) -> None:
         """Consume text while treating carriage returns as line replacement."""
         segments = part.split("\r")
@@ -85,89 +144,110 @@ class _StreamingTextBuffer:
         """Discard the unfinished line before a carriage-return rewrite."""
         self._active_fragments = []
         self._active_width = 0
+        self._active_has_content = False
         self._raw_tail = ""
         self._style_prefix = ""
+        self._hyperlink_prefix = ""
+        self._active_has_sgr = False
 
     def _consume_part(self, part: str, retain_tail: bool) -> None:
         """Normalize stable sequences while retaining an extendable suffix."""
         if not part:
             return
+        safe = sanitize_terminal_text(part)
+        if retain_tail:
+            stable, self._raw_tail = self._split_grapheme_tail(safe)
+        else:
+            stable = safe
+        if stable:
+            self._append_fragment(stable)
 
-        sequences = list(iter_sequences(part))
+    @staticmethod
+    def _split_grapheme_tail(text: str) -> tuple[str, str]:
+        """Retain the last grapheme, including styles embedded in its characters."""
+        if "\x1b" not in text:
+            graphemes = list(iter_graphemes(text))
+            tail = graphemes[-1] if graphemes else ""
+            return (text[: -len(tail)], tail) if tail else (text, "")
+        plain: list[str] = []
+        positions: list[int] = []
+        position = 0
+        for value, is_sequence in iter_sequences(text):
+            if not is_sequence:
+                plain.append(value)
+                positions.extend(range(position, position + len(value)))
+            position += len(value)
+        visible = "".join(plain)
+        graphemes = list(iter_graphemes(visible))
+        if not graphemes:
+            return text, ""
+        boundary = positions[len(visible) - len(graphemes[-1])]
+        return text[:boundary], text[boundary:]
 
-        for index, (value, is_sequence) in enumerate(sequences):
-            is_last = index == len(sequences) - 1
-
-            if is_sequence:
-                if value.startswith("\x1b[") and not value.endswith("m") and is_last:
-                    self._raw_tail = value
-                    continue
-
-                safe_sequence = sanitize_terminal_text(value)
-                if not safe_sequence:
-                    continue
-
-                self._active_fragments.append(safe_sequence)
-                self._update_style_prefix(safe_sequence)
-                continue
-
-            graphemes = list(iter_graphemes(value))
-
-            if retain_tail and is_last and graphemes:
-                self._raw_tail = graphemes.pop()
-
-            if graphemes:
-                self._append_plain_fragment("".join(graphemes))
-
-    def _append_plain_fragment(self, text: str) -> None:
-        """Append one stable plain fragment with cached display width."""
-        normalized = normalize_line(text)
+    def _append_fragment(self, text: str) -> None:
+        """Append one stable styled fragment with cached display width."""
+        normalized = expand_tabs(text, self._active_width)
+        if "\x1b" not in normalized:
+            normalized = normalize_line(normalized)
         self._active_fragments.append(normalized)
+        self._active_has_content = True
         self._active_width += display_width(normalized)
+        for value, is_sequence in iter_sequences(text):
+            if is_sequence:
+                self._update_style_prefix(value)
 
     def _update_style_prefix(self, sequence: str) -> None:
-        """Track the SGR state that must continue onto the next line."""
-        next_prefix = propagate_sgr([self._style_prefix + sequence, ""])[1]
-
-        if next_prefix.endswith(RESET_SGR):
-            next_prefix = next_prefix[: -len(RESET_SGR)]
-
-        self._style_prefix = next_prefix
+        """Track the SGR and hyperlink state continued onto the next line."""
+        if not sequence.startswith("\x1b["):
+            self._hyperlink_prefix = hyperlink_continuation(
+                sequence, self._hyperlink_prefix
+            )
+            return
+        self._active_has_sgr = True
+        self._style_prefix = sgr_continuation(sequence, self._style_prefix)
 
     def _commit_line(self) -> None:
         """Commit the active line and carry its current SGR state."""
         if self._raw_tail:
-            self._append_plain_fragment(self._raw_tail)
+            self._append_fragment(self._raw_tail)
             self._raw_tail = ""
 
-        line = "".join(self._active_fragments)
-
-        if self._style_prefix and not line.endswith(RESET_SGR):
-            line += RESET_SGR
+        line = self._close_line("".join(self._active_fragments))
 
         self._completed_lines.append(line)
-        self._completed_widths.append(self._active_width)
-        self._active_fragments = [self._style_prefix] if self._style_prefix else []
+        self._completed_max_width = max(self._completed_max_width, self._active_width)
+        prefix = self._hyperlink_prefix + self._style_prefix
+        self._active_fragments = [prefix] if prefix else []
+        self._active_has_sgr = bool(self._style_prefix)
         self._active_width = 0
+        self._active_has_content = False
+
+    def _close_line(self, line: str, tail: str = "") -> str:
+        """Close active terminal styles without reparsing the growing line."""
+        hyperlink = hyperlink_continuation(tail, self._hyperlink_prefix)
+        has_sgr = self._active_has_sgr or "\x1b[" in tail
+        if hyperlink:
+            line += CLOSE_HYPERLINK
+        if has_sgr and not line.endswith(RESET_SGR):
+            line += RESET_SGR
+        return line
 
     def _render(self) -> tuple[list[str], int]:
         """Build the visible line list from committed lines and current tail."""
         lines = self._completed_lines.copy()
-        widths = self._completed_widths.copy()
+        width = self._completed_max_width
 
-        if self._active_fragments or self._raw_tail or not lines:
+        if self._active_has_content or self._raw_tail or not lines:
             tail = "".join(self._active_fragments)
 
-            if self._raw_tail:
-                tail += normalize_line(self._raw_tail)
+            visible_tail = expand_tabs(self._raw_tail, self._active_width)
+            if "\x1b" not in visible_tail:
+                visible_tail = normalize_line(visible_tail)
+            tail += visible_tail
+            lines.append(self._close_line(tail, self._raw_tail))
+            width = max(width, self._active_width + display_width(visible_tail))
 
-            if self._style_prefix and not tail.endswith(RESET_SGR):
-                tail += RESET_SGR
-
-            lines.append(tail)
-            widths.append(self._active_width + display_width(self._raw_tail))
-
-        return lines, max(widths, default=0)
+        return lines, width
 
 
 class ContentRenderer:

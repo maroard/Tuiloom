@@ -67,7 +67,6 @@ class OutputCapture:
         self._stderr: TextIO | None = None
         self._routed_stdout: TextIO | None = None
         self._routed_stderr: TextIO | None = None
-        self._deferred_uninstall = False
 
     @contextmanager
     def install(self) -> Generator[None, None, None]:
@@ -91,12 +90,7 @@ class OutputCapture:
         try:
             yield
         finally:
-            with self._lock:
-                keep_installed = self._deferred_uninstall and self._writer is not None
-                if not keep_installed:
-                    self._owner_thread_id = None
-            if not keep_installed:
-                self._uninstall()
+            self._uninstall()
 
     @contextmanager
     def route_background_output(
@@ -117,19 +111,6 @@ class OutputCapture:
             with self._lock:
                 if self._writer is writer:
                     self._writer = None
-                deferred = self._deferred_uninstall
-            if deferred:
-                self._uninstall()
-
-    def detach_background_output(self) -> None:
-        """Discard future task writes and keep routing until its thread exits."""
-        with self._lock:
-            if not self._installed:
-                raise RuntimeError("Output capture is not installed")
-            if self._writer is None:
-                return
-            self._writer = lambda text: len(text)
-            self._deferred_uninstall = True
 
     def _uninstall(self) -> None:
         """Restore streams if they still point at this capture's routers."""
@@ -145,7 +126,6 @@ class OutputCapture:
             self._writer = None
             self._owner_thread_id = None
             self._installed = False
-            self._deferred_uninstall = False
             self._stdout = None
             self._stderr = None
             self._routed_stdout = None

@@ -10,8 +10,8 @@ import pytest
 from tuiloom import (
     ContentPanel,
     KeyBinding,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     TerminalApp,
     TerminalMenu,
 )
@@ -24,7 +24,7 @@ from tuiloom.render.menu_renderer import MenuRenderer
 
 def make_main() -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     menu.add_content_panel(ScreenContent.static("base"))
     app.set_main_menu(menu)
     menu._running = True
@@ -72,7 +72,7 @@ class FakePanelLoop:
 
     def attach(self, panel: ContentPanel, work: FakeWork) -> None:
         self.work[panel] = work
-        panel._worker = cast(SourceWorker, work)
+        panel._runtime.worker = cast(SourceWorker, work)
 
 
 def install_fake_operations(
@@ -123,10 +123,10 @@ def attach_output_task(
     return panel
 
 
-def test_exit_view_uses_normal_rows_without_mutating_screen_context() -> None:
+def test_exit_view_uses_normal_rows_without_mutating_display_state() -> None:
     _, menu = make_main()
     install_fake_operations(menu, "Streaming")
-    menu.screen_context.message = "Previous"
+    menu.display_state.message = "Previous"
 
     menu.stop()
 
@@ -136,8 +136,8 @@ def test_exit_view_uses_normal_rows_without_mutating_screen_context() -> None:
     assert "> Force quit" in rendered
     assert "  Wait and quit" in rendered
     assert "  Cancel" in rendered
-    assert menu.screen_context.title == "Main"
-    assert menu.screen_context.message == "Previous"
+    assert menu.display_state.title == "Main"
+    assert menu.display_state.message == "Previous"
 
 
 def test_exit_view_uses_arrows_enter_and_ignores_numbers() -> None:
@@ -227,7 +227,7 @@ def test_wait_and_quit_runs_callback_on_ui_thread_then_stops() -> None:
 
 def test_hidden_exit_dialog_cannot_stop_menu_opened_by_completion_callback() -> None:
     app, root = make_main()
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     release = Event()
     app._menu_stack = [root]
     app._initialized_menus = [root]
@@ -263,7 +263,7 @@ def test_hidden_exit_dialog_cannot_stop_menu_opened_by_completion_callback() -> 
 def test_cancel_exit_restores_previous_message_and_normal_state() -> None:
     app, menu = make_main()
     release = Event()
-    menu.screen_context.message = "Previous"
+    menu.display_state.message = "Previous"
     with app._output_capture.install():
         session = app._start_output_task(
             menu,
@@ -276,7 +276,7 @@ def test_cancel_exit_restores_previous_message_and_normal_state() -> None:
         menu.stop()
         press(menu, "escape")
         assert menu._task_exit is None
-        assert menu.screen_context.message == "Previous"
+        assert menu.display_state.message == "Previous"
         assert menu._running
         release.set()
         assert session.join(1)
@@ -383,7 +383,7 @@ def test_wait_and_quit_allows_source_to_finish_without_cancelling_it() -> None:
 
 def test_root_exit_aggregates_active_panels_from_hidden_initialized_menus() -> None:
     app, root = make_main()
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     root_loop, (root_work,) = install_fake_operations(root, "Root work")
     child._running = True
     child_loop, (child_work,) = install_fake_operations(child, "Child work")
@@ -417,7 +417,7 @@ def test_public_pop_at_root_offers_exit_choices_for_active_work() -> None:
     assert app._menu_stack == [root]
 
 
-def test_run_with_output_adds_a_strict_temporary_panel() -> None:
+def test_start_output_task_adds_a_strict_temporary_panel() -> None:
     app, menu = make_main()
     base = menu.content_panels[0]
     added: list[ContentPanel] = []
@@ -428,7 +428,7 @@ def test_run_with_output_adds_a_strict_temporary_panel() -> None:
 
     menu._event_loop = Loop()  # type: ignore[assignment]
     with app._output_capture.install():
-        menu.run_with_output(
+        menu.start_output_task(
             lambda: 7,
             on_success=lambda result: None,
             on_error=lambda error: None,
@@ -443,19 +443,19 @@ def test_run_with_output_adds_a_strict_temporary_panel() -> None:
         assert session.join(1)
         app._dispatch_output_task_outcome()
     assert added == [output_panel]
-    assert output_panel._remove_when_finished
+    assert output_panel._runtime.remove_when_finished
     assert base.auto_scroll is None
 
     menu._running = False
     with pytest.raises(RuntimeError, match="active"):
-        menu.run_with_output(
+        menu.start_output_task(
             lambda: None,
             on_success=lambda result: None,
             on_error=lambda error: None,
         )
 
 
-def test_run_with_output_preserves_panel_auto_scroll_when_start_fails(
+def test_start_output_task_preserves_panel_auto_scroll_when_start_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, menu = make_main()
@@ -468,7 +468,7 @@ def test_run_with_output_preserves_panel_auto_scroll_when_start_fails(
 
     monkeypatch.setattr(app, "_start_output_task", fail)
     with pytest.raises(RuntimeError, match="start failed"):
-        menu.run_with_output(
+        menu.start_output_task(
             lambda: None,
             on_success=lambda result: None,
             on_error=lambda error: None,
@@ -476,9 +476,9 @@ def test_run_with_output_preserves_panel_auto_scroll_when_start_fails(
     assert base.auto_scroll == "smart"
 
 
-def test_run_with_output_allows_only_one_task_across_all_menus() -> None:
+def test_start_output_task_allows_only_one_task_across_all_menus() -> None:
     app, root = make_main()
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
 
     class Loop:
         def add_content_panel(self, panel: ContentPanel) -> None:
@@ -490,13 +490,13 @@ def test_run_with_output_allows_only_one_task_across_all_menus() -> None:
     release = Event()
 
     with app._output_capture.install():
-        root.run_with_output(
+        root.start_output_task(
             lambda: release.wait(1),
             on_success=lambda result: None,
             on_error=lambda error: None,
         )
         with pytest.raises(RuntimeError, match="already running"):
-            child.run_with_output(
+            child.start_output_task(
                 lambda: None,
                 on_success=lambda result: None,
                 on_error=lambda error: None,

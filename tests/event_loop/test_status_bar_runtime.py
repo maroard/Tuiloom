@@ -95,11 +95,11 @@ def test_live_static_status_and_responsive_refresh_request_render(
         loop.close()
 
 
-def test_hidden_status_producers_are_not_evaluated_or_scheduled(
+def test_hidden_menu_keeps_status_running_but_covered_menu_does_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     now = 0.0
-    menu, loop, _, _ = make_loop([], clock=lambda: now)
+    menu, loop, _, renderer = make_loop([], clock=lambda: now)
     calls: list[int] = []
     monkeypatch.setattr(
         "tuiloom.render.terminal_renderer.stdout.write", lambda text: None
@@ -112,18 +112,19 @@ def test_hidden_status_producers_are_not_evaluated_or_scheduled(
             return "READY"
 
         menu.set_status_bar(StatusBar.dynamic(dynamic))
-        menu.show = False
+        menu.hide_menu()
         loop.run_once(block=False)
-        assert not calls
-        assert loop._get_wait_timeout() > 1 / 60
-        menu.show = True
-        child = type(menu)(menu.app, menu.screen_context)
+        assert calls == [1]
+        assert renderer._previous_lines is not None
+        assert renderer._previous_lines[-1] == "READY"
+        assert loop._get_wait_timeout() == pytest.approx(1 / 60)
+        child = type(menu)(menu.app, menu.display_state)
         menu.app._menu_stack = [menu, child]
         now = 1 / 60
         loop.run_once(block=False)
-        assert not calls
+        assert calls == [1]
         menu.app._menu_stack = [menu]
         loop.run_once(block=False)
-        assert calls == [1]
+        assert calls == [1, 1]
     finally:
         loop.close()

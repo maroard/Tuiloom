@@ -44,12 +44,12 @@ def test_keymap_mutation_is_atomic_on_system_collision() -> None:
 def test_keymap_rejects_unknown_actions_and_wrong_values() -> None:
     keymap = KeyMap()
     with pytest.raises(KeyError):
-        keymap.set_binding("missing", KeyBinding("m"))
+        keymap.set_binding("missing", KeyBinding("m"))  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         keymap.set_binding("up", "u")  # type: ignore[arg-type]
     assert keymap.action_for(KeyBinding("not-bound")) is None
     with pytest.raises(AttributeError):
-        _ = keymap.missing
+        _ = keymap.missing  # type: ignore[attr-defined]
 
 
 def test_application_global_and_system_collisions_are_atomic() -> None:

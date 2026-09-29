@@ -9,11 +9,11 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 from tuiloom.background_work import BackgroundWork
+from tuiloom.cleanup import run_cleanup
 from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker, WorkerSource
 from tuiloom.input_handler.input_handler import InputHandler
-from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
 from tuiloom.screen_content import ContentSize, ScreenContent
@@ -45,24 +45,57 @@ class EventLoop:
         self._menu_renderer = menu_renderer
         self._terminal_renderer = terminal_renderer
         self._clock = clock
-        self._selector = selector_factory()
-        self._wakeup_reader, self._wakeup_writer = socketpair()
-        self._wakeup_reader.setblocking(False)
-        self._wakeup_writer.setblocking(False)
-        self._selector.register(input_handler.fileno(), EVENT_READ, "input")
-        self._selector.register(self._wakeup_reader, EVENT_READ, "source")
-
-        self._source_events: Queue[SourceEvent] = Queue(maxsize=self._SOURCE_QUEUE_SIZE)
-        self._retiring_panels: list[ContentPanel] = []
-        self._dirty = True
-        now = self._clock()
-        self._next_frame_at = now
-        self._next_state_check_at = now
-        self._terminal_size = get_terminal_size()
         self._closed = False
+        resources: list[Callable[[], object]] = []
+        attempted_panels: list[ContentPanel] = []
+        try:
+            self._selector = selector_factory()
+            resources.append(self._selector.close)
+            self._wakeup_reader, self._wakeup_writer = socketpair()
+            resources.extend((self._wakeup_reader.close, self._wakeup_writer.close))
+            self._wakeup_reader.setblocking(False)
+            self._wakeup_writer.setblocking(False)
+            self._selector.register(input_handler.fileno(), EVENT_READ, "input")
+            self._selector.register(self._wakeup_reader, EVENT_READ, "source")
 
-        for panel in menu.content_panels:
-            self._install_panel_worker(panel)
+            self._source_events: Queue[SourceEvent] = Queue(
+                maxsize=self._SOURCE_QUEUE_SIZE
+            )
+            self._retiring_panels: list[ContentPanel] = []
+            self._dirty = True
+            now = self._clock()
+            self._next_frame_at = now
+            self._next_state_check_at = now
+            self._terminal_size = get_terminal_size()
+
+            for panel in menu.content_panels:
+                attempted_panels.append(panel)
+                self._install_panel_worker(panel)
+        except BaseException as error:
+            self._closed = True
+            workers = tuple(
+                dict.fromkeys(
+                    panel._runtime.worker
+                    for panel in attempted_panels
+                    if panel._runtime.worker is not None
+                )
+            )
+            try:
+                run_cleanup(
+                    (
+                        *(worker.cancel for worker in workers),
+                        *(worker.join for worker in workers),
+                        *resources,
+                    ),
+                    message="Errors while rolling back event-loop initialization",
+                    prior_error=error,
+                )
+            finally:
+                for panel in attempted_panels:
+                    worker = panel._runtime.worker
+                    if worker is not None and not worker.is_alive():
+                        panel._runtime.worker = None
+            raise
 
     def run(self) -> None:
         """Process events until the owning menu stops."""
@@ -111,19 +144,18 @@ class EventLoop:
     def active_work(self) -> BackgroundWork | None:
         """Return source work that currently prevents a safe menu exit."""
         active = self.active_panels
-        return active[0]._worker if active else None
+        return active[0]._runtime.worker if active else None
 
     @property
     def active_panels(self) -> tuple[ContentPanel, ...]:
         """Return logical panels whose work currently blocks safe exit."""
-        active: list[ContentPanel] = []
-        for panel in (*self._menu.content_panels, *self._retiring_panels):
-            worker = panel._worker
-            if worker is None or not worker.is_alive():
-                continue
-            if panel._renderer.state == "streaming" or panel._dynamic_in_flight:
-                active.append(panel)
-        return tuple(dict.fromkeys(active))
+        return tuple(
+            panel
+            for panel in dict.fromkeys(
+                (*self._menu.content_panels, *self._retiring_panels)
+            )
+            if panel._runtime.blocks_exit
+        )
 
     @property
     def retiring_panels(self) -> tuple[ContentPanel, ...]:
@@ -141,22 +173,20 @@ class EventLoop:
         size: ContentSize,
     ) -> None:
         """Record layout geometry and request responsive work when required."""
-        previous = panel._effective_size
-        panel._effective_size = size
-        if panel._renderer.state != "responsive":
+        previous = panel._runtime.effective_size
+        panel._runtime.effective_size = size
+        if panel._runtime.renderer.state != "responsive":
             return
-        if previous != size or panel._responsive_refresh_pending:
-            panel._responsive_refresh_pending = False
+        if previous != size or panel._runtime.responsive_refresh_pending:
             self._request_responsive_update(panel, size)
 
     def refresh_content_panel(self, panel: ContentPanel) -> None:
         """Request an immediate responsive result, if layout is known."""
-        size = panel._effective_size
+        size = panel._runtime.effective_size
         if size is None:
-            panel._responsive_refresh_pending = True
+            panel._runtime.responsive_refresh_pending = True
             self.request_render(immediate=True)
             return
-        panel._responsive_refresh_pending = False
         self._request_responsive_update(panel, size)
 
     def _request_responsive_update(
@@ -164,14 +194,16 @@ class EventLoop:
         panel: ContentPanel,
         size: ContentSize,
     ) -> None:
-        worker = panel._worker
-        if worker is None:
-            panel._responsive_refresh_pending = True
+        """Request responsive content, deferring refreshes while exit waits."""
+        worker = panel._runtime.worker
+        if worker is None or self._refreshes_suspended():
+            panel._runtime.responsive_refresh_pending = True
             return
-        panel._responsive_request_id += 1
-        panel._dynamic_in_flight = True
-        panel._next_dynamic_at = self._clock() + self._FRAME_INTERVAL
-        worker.request_responsive_update(panel._responsive_request_id, size)
+        panel._runtime.responsive_refresh_pending = False
+        panel._runtime.responsive_request_id += 1
+        panel._runtime.dynamic_in_flight = True
+        panel._runtime.next_dynamic_at = self._clock() + self._FRAME_INTERVAL
+        worker.request_responsive_update(panel._runtime.responsive_request_id, size)
 
     def replace_content_panel(
         self,
@@ -179,10 +211,8 @@ class EventLoop:
         content: ScreenContent,
     ) -> None:
         """Replace one panel only after its previous worker terminates."""
-        panel._pending_content = content
-        panel._generation += 1
-        panel._dynamic_in_flight = False
-        worker = panel._worker
+        panel._runtime.request_replacement(content)
+        worker = panel._runtime.worker
         if worker is not None and worker.is_alive():
             worker.cancel()
             self._notify_source()
@@ -194,16 +224,20 @@ class EventLoop:
 
     def retire_content_panel(self, panel: ContentPanel) -> None:
         """Cancel and track a removed panel until its worker stops."""
-        panel._retiring = True
-        panel._pending_content = None
-        worker = panel._worker
+        panel._runtime.begin_retirement()
+        self._menu.app._prune_stream_claims(panel)
+        worker = panel._runtime.worker
         if worker is not None and worker.is_alive():
-            worker.cancel()
             if panel not in self._retiring_panels:
                 self._retiring_panels.append(panel)
+            worker.cancel()
         elif worker is not None:
             worker.join()
-            panel._retiring = False
+            panel._runtime.retiring = False
+            self._menu.app._release_stream_claims(panel)
+        else:
+            panel._runtime.retiring = False
+            self._menu.app._release_stream_claims(panel)
         self.request_render(immediate=True)
 
     def close(self) -> None:
@@ -215,14 +249,32 @@ class EventLoop:
         panels = tuple(
             dict.fromkeys((*self._menu.content_panels, *self._retiring_panels))
         )
-        for panel in panels:
-            if panel._worker is not None:
-                panel._worker.cancel()
-        for panel in panels:
-            if panel._worker is not None:
-                panel._worker.join()
-
-        self._close_resources()
+        workers = tuple(
+            dict.fromkeys(
+                panel._runtime.worker
+                for panel in panels
+                if panel._runtime.worker is not None
+            )
+        )
+        try:
+            run_cleanup(
+                (
+                    *(worker.cancel for worker in workers),
+                    *(worker.join for worker in workers),
+                    self._selector.close,
+                    self._wakeup_reader.close,
+                    self._wakeup_writer.close,
+                ),
+                message="Errors while closing content workers and event-loop resources",
+            )
+        finally:
+            for panel in tuple(self._retiring_panels):
+                worker = panel._runtime.worker
+                if worker is not None and worker.is_alive():
+                    continue
+                panel._runtime.retiring = False
+                self._menu.app._release_stream_claims(panel)
+                self._retiring_panels.remove(panel)
 
     def abandon(self) -> None:
         """Release selectable resources without touching application workers."""
@@ -234,41 +286,46 @@ class EventLoop:
 
     def _close_resources(self) -> None:
         """Close the selector and wakeup sockets exactly once."""
-        self._selector.close()
-        self._wakeup_reader.close()
-        self._wakeup_writer.close()
+        run_cleanup(
+            (
+                self._selector.close,
+                self._wakeup_reader.close,
+                self._wakeup_writer.close,
+            ),
+            message="Errors while closing event-loop resources",
+        )
 
     def _install_panel_worker(self, panel: ContentPanel) -> None:
         """Start the worker for one already-safe panel source."""
-        panel._generation += 1
-        panel._worker = None
-        panel._dynamic_in_flight = False
-        panel._next_dynamic_at = self._clock()
+        panel._runtime.generation += 1
+        panel._runtime.worker = None
+        panel._runtime.dynamic_in_flight = False
+        panel._runtime.next_dynamic_at = self._clock()
 
-        if panel._renderer.state == "static":
+        if panel._runtime.renderer.state == "static":
             return
 
         content = panel._content
         source: WorkerSource
-        if panel._renderer.state == "streaming":
+        if panel._runtime.renderer.state == "streaming":
             source = content._stream()
-        elif panel._renderer.state == "dynamic":
+        elif panel._runtime.renderer.state == "dynamic":
             source = content._dynamic()
-        elif panel._renderer.state == "responsive":
+        elif panel._runtime.renderer.state == "responsive":
             source = content._responsive()
         else:
             raise RuntimeError("Non-static screen content cannot be consumed")
 
-        panel._worker = SourceWorker(
+        panel._runtime.worker = SourceWorker(
             panel=panel,
-            generation=panel._generation,
-            kind=panel._renderer.state,
+            generation=panel._runtime.generation,
+            kind=panel._runtime.renderer.state,
             source=source,
             events=self._source_events,
             notify=self._notify_source,
             description=panel.description,
         )
-        panel._worker.start()
+        panel._runtime.worker.start()
 
     def _apply_panel_content(
         self,
@@ -276,44 +333,32 @@ class EventLoop:
         content: ScreenContent,
     ) -> None:
         panel._content = content
-        panel._pending_content = None
-        panel._renderer = ContentRenderer(content)
-        panel._viewport = None
-        panel._effective_size = None
-        panel._responsive_refresh_pending = content._kind == "responsive"
-        panel._smart_auto_scroll_active = True
-        panel._pending_auto_scroll = None
+        panel._runtime.mount(content)
         self._install_panel_worker(panel)
+        self._menu.app._prune_stream_claims(panel)
         self.request_render(immediate=True)
 
     def _progress_panel_transitions(self) -> None:
         for panel in tuple(self._retiring_panels):
-            worker = panel._worker
+            worker = panel._runtime.worker
             if worker is not None and worker.is_alive():
                 continue
             if worker is not None:
                 worker.join()
-            panel._retiring = False
+            panel._runtime.retiring = False
+            self._menu.app._release_stream_claims(panel)
             self._retiring_panels.remove(panel)
 
         for panel in self._menu.content_panels:
-            content = panel._pending_content
+            content = panel._runtime.pending_content
             if content is None:
                 continue
-            worker = panel._worker
+            worker = panel._runtime.worker
             if worker is not None and worker.is_alive():
                 continue
             if worker is not None:
                 worker.join()
             self._apply_panel_content(panel, content)
-
-    def _clear_source_events(self) -> None:
-        """Discard queued results belonging to a replaced source."""
-        while True:
-            try:
-                self._source_events.get_nowait()
-            except Empty:
-                return
 
     def _drain_input(self) -> None:
         """Handle every input event immediately available from the terminal."""
@@ -322,6 +367,14 @@ class EventLoop:
 
             if event is None:
                 return
+
+            if event.terminal_focus is not None:
+                if event.terminal_focus:
+                    # A tab can return at the same size with a damaged physical
+                    # screen. Its logical cache no longer proves what is shown.
+                    self._terminal_renderer.invalidate()
+                    self.request_render(immediate=True)
+                continue
 
             self._menu._handle_event(event)
             self.request_render()
@@ -344,11 +397,14 @@ class EventLoop:
             except Empty:
                 break
 
-            if event.panel not in known or event.generation != event.panel._generation:
+            if (
+                event.panel not in known
+                or event.generation != event.panel._runtime.generation
+            ):
                 continue
             if (
-                event.panel._renderer.state == "responsive"
-                and event.request_id != event.panel._responsive_request_id
+                event.panel._runtime.renderer.state == "responsive"
+                and event.request_id != event.panel._runtime.responsive_request_id
             ):
                 continue
             grouped.setdefault(event.panel, []).append(event)
@@ -357,7 +413,7 @@ class EventLoop:
             return
 
         for panel, events in grouped.items():
-            renderer = panel._renderer
+            renderer = panel._runtime.renderer
             if renderer.state == "streaming":
                 chunks = [
                     event.value
@@ -379,7 +435,7 @@ class EventLoop:
                         raise RuntimeError("Dynamic worker returned invalid content")
                     renderer.replace_dynamic_content(value)
                     self.request_render()
-                panel._dynamic_in_flight = False
+                panel._runtime.dynamic_in_flight = False
             elif renderer.state == "responsive":
                 values = [event.value for event in events if event.kind == "data"]
                 if values:
@@ -388,7 +444,7 @@ class EventLoop:
                         raise RuntimeError("Responsive worker returned invalid content")
                     renderer.replace_generated_content(value)
                     self.request_render()
-                panel._dynamic_in_flight = False
+                panel._runtime.dynamic_in_flight = False
 
             for event in events:
                 self._handle_source_event(event)
@@ -396,8 +452,8 @@ class EventLoop:
     def _handle_source_event(self, event: SourceEvent) -> None:
         """Handle completion and failures after applying source data."""
         if event.kind == "complete":
-            event.panel._renderer.finish_stream()
-            if event.panel._remove_when_finished and not event.panel._removed:
+            event.panel._runtime.renderer.finish_stream()
+            if event.panel._runtime.remove_when_finished and not event.panel._removed:
                 event.panel.remove()
             self.request_render()
             return
@@ -408,38 +464,46 @@ class EventLoop:
 
             raise event.error.with_traceback(event.traceback)
 
-    def _request_dynamic_update(self) -> None:
-        """Request one dynamic result when no evaluation is in flight."""
-        self._request_dynamic_updates()
+    def _refreshes_suspended(self) -> bool:
+        """Pause new evaluations while any menu in the app stack waits to exit."""
+        return any(
+            menu._task_exit is not None and menu._task_exit.mode == "waiting"
+            for menu in (self._menu, *self._menu.app._menu_stack)
+        )
 
     def _request_dynamic_updates(self) -> None:
         """Request due dynamic and continuous-responsive evaluations."""
+        if self._refreshes_suspended():
+            return
         now = self._clock()
         for panel in self._menu.content_panels:
-            worker = panel._worker
+            worker = panel._runtime.worker
             if (
                 worker is None
-                or panel._dynamic_in_flight
-                or now < panel._next_dynamic_at
+                or panel._runtime.pending_content is not None
+                or panel._runtime.dynamic_in_flight
+                or now < panel._runtime.next_dynamic_at
             ):
                 continue
-            if panel._renderer.state == "dynamic":
-                panel._dynamic_in_flight = True
-                panel._next_dynamic_at = now + self._FRAME_INTERVAL
+            if panel._runtime.renderer.state == "dynamic":
+                panel._runtime.dynamic_in_flight = True
+                panel._runtime.next_dynamic_at = now + self._FRAME_INTERVAL
                 worker.request_dynamic_update()
             elif (
-                panel._renderer.state == "responsive"
-                and panel._content.refresh_mode == "continuous"
-                and panel._effective_size is not None
+                panel._runtime.renderer.state == "responsive"
+                and (
+                    panel._content.refresh_mode == "continuous"
+                    or panel._runtime.responsive_refresh_pending
+                )
+                and panel._runtime.effective_size is not None
             ):
-                self._request_responsive_update(panel, panel._effective_size)
+                self._request_responsive_update(panel, panel._runtime.effective_size)
 
     def _has_dynamic_status(self) -> bool:
         status = self._menu.status_bar
         stack = self._menu.app._menu_stack
         return (
-            self._menu.show
-            and status is not None
+            status is not None
             and status._kind == "dynamic"
             and (not stack or stack[-1] is self._menu)
         )
@@ -471,22 +535,27 @@ class EventLoop:
         if input_timeout is not None:
             deadlines.append(now + input_timeout)
 
-        deadlines.extend(
-            panel._next_dynamic_at
-            for panel in self._menu.content_panels
-            if (
-                panel._renderer.state == "dynamic"
-                or panel._renderer.state == "responsive"
-                and panel._content.refresh_mode == "continuous"
-                and panel._effective_size is not None
+        if not self._refreshes_suspended():
+            deadlines.extend(
+                panel._runtime.next_dynamic_at
+                for panel in self._menu.content_panels
+                if (
+                    panel._runtime.renderer.state == "dynamic"
+                    or panel._runtime.renderer.state == "responsive"
+                    and (
+                        panel._content.refresh_mode == "continuous"
+                        or panel._runtime.responsive_refresh_pending
+                    )
+                    and panel._runtime.effective_size is not None
+                )
+                and not panel._runtime.dynamic_in_flight
+                and panel._runtime.pending_content is None
             )
-            and not panel._dynamic_in_flight
-        )
 
         return max(0.0, min(deadlines) - now)
 
     def _check_visible_state(self) -> None:
-        """Detect screen-context and terminal-size changes at a fixed cadence."""
+        """Detect display-state and terminal-size changes at a fixed cadence."""
         now = self._clock()
 
         if now < self._next_state_check_at:

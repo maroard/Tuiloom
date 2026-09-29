@@ -29,8 +29,8 @@ def test_style_combines_effects_colors_and_targeted_resets() -> None:
             underline=True,
             strikethrough=True,
             reverse=True,
-            color="red",
-            highlight="bright_blue",
+            foreground="red",
+            background="bright_blue",
         )
         == "\x1b[1;2;3;4;9;7;31;104mtext\x1b[22;23;24;29;27;39;49m"
     )
@@ -76,8 +76,8 @@ def test_style_accepts_all_color_representations(
     foreground: str,
     background: str,
 ) -> None:
-    assert style("x", color=color) == f"\x1b[{foreground}mx\x1b[39m"
-    assert style("x", highlight=color) == f"\x1b[{background}mx\x1b[49m"
+    assert style("x", foreground=color) == f"\x1b[{foreground}mx\x1b[39m"
+    assert style("x", background=color) == f"\x1b[{background}mx\x1b[49m"
 
 
 @pytest.mark.parametrize(
@@ -93,7 +93,7 @@ def test_style_rejects_non_boolean_effect_flags(option: str, value: object) -> N
     "color",
     [True, False, 1.5, object(), (1, 2), (1, 2, 3, 4), (1, "2", 3), (1, True, 3)],
 )
-@pytest.mark.parametrize("option", ["color", "highlight"])
+@pytest.mark.parametrize("option", ["foreground", "background"])
 def test_style_rejects_invalid_color_types_and_rgb_shapes(
     color: object, option: str
 ) -> None:
@@ -105,7 +105,7 @@ def test_style_rejects_invalid_color_types_and_rgb_shapes(
     "color",
     [-1, 256, (0, -1, 0), (0, 256, 0), "unknown", "RED", "#123", "#GG0000"],
 )
-@pytest.mark.parametrize("option", ["color", "highlight"])
+@pytest.mark.parametrize("option", ["foreground", "background"])
 def test_style_rejects_invalid_color_values(color: object, option: str) -> None:
     with pytest.raises(ValueError):
         style("x", **{option: color})  # type: ignore[arg-type]
@@ -119,7 +119,7 @@ def test_style_sanitizes_text_and_preserves_safe_sgr_and_hyperlinks() -> None:
 
 
 def test_hyperlink_preserves_text_styled_before_wrapping() -> None:
-    styled = style("link", bold=True, color="cyan")
+    styled = style("link", bold=True, foreground="cyan")
     result = hyperlink(styled, "https://example.com")
     assert styled in result
     assert sanitize_terminal_text(result) == result
@@ -131,7 +131,7 @@ def test_style_without_options_only_sanitizes_text() -> None:
 
 def test_style_does_not_change_unicode_multiline_display_width() -> None:
     text = "hé🙂\n界"
-    styled = style(text, bold=True, color=(10, 20, 30), highlight=240)
+    styled = style(text, bold=True, foreground=(10, 20, 30), background=240)
     assert display_width(styled) == display_width(text)
 
 

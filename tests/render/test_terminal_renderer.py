@@ -7,8 +7,8 @@ import pytest
 from tuiloom import (
     ContentPanel,
     KeyBinding,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     TerminalApp,
     TerminalMenu,
 )
@@ -16,7 +16,7 @@ from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
 from tuiloom.render.terminal_text import display_width
-from tuiloom.task_exit import TaskExitView
+from tuiloom.task_exit import TaskExitState
 
 
 def make_renderer(
@@ -26,7 +26,7 @@ def make_renderer(
 ) -> tuple[TerminalMenu, TerminalRenderer]:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if isinstance(content, str) else content
-    menu = TerminalMenu(app, ScreenContext("main", "Main"), content_spacing=spacing)
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"), content_spacing=spacing)
     if configured is not None:
         menu.add_content_panel(configured)
     menu.add_command("Run", lambda context: None)
@@ -45,6 +45,55 @@ def compose_with_panel_rows(
     menu_height = len(renderer._menu_renderer.render(max_width=28).splitlines())
     terminal_height = menu_height + 1 + 2 * len(menu.content_panels) + rows
     return renderer._compose_frame(30, terminal_height)
+
+
+@pytest.mark.parametrize("width,height", [(2, 1), (1, 2), (0, 0), (8, 3)])
+def test_too_small_fallback_without_status_fits_physical_bounds(
+    width: int, height: int
+) -> None:
+    _, renderer = make_renderer()
+
+    frame = renderer._compose_frame(width, height)
+
+    assert len(frame) <= max(1, height)
+    assert all(display_width(line) <= width for line in frame)
+
+
+@pytest.mark.parametrize("panels", [False, True])
+@pytest.mark.parametrize("status", [False, True])
+def test_inline_input_cursor_tracks_prompt_before_footer(
+    monkeypatch: pytest.MonkeyPatch, panels: bool, status: bool
+) -> None:
+    menu, renderer = make_renderer(content="content" if panels else None)
+    menu.enter_input_mode("Value: ", lambda text: None)
+    assert menu._input is not None
+    menu._input.buffer = "a" * 30 + "界"
+    menu.display_state.width = 16
+    menu.display_state.strict_width = True
+    menu.display_state.message = "Footer"
+    if status:
+        menu.set_status_bar("READY")
+    frame = renderer._compose_frame(40, 30)
+    prompt_row = next(index + 1 for index, line in enumerate(frame) if "界" in line)
+    writes: list[str] = []
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
+
+    renderer._restore_cursor(frame)
+
+    assert writes == [f"\033[{prompt_row};14H\033[?25h"]
+
+
+def test_explicit_frame_result_carries_the_input_cursor() -> None:
+    menu, renderer = make_renderer(content=None)
+    menu.enter_input_mode("Name: ", lambda text: None)
+
+    result = renderer.compose(40, 30)
+
+    assert result.lines == renderer._compose_frame(40, 30)
+    assert result.cursor is not None
+    row, column = result.cursor
+    assert "Name:" in result.lines[row - 1]
+    assert column <= display_width(result.lines[row - 1])
 
 
 @pytest.mark.parametrize(
@@ -89,7 +138,9 @@ def test_panel_rows_follow_weight_ratios_with_minimum_and_maximum_bounds(
 
     frame = compose_with_panel_rows(menu, renderer, rows)
 
-    assert [p._viewport.height if p._viewport else None for p in panels] == expected
+    assert [
+        p._runtime.viewport.height if p._runtime.viewport else None for p in panels
+    ] == expected
     menu_height = len(renderer._menu_renderer.render(max_width=28).splitlines())
     assert len(frame) == sum(expected) + 2 * len(panels) + 1 + menu_height
 
@@ -108,8 +159,11 @@ def test_weights_allocate_complete_panel_frames(spacing: bool, reverse: bool) ->
 
     frame = renderer._compose_frame(30, menu_height + int(spacing) + 23)
 
-    assert graph._viewport is not None and graph._viewport.height == 15
-    assert simulation._viewport is not None and simulation._viewport.height == 4
+    assert graph._runtime.viewport is not None and graph._runtime.viewport.height == 15
+    assert (
+        simulation._runtime.viewport is not None
+        and simulation._runtime.viewport.height == 4
+    )
     borders = [index for index, line in enumerate(frame) if line.startswith("╭")]
     heights = [borders[1], borders[2] - int(spacing) - borders[1]]
     assert heights == ([6, 17] if reverse else [17, 6])
@@ -125,11 +179,11 @@ def test_panel_minimums_that_do_not_fit_use_the_existing_too_small_frame() -> No
     assert compose_with_panel_rows(menu, renderer, 6) == [
         "Terminal window is too small."
     ]
-    assert first._viewport is None
-    assert second._viewport is None
+    assert first._runtime.viewport is None
+    assert second._runtime.viewport is None
     assert compose_with_panel_rows(menu, renderer, 7)[0].startswith("╭")
-    assert first._viewport is not None and first._viewport.height == 4
-    assert second._viewport is not None and second._viewport.height == 3
+    assert first._runtime.viewport is not None and first._runtime.viewport.height == 4
+    assert second._runtime.viewport is not None and second._runtime.viewport.height == 3
 
 
 @pytest.mark.parametrize(
@@ -162,9 +216,11 @@ def test_collapsed_panels_reserve_fixed_rows_before_weighted_sharing(
     frame = compose_with_panel_rows(menu, renderer, rows)
     if expected is None:
         assert frame == ["Terminal window is too small."]
-        assert all(panel._viewport is None for panel in panels)
+        assert all(panel._runtime.viewport is None for panel in panels)
     else:
-        assert [p._viewport.height if p._viewport else None for p in panels] == expected
+        assert [
+            p._runtime.viewport.height if p._runtime.viewport else None for p in panels
+        ] == expected
         menu_height = len(renderer._menu_renderer.render(max_width=28).splitlines())
         assert len(frame) == sum(expected) + 2 * len(panels) + 1 + menu_height
 
@@ -176,14 +232,14 @@ def test_expand_uses_current_terminal_size_and_updated_layout() -> None:
     panel.set_layout(min_height=2, max_height=3)
     panel.collapse()
     compose_with_panel_rows(menu, renderer, 10)
-    viewport = panel._viewport
+    viewport = panel._runtime.viewport
     assert viewport is not None and viewport.height == 5
     panel.set_layout(weight=2, min_height=4, max_height=8)
     compose_with_panel_rows(menu, renderer, 20)
     assert viewport.height == 5
     panel.expand()
     compose_with_panel_rows(menu, renderer, 6)
-    assert panel._viewport is viewport and viewport.height == 6
+    assert panel._runtime.viewport is viewport and viewport.height == 6
 
 
 @pytest.mark.parametrize("spacing", [False, True])
@@ -200,7 +256,7 @@ def test_collapse_before_first_render_can_recover_from_too_small_frame(
     ]
     panel.collapse()
     assert renderer._compose_frame(30, terminal_height)[0].startswith("╭")
-    assert panel._viewport is not None and panel._viewport.height == 1
+    assert panel._runtime.viewport is not None and panel._runtime.viewport.height == 1
     panel.expand()
     assert renderer._compose_frame(30, terminal_height) == [
         "Terminal window is too small."
@@ -221,21 +277,21 @@ def test_live_collapse_keeps_focus_scroll_and_viewport(
     monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
     menu._focused_panel = panel
     renderer.render()
-    viewport = panel._viewport
+    viewport = panel._runtime.viewport
     assert viewport is not None
     viewport.offset_x, viewport.offset_y = 2, 5
-    panel._smart_auto_scroll_active = False
+    panel._runtime.smart_auto_scroll_active = False
     panel.collapse()
     renderer.render()
-    assert panel._viewport is viewport and viewport.height == 1
+    assert panel._runtime.viewport is viewport and viewport.height == 1
     assert (viewport.offset_x, viewport.offset_y) == (2, 5)
-    assert menu._focused_panel is panel and not panel._smart_auto_scroll_active
+    assert menu._focused_panel is panel and not panel._runtime.smart_auto_scroll_active
     menu._handle_event(InputEvent(binding=KeyBinding("down")))
     assert viewport.offset_y == 6
-    assert other._viewport is not None and other._viewport.offset_y == 0
+    assert other._runtime.viewport is not None and other._runtime.viewport.offset_y == 0
     panel.expand()
     renderer.render()
-    assert panel._viewport is viewport and viewport.height > 1
+    assert panel._runtime.viewport is viewport and viewport.height > 1
     assert (viewport.offset_x, viewport.offset_y) == (2, 6)
     assert menu._focused_panel is panel
 
@@ -254,7 +310,7 @@ def test_live_layout_change_redraws_and_preserves_focus_and_scroll(
     monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
     menu._focused_panel = first
     renderer.render()
-    viewport = first._viewport
+    viewport = first._runtime.viewport
     assert viewport is not None
     viewport.offset_x = 2
     viewport.offset_y = 5
@@ -262,17 +318,19 @@ def test_live_layout_change_redraws_and_preserves_focus_and_scroll(
     first.set_layout(min_height=2, max_height=3)
     renderer.render()
 
-    assert first._viewport is viewport
+    assert first._runtime.viewport is viewport
     assert viewport.height == 3
     assert (viewport.offset_x, viewport.offset_y) == (2, 5)
     assert menu._focused_panel is first
     menu._handle_event(InputEvent(binding=KeyBinding("down")))
     assert viewport.offset_y == 6
-    assert second._viewport is not None and second._viewport.offset_y == 0
+    assert (
+        second._runtime.viewport is not None and second._runtime.viewport.offset_y == 0
+    )
 
     first.set_layout(min_height=25, max_height=25)
     compose_with_panel_rows(menu, renderer, 30)
-    assert first._viewport is viewport
+    assert first._runtime.viewport is viewport
     assert viewport.offset_y == 5  # Growing the viewport clamps to the new bottom.
     assert menu._focused_panel is first
 
@@ -286,26 +344,26 @@ def test_auto_scroll_uses_new_panel_height_and_keeps_smart_pause(
     panel = menu.content_panels[0]
     panel.set_auto_scroll(mode)  # type: ignore[arg-type]
     menu.add_content_panel(ScreenContent.static("other"))
-    panel._renderer.append_stream_batch(["\n".join(str(i) for i in range(30))])
+    panel._runtime.renderer.append_stream_batch(["\n".join(str(i) for i in range(30))])
     compose_with_panel_rows(menu, renderer, 12)
-    viewport = panel._viewport
+    viewport = panel._runtime.viewport
     assert viewport is not None
     renderer.apply_stream_auto_scroll(panel.auto_scroll, panel)
     renderer.scroll_panel(panel, "up")
     paused_offset = viewport.offset_y
-    assert not panel._smart_auto_scroll_active
+    assert not panel._runtime.smart_auto_scroll_active
 
     if collapse:
         panel.set_collapsed_height(3)
         panel.collapse()
     else:
         panel.set_layout(max_height=3)
-    assert not panel._smart_auto_scroll_active
-    panel._renderer.append_stream_batch(["\nnext"])
+    assert not panel._runtime.smart_auto_scroll_active
+    panel._runtime.renderer.append_stream_batch(["\nnext"])
     renderer.apply_stream_auto_scroll(panel.auto_scroll, panel)
     compose_with_panel_rows(menu, renderer, 12)
 
-    assert panel._viewport is viewport
+    assert panel._runtime.viewport is viewport
     assert viewport.height == 3
     if mode == "strict":
         assert viewport.is_at_bottom()
@@ -314,8 +372,8 @@ def test_auto_scroll_uses_new_panel_height_and_keeps_smart_pause(
         assert not viewport.is_at_bottom()
         while not viewport.is_at_bottom():
             renderer.scroll_panel(panel, "down")
-        assert panel._smart_auto_scroll_active
-        panel._renderer.append_stream_batch(["\nlast"])
+        assert panel._runtime.smart_auto_scroll_active
+        panel._runtime.renderer.append_stream_batch(["\nlast"])
         renderer.apply_stream_auto_scroll(panel.auto_scroll, panel)
         compose_with_panel_rows(menu, renderer, 12)
         assert viewport.is_at_bottom()
@@ -349,9 +407,9 @@ def test_menu_growth_is_bounded_without_lowering_requested_minimum(
     content: str | None, strict: bool
 ) -> None:
     menu, renderer = make_renderer(content=content)
-    menu.screen_context.width = 10
-    menu.screen_context.strict_width = strict
-    menu.screen_context.title = "x" * 50
+    menu.display_state.width = 10
+    menu.display_state.strict_width = strict
+    menu.display_state.title = "x" * 50
     for terminal_width in (60, 25, 12, 25, 60):
         lines = renderer._compose_frame(terminal_width, 20)
         assert lines != ["Terminal window is too small."]
@@ -360,42 +418,42 @@ def test_menu_growth_is_bounded_without_lowering_requested_minimum(
         assert all(display_width(line) <= terminal_width for line in lines)
         assert lines[-1].endswith("╯")
         assert "".join(lines).count("x") == 50
-    assert renderer._compose_frame(11, 20) == ["Terminal window is too small."]
+    assert renderer._compose_frame(11, 20) == ["Terminal wi"]
 
 
 def test_strict_width_can_be_smaller_than_automatic_structural_minimum() -> None:
     menu, renderer = make_renderer(content=None)
-    menu.screen_context.width = 1
-    menu.screen_context.strict_width = True
+    menu.display_state.width = 1
+    menu.display_state.strict_width = True
     assert all(display_width(line) == 3 for line in renderer._compose_frame(3, 20))
-    menu.screen_context.strict_width = False
-    assert renderer._compose_frame(5, 20) == ["Terminal window is too small."]
+    menu.display_state.strict_width = False
+    assert renderer._compose_frame(5, 20) == ["Termi"]
 
 
 def test_automatic_width_without_requested_minimum_is_bounded() -> None:
     menu, renderer = make_renderer(content=None)
-    menu.screen_context.title = "x" * 80
+    menu.display_state.title = "x" * 80
     lines = renderer._compose_frame(20, 20)
     assert all(display_width(line) == 20 for line in lines)
 
 
 def test_short_menu_keeps_requested_width_in_large_terminal() -> None:
     menu, renderer = make_renderer(content=None)
-    menu.screen_context.width = 20
+    menu.display_state.width = 20
     lines = renderer._compose_frame(80, 20)
     assert all(display_width(line) == 22 for line in lines)
 
 
 def test_reflow_increases_menu_height_and_reallocates_panel_space() -> None:
     menu, renderer = make_renderer()
-    menu.screen_context.width = 10
-    menu.screen_context.text = "alpha beta gamma delta epsilon"
+    menu.display_state.width = 10
+    menu.display_state.text = "alpha beta gamma delta epsilon"
     wide = renderer._compose_frame(40, 25)
     panel = menu.content_panels[0]
-    assert panel._viewport is not None
-    wide_panel_height = panel._viewport.height
+    assert panel._runtime.viewport is not None
+    wide_panel_height = panel._runtime.viewport.height
     narrow = renderer._compose_frame(12, 25)
-    assert panel._viewport.height < wide_panel_height
+    assert panel._runtime.viewport.height < wide_panel_height
     for word in ("alpha", "beta", "gamma", "delta", "epsilon"):
         assert word in "\n".join(narrow)
     assert renderer._compose_frame(40, 25) == wide
@@ -403,10 +461,10 @@ def test_reflow_increases_menu_height_and_reallocates_panel_space() -> None:
 
 def test_reflow_still_requires_enough_terminal_height() -> None:
     menu, renderer = make_renderer(content=None)
-    menu.screen_context.width = 10
-    menu.screen_context.text = "alpha beta gamma delta epsilon"
+    menu.display_state.width = 10
+    menu.display_state.text = "alpha beta gamma delta epsilon"
     assert renderer._compose_frame(40, 10) != ["Terminal window is too small."]
-    assert renderer._compose_frame(12, 10) == ["Terminal window is too small."]
+    assert renderer._compose_frame(12, 10) == ["Terminal win"]
 
 
 def test_content_viewport_fills_available_inner_geometry() -> None:
@@ -414,9 +472,9 @@ def test_content_viewport_fills_available_inner_geometry() -> None:
     panel = menu.content_panels[0]
     lines = renderer._compose_frame(20, 14)
     assert len(lines) == 14
-    assert panel._viewport is not None
-    assert panel._viewport.width == 18
-    assert panel._viewport.height > 0
+    assert panel._runtime.viewport is not None
+    assert panel._runtime.viewport.width == 18
+    assert panel._runtime.viewport.height > 0
 
 
 def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
@@ -437,8 +495,8 @@ def test_multiple_panels_stack_with_labels_and_equal_inner_heights() -> None:
     first_height = bottom_indices[0] - top_indices[0]
     second_height = bottom_indices[1] - top_indices[1]
     assert first_height - second_height in (0, 1)
-    assert first._viewport is not None
-    assert second._viewport is not None
+    assert first._runtime.viewport is not None
+    assert second._runtime.viewport is not None
 
 
 def test_multiple_panels_require_one_inner_row_each() -> None:
@@ -460,8 +518,10 @@ def test_scrolling_changes_only_the_target_panel_viewport() -> None:
 
     renderer.scroll_panel(first, "down")
 
-    assert first._viewport is not None and first._viewport.offset_y == 1
-    assert second._viewport is not None and second._viewport.offset_y == 0
+    assert first._runtime.viewport is not None and first._runtime.viewport.offset_y == 1
+    assert (
+        second._runtime.viewport is not None and second._runtime.viewport.offset_y == 0
+    )
 
 
 @pytest.mark.parametrize("size", [(5, 5), (30, 2)])
@@ -469,13 +529,18 @@ def test_terminal_too_small_accounts_for_both_boxes(
     size: tuple[int, int],
 ) -> None:
     _, renderer = make_renderer()
-    assert renderer._compose_frame(*size) == ["Terminal window is too small."]
+    assert renderer._compose_frame(*size) == [
+        "Terminal window is too small."[: size[0]]
+    ]
 
 
-def test_hidden_menu_clears_complete_frame() -> None:
+def test_hidden_menu_preserves_content_frame() -> None:
     menu, renderer = make_renderer()
-    menu.show = False
-    assert renderer._compose_frame(30, 16) == [""]
+    menu.hide_menu()
+    frame = renderer._compose_frame(30, 16)
+    assert len(frame) == 16
+    assert "one" in "\n".join(frame)
+    assert "Main" not in "\n".join(frame)
 
 
 def test_viewport_navigation_and_smart_auto_scroll() -> None:
@@ -484,18 +549,18 @@ def test_viewport_navigation_and_smart_auto_scroll() -> None:
     )
     panel = menu.content_panels[0]
     renderer._compose_frame(20, 14)
-    assert panel._viewport is not None
+    assert panel._runtime.viewport is not None
     renderer.apply_stream_auto_scroll("smart", panel)
     renderer._compose_frame(20, 14)
-    bottom = panel._viewport.offset_y
+    bottom = panel._runtime.viewport.offset_y
     assert bottom > 0
     renderer.scroll_panel(panel, "up")
-    assert panel._viewport.offset_y == bottom - 1
+    assert panel._runtime.viewport.offset_y == bottom - 1
     renderer.apply_stream_auto_scroll("smart", panel)
     renderer._compose_frame(20, 14)
-    assert panel._viewport.offset_y == bottom - 1
+    assert panel._runtime.viewport.offset_y == bottom - 1
     renderer.scroll_panel(panel, "down")
-    assert panel._viewport.is_at_bottom()
+    assert panel._runtime.viewport.is_at_bottom()
 
 
 def test_horizontal_navigation_and_source_replacement() -> None:
@@ -503,12 +568,12 @@ def test_horizontal_navigation_and_source_replacement() -> None:
     panel = menu.content_panels[0]
     renderer._compose_frame(20, 14)
     renderer.scroll_panel(panel, "right")
-    assert panel._viewport is not None
-    assert panel._viewport.offset_x == 1
+    assert panel._runtime.viewport is not None
+    assert panel._runtime.viewport.offset_x == 1
     renderer.scroll_panel(panel, "left")
-    assert panel._viewport.offset_x == 0
+    assert panel._runtime.viewport.offset_x == 0
     panel.set_content(ScreenContent.static("new"))
-    assert panel._viewport is None
+    assert panel._runtime.viewport is None
 
 
 def test_render_writes_full_then_differential_frames(
@@ -525,7 +590,7 @@ def test_render_writes_full_then_differential_frames(
     renderer.render()
     assert any("\x1b[H\x1b[J" in write for write in writes)
     writes.clear()
-    menu.screen_context.message = "Changed"
+    menu.display_state.message = "Changed"
     renderer.render()
     assert writes
     renderer.invalidate()
@@ -536,8 +601,8 @@ def test_render_cache_tracks_resize_and_live_width_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     menu, renderer = make_renderer(content=None)
-    menu.screen_context.width = 10
-    menu.screen_context.title = "x" * 50
+    menu.display_state.width = 10
+    menu.display_state.title = "x" * 50
     writes: list[str] = []
     size = terminal_size((30, 20))
     monkeypatch.setattr(
@@ -553,16 +618,16 @@ def test_render_cache_tracks_resize_and_live_width_configuration(
     renderer.render()
     assert writes == []
 
-    menu.screen_context.strict_width = True
+    menu.display_state.strict_width = True
     renderer.render()
     assert display_width(renderer._previous_lines[-1]) == 12
     assert writes and not any("\x1b[H\x1b[J" in write for write in writes)
     assert any("X" in write for write in writes)  # Erase the old right edge.
 
-    menu.screen_context.width = 15
+    menu.display_state.width = 15
     renderer.render()
     assert display_width(renderer._previous_lines[-1]) == 17
-    menu.screen_context.strict_width = False
+    menu.display_state.strict_width = False
     renderer.render()
     assert display_width(renderer._previous_lines[-1]) == 30
 
@@ -572,7 +637,7 @@ def test_render_cache_tracks_resize_and_live_width_configuration(
         renderer.render()
         assert any("\x1b[H\x1b[J" in write for write in writes)
         if columns == 16:
-            assert renderer._previous_lines == ["Terminal window is too small."]
+            assert renderer._previous_lines == ["Terminal window "]
         else:
             assert display_width(renderer._previous_lines[-1]) == min(52, columns)
 
@@ -582,7 +647,7 @@ def test_wait_animation_changes_the_cached_terminal_frame(
 ) -> None:
     menu, renderer = make_renderer(content=ScreenContent.static("working"))
     panel = menu.content_panels[0]
-    menu._task_exit = TaskExitView(
+    menu._task_exit = TaskExitState(
         mode="waiting",
         selected_index=0,
         previous_focus=None,
@@ -620,7 +685,7 @@ def test_same_count_operation_swap_changes_the_cached_terminal_frame(
     first = menu.content_panels[0]
     second = menu.add_content_panel(ScreenContent.static("second"))
     active = [first]
-    menu._task_exit = TaskExitView(
+    menu._task_exit = TaskExitState(
         mode="choice",
         selected_index=0,
         previous_focus=None,

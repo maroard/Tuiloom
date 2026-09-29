@@ -4,7 +4,7 @@ from os import terminal_size
 
 import pytest
 
-from tuiloom import KeyBinding, ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import KeyBinding, MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
@@ -12,7 +12,7 @@ from tuiloom.render.terminal_text import clip_display, display_width, normalize_
 
 
 def make_renderer() -> tuple[TerminalMenu, TerminalRenderer]:
-    menu = TerminalMenu(TerminalApp("App"), ScreenContext("main", "Main"))
+    menu = TerminalMenu(TerminalApp("App"), MenuDisplay("main", "Main"))
     renderer = TerminalRenderer(
         menu=menu, menu_renderer=MenuRenderer(menu), content_spacing=True
     )
@@ -93,35 +93,35 @@ def test_too_small_terminal_keeps_status_visible_within_physical_bounds(
     assert all(display_width(line) <= width for line in frame)
 
 
-def test_hidden_menu_preserves_full_frame_visibility_contract() -> None:
+def test_hidden_menu_preserves_status() -> None:
     menu, renderer = make_renderer()
     menu.set_status_bar("READY")
-    menu.show = False
-    assert renderer._compose_frame(40, 20) == [""]
-    menu.show = True
+    menu.hide_menu()
+    assert renderer._compose_frame(40, 20)[-1] == "READY"
+    menu.show_menu()
     assert renderer._compose_frame(40, 20)[-1] == "READY"
 
 
 def test_status_does_not_change_messages_focus_or_scrolling() -> None:
     menu, renderer = make_renderer()
     panel = menu.add_content_panel(ScreenContent.static("\n".join(map(str, range(40)))))
-    menu.screen_context.message = "menu message"
+    menu.display_state.message = "menu message"
     renderer._compose_frame(40, 20)
     menu._handle_event(InputEvent(KeyBinding("tab")))
     renderer.scroll_panel(panel, "down")
-    viewport = panel._viewport
+    viewport = panel._runtime.viewport
     assert viewport is not None
     offset = viewport.offset_y
     menu.set_status_bar("READY")
     frame = renderer._compose_frame(40, 20)
-    assert panel._viewport is viewport
+    assert panel._runtime.viewport is viewport
     assert viewport.offset_y == offset
     assert menu._focused_panel is panel
     assert any("menu message" in line for line in frame[:-1])
     menu._handle_event(InputEvent(KeyBinding("tab")))
     assert menu._focused_panel is None
     menu.clear_status_bar()
-    assert menu.screen_context.message == "menu message"
+    assert menu.display_state.message == "menu message"
 
 
 def test_input_cursor_remains_on_menu_above_status_and_padding(
@@ -135,9 +135,8 @@ def test_input_cursor_remains_on_menu_above_status_and_padding(
     writes: list[str] = []
     monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
     renderer._restore_cursor(frame)
-    assert writes == [
-        f"\033[{len(menu_lines)};{display_width(menu_lines[-1]) + 1}H\033[?25h"
-    ]
+    prompt_row = next(i + 1 for i, line in enumerate(menu_lines) if "Name:" in line)
+    assert writes == [f"\033[{prompt_row};9H\033[?25h"]
 
 
 def test_static_status_changes_and_resize_invalidate_render_cache(
@@ -250,13 +249,13 @@ def test_empty_status_still_reserves_exactly_one_row() -> None:
     menu, renderer = make_renderer()
     panel = menu.add_content_panel(ScreenContent.static("content"))
     renderer._compose_frame(40, 20)
-    assert panel._viewport is not None
-    previous_height = panel._viewport.height
+    assert panel._runtime.viewport is not None
+    previous_height = panel._runtime.viewport.height
     menu.set_status_bar("")
     frame = renderer._compose_frame(40, 20)
     assert len(frame) == 20
     assert frame[-1] == ""
-    assert panel._viewport.height == previous_height - 1
+    assert panel._runtime.viewport.height == previous_height - 1
 
 
 @pytest.mark.parametrize("mode", ["smart", "strict"])
@@ -269,34 +268,34 @@ def test_status_resize_preserves_stream_follow_policy(mode: str) -> None:
     panel = menu.add_content_panel(
         ScreenContent.stream(iter(())), auto_scroll=cast(AutoScrollMode, mode)
     )
-    panel._renderer.append_stream_batch(["\n".join(map(str, range(40)))])
+    panel._runtime.renderer.append_stream_batch(["\n".join(map(str, range(40)))])
     renderer._compose_frame(40, 20)
     renderer.apply_stream_auto_scroll(panel.auto_scroll, panel)
     renderer.scroll_panel(panel, "up")
-    assert panel._viewport is not None
-    offset = panel._viewport.offset_y
+    assert panel._runtime.viewport is not None
+    offset = panel._runtime.viewport.offset_y
     menu.set_status_bar("RUNNING")
-    panel._renderer.append_stream_batch(["\n40"])
+    panel._runtime.renderer.append_stream_batch(["\n40"])
     renderer.apply_stream_auto_scroll(panel.auto_scroll, panel)
     renderer._compose_frame(40, 20)
     if mode == "strict":
-        assert panel._viewport.is_at_bottom()
+        assert panel._runtime.viewport.is_at_bottom()
     else:
-        assert panel._viewport.offset_y == offset
-        assert not panel._smart_auto_scroll_active
+        assert panel._runtime.viewport.offset_y == offset
+        assert not panel._runtime.smart_auto_scroll_active
 
 
 def test_status_reservation_updates_responsive_panel_effective_height() -> None:
     menu, renderer = make_renderer()
     panel = menu.add_content_panel(ScreenContent.responsive(lambda size: "content"))
     renderer._compose_frame(40, 20)
-    original = panel._effective_size
+    original = panel._runtime.effective_size
     assert original is not None
     menu.set_status_bar("READY")
     renderer._compose_frame(40, 20)
-    assert panel._effective_size is not None
-    assert panel._effective_size.width == original.width
-    assert panel._effective_size.height == original.height - 1
+    assert panel._runtime.effective_size is not None
+    assert panel._runtime.effective_size.width == original.width
+    assert panel._runtime.effective_size.height == original.height - 1
 
 
 def test_input_cursor_is_hidden_when_only_status_fits(

@@ -5,9 +5,8 @@ import pytest
 from tuiloom import (
     CommandContext,
     KeyBinding,
-    MessageKey,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     TerminalApp,
     TerminalMenu,
 )
@@ -19,7 +18,7 @@ def make_menu(
 ) -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if isinstance(content, str) else content
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     if configured is not None:
         menu.add_content_panel(configured)
     return app, menu
@@ -29,19 +28,6 @@ def event(key: str, text: str | None = None) -> InputEvent:
     return InputEvent(KeyBinding(key), text)
 
 
-class SelectionLoop:
-    def __init__(self, menu: TerminalMenu, observed: list[int]) -> None:
-        self.menu = menu
-        self.observed = observed
-
-    def run(self) -> None:
-        self.observed.append(self.menu._selected_index)
-        self.menu._stop_immediately()
-
-    def close(self) -> None:
-        pass
-
-
 def test_hidden_input_masks_and_deletes_whole_unicode_graphemes() -> None:
     _, menu = make_menu()
     submitted: list[str] = []
@@ -49,7 +35,8 @@ def test_hidden_input_masks_and_deletes_whole_unicode_graphemes() -> None:
     menu._handle_event(InputEvent(None, "e\u0301👨‍👩‍👧"))
     assert menu._display_input_buffer() == "**"
     menu._handle_event(event("backspace"))
-    assert menu._input_buffer == "e\u0301"
+    assert menu._input is not None
+    assert menu._input.buffer == "e\u0301"
     assert menu._display_input_buffer() == "*"
     menu._handle_event(event("enter"))
     assert submitted == ["e\u0301"]
@@ -62,33 +49,37 @@ def test_input_mode_disables_globals_and_escape_leaves_it() -> None:
     menu.enter_input_mode("Value: ", calls.append)
     menu._handle_event(event("x", "x"))
     assert calls == []
-    assert menu._input_buffer == "x"
+    assert menu._input is not None
+    assert menu._input.buffer == "x"
     menu._handle_event(event("escape"))
-    assert menu._input_behavior is None
-    assert menu._input_buffer == ""
+    assert menu._input is None
+    assert menu._display_input_buffer() == ""
 
 
 def test_alert_without_callback_does_not_close_on_enter() -> None:
     _, menu = make_menu(content=ScreenContent.static("content"))
     menu.show_alert("Blocking")
     menu._handle_event(event("enter"))
-    assert menu._alert_text == "Blocking"
-    assert menu._alert_prompt is None
+    assert menu._alert is not None
+    assert menu._alert.text == "Blocking"
+    assert menu._alert is not None
+    assert menu._alert.prompt is None
     menu.clear_alert()
-    assert menu._alert_text is None
+    assert menu._alert is None
 
 
 def test_confirmable_alert_closes_only_after_normal_callback() -> None:
     app, menu = make_menu()
     contexts: list[CommandContext] = []
     menu.show_alert("Confirm", on_confirm=contexts.append)
-    assert menu._alert_prompt == "Press Enter to continue"
+    assert menu._alert is not None
+    assert menu._alert.prompt == "Press Enter to continue"
     menu._handle_event(event("enter"))
     assert len(contexts) == 1
     context = contexts[0]
     assert context.command is None
     assert context.binding == KeyBinding("enter")
-    assert menu._alert_text is None
+    assert menu._alert is None
 
     def fail(context: object) -> None:
         raise RuntimeError("failed")
@@ -96,7 +87,8 @@ def test_confirmable_alert_closes_only_after_normal_callback() -> None:
     menu.show_alert("Still here", on_confirm=fail, prompt="Continue?")
     with pytest.raises(RuntimeError, match="failed"):
         menu._handle_event(event("enter"))
-    assert menu._alert_text == "Still here"
+    assert menu._alert is not None
+    assert menu._alert.text == "Still here"
     assert app.name == "App"
 
 
@@ -111,7 +103,8 @@ def test_alert_suspends_and_restores_free_input_and_allows_globals() -> None:
     menu.show_alert("Notice")
     menu._handle_event(event("g", "g"))
     assert global_calls == ["g"]
-    assert menu._input_buffer == "abc"
+    assert menu._input is not None
+    assert menu._input.buffer == "abc"
     menu.clear_alert()
     assert menu._display_input_buffer() == "***"
 
@@ -123,14 +116,14 @@ def test_hidden_menu_discards_local_input_but_keeps_global_and_back() -> None:
     app.add_global_command(
         KeyBinding("g"), "Global", lambda context: calls.append("global")
     )
-    menu.show = False
+    menu.hide_menu()
     menu._running = True
     menu._handle_event(event("enter"))
     menu._handle_event(event("g", "g"))
     assert calls == ["global"]
-    menu.show = True
+    menu.show_menu()
     assert menu._selected_index == 0
-    menu.show = False
+    menu.hide_menu()
     menu._handle_event(event("escape"))
     assert not menu._running
 
@@ -139,11 +132,11 @@ def test_registered_messages_validate_and_combine_suppression() -> None:
     app, menu = make_menu()
     app.add_message("saved", "Saved")
     assert menu.show_message("saved")
-    assert menu.screen_context.message == "Saved"
+    assert menu.display_state.message == "Saved"
     menu.disable_message("saved")
-    menu.screen_context.message = "Keep"
+    menu.display_state.message = "Keep"
     assert not menu.show_message("saved")
-    assert menu.screen_context.message == "Keep"
+    assert menu.display_state.message == "Keep"
     assert not menu.is_message_enabled("saved")
     menu.enable_message("saved")
     app.disable_message("saved")
@@ -151,20 +144,18 @@ def test_registered_messages_validate_and_combine_suppression() -> None:
     app.enable_message("saved")
     assert menu.is_message_enabled("saved")
     menu.clear_message()
-    assert menu.screen_context.message is None
+    assert menu.display_state.message is None
     with pytest.raises(KeyError):
         menu.disable_message("missing")
     with pytest.raises(KeyError):
         menu.show_message("missing")
-    assert MessageKey.TASK_EXIT_CHOICES.value == "task_exit_choices"
-    assert MessageKey.TASK_STOPPING.value == "task_stopping"
 
 
 @pytest.mark.parametrize("width", [True, False, 0, -1, 1.5])
 def test_screen_width_rejects_invalid_construction_and_mutation(width: object) -> None:
     with pytest.raises(ValueError):
-        ScreenContext("main", "Main", width=width)  # type: ignore[arg-type]
-    context = ScreenContext("main", "Main", width=4)
+        MenuDisplay("main", "Main", width=width)  # type: ignore[arg-type]
+    context = MenuDisplay("main", "Main", width=4)
     with pytest.raises(ValueError):
         context.width = width  # type: ignore[assignment]
     assert context.width == 4
@@ -173,31 +164,32 @@ def test_screen_width_rejects_invalid_construction_and_mutation(width: object) -
 @pytest.mark.parametrize("strict_width", [None, 0, 1, "true"])
 def test_strict_width_rejects_non_booleans(strict_width: object) -> None:
     with pytest.raises(TypeError, match="strict_width"):
-        ScreenContext("main", "Main", strict_width=strict_width)  # type: ignore[arg-type]
-    context = ScreenContext("main", "Main", strict_width=True)
+        MenuDisplay("main", "Main", strict_width=strict_width)  # type: ignore[arg-type]
+    context = MenuDisplay("main", "Main", strict_width=True)
     with pytest.raises(TypeError, match="strict_width"):
         context.strict_width = strict_width  # type: ignore[assignment]
     assert context.strict_width is True
 
 
 def test_strict_width_preserves_existing_positional_arguments() -> None:
-    context = ScreenContext("main", "Main", 12, "Text", "Message")
+    context = MenuDisplay("main", "Main", 12, "Text", "Message")
     assert context.strict_width is False
     assert context.text == "Text"
     assert context.message == "Message"
 
 
-def test_show_and_content_spacing_are_validated() -> None:
+def test_content_spacing_is_validated_and_frame_show_is_removed() -> None:
     app = TerminalApp("App")
     with pytest.raises(TypeError):
         TerminalMenu(
             app,
-            ScreenContext("main", "Main"),
+            MenuDisplay("main", "Main"),
             content_spacing=1,  # type: ignore[arg-type]
         )
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
+    assert not hasattr(menu, "show")
     with pytest.raises(TypeError):
-        menu.show = 1  # type: ignore[assignment]
+        TerminalMenu(app, menu.display_state, show=False)  # type: ignore[call-arg]
 
 
 def test_auto_scroll_validation_and_content_replacement() -> None:
@@ -234,98 +226,6 @@ def test_active_content_replacement_forwards_its_description() -> None:
 
     assert menu.content_panels == (panel,)
     assert installed == [(source, "Generating")]
-
-
-def test_menu_run_builds_resources_without_no_content_message_and_closes_loop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, menu = make_menu()
-
-    class Loop:
-        def __init__(self) -> None:
-            self.closed = False
-
-        def run(self) -> None:
-            menu._stop_immediately()
-
-        def close(self) -> None:
-            self.closed = True
-
-    loop = Loop()
-    app._input_handler = object()  # type: ignore[assignment]
-    monkeypatch.setattr(menu, "_create_event_loop", lambda: loop)
-    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
-        menu.run()
-    assert loop.closed
-    assert menu.screen_context.message is None
-    assert menu.show_message(MessageKey.NO_CONTENT_SOURCE)
-    assert "No content" in (menu.screen_context.message or "")
-    assert menu._event_loop is None
-
-
-def test_menu_run_resets_selection_on_every_open(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app, menu = make_menu()
-    menu.add_command("First", lambda context: None)
-    second = menu.add_command("Second", lambda context: None)
-    app._input_handler = object()  # type: ignore[assignment]
-    observed: list[int] = []
-    monkeypatch.setattr(
-        menu,
-        "_create_event_loop",
-        lambda: SelectionLoop(menu, observed),
-    )
-
-    menu._selected_index = second.position
-    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
-        menu.run()
-    menu._selected_index = second.position
-    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
-        menu.run()
-
-    assert observed == [0, 0]
-
-
-@pytest.mark.parametrize(
-    ("disabled_positions", "expected"),
-    [
-        ((0,), 1),
-        ((0, 1), 2),
-    ],
-)
-def test_menu_run_skips_disabled_commands_from_the_top(
-    monkeypatch: pytest.MonkeyPatch,
-    disabled_positions: tuple[int, ...],
-    expected: int,
-) -> None:
-    app, menu = make_menu()
-    commands = (
-        menu.add_command("First", lambda context: None),
-        menu.add_command("Second", lambda context: None),
-    )
-    for position in disabled_positions:
-        menu.disable_command(commands[position])
-    app._input_handler = object()  # type: ignore[assignment]
-    observed: list[int] = []
-    monkeypatch.setattr(
-        menu,
-        "_create_event_loop",
-        lambda: SelectionLoop(menu, observed),
-    )
-
-    menu._selected_index = len(menu.commands)
-    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
-        menu.run()
-
-    assert observed == [expected]
-
-
-def test_menu_run_requires_application_lifecycle() -> None:
-    _, menu = make_menu()
-    with pytest.warns(DeprecationWarning, match="TerminalMenu.run"):
-        with pytest.raises(RuntimeError, match="outside"):
-            menu.run()
 
 
 def test_alert_back_and_unbound_events_are_safely_consumed() -> None:

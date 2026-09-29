@@ -6,7 +6,7 @@ from threading import Event, Thread
 
 import pytest
 
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 from tuiloom.output_task import OutputTaskSession
 
 
@@ -14,8 +14,8 @@ def test_global_content_creates_an_ordinary_panel_for_every_menu() -> None:
     global_content = ScreenContent.static("global")
     local_content = ScreenContent.static("local")
     app = TerminalApp("App", global_content=global_content)
-    inherited = TerminalMenu(app, ScreenContext("inherited", "Inherited"))
-    local = TerminalMenu(app, ScreenContext("local", "Local"))
+    inherited = TerminalMenu(app, MenuDisplay("inherited", "Inherited"))
+    local = TerminalMenu(app, MenuDisplay("local", "Local"))
     inherited_panel = inherited.content_panels[0]
     global_panel = local.content_panels[0]
     local_panel = local.add_content_panel(local_content)
@@ -42,7 +42,7 @@ def test_run_requires_main_menu_and_main_thread() -> None:
     app = TerminalApp("App")
     with pytest.raises(RuntimeError, match="no main menu"):
         app.run()
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     app.set_main_menu(menu)
     errors: list[BaseException] = []
 
@@ -67,7 +67,7 @@ def test_run_installs_capture_and_restores_terminal_on_failure(
             calls.append("close")
 
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     app.set_main_menu(menu)
     calls: list[str] = []
     original_stdout = sys.stdout
@@ -79,7 +79,7 @@ def test_run_installs_capture_and_restores_terminal_on_failure(
         assert sys.stdout is not original_stdout
         raise RuntimeError("render failed")
 
-    monkeypatch.setattr(menu, "run", fail)
+    monkeypatch.setattr(app, "_run_application_loop", fail)
     with pytest.raises(RuntimeError, match="render failed"):
         app.run()
     assert not app._running
@@ -98,7 +98,7 @@ def test_hard_exit_restores_terminal_before_terminating_process(
             calls.append("input closed")
 
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     app.set_main_menu(menu)
     calls: list[object] = []
 
@@ -117,7 +117,7 @@ def test_hard_exit_restores_terminal_before_terminating_process(
         "_shutdown_output_task",
         lambda *, wait_for_worker=True: calls.append(("shutdown", wait_for_worker)),
     )
-    monkeypatch.setattr(menu, "run", run_menu)
+    monkeypatch.setattr(app, "_run_application_loop", run_menu)
     monkeypatch.setattr("tuiloom.terminal_app._exit", terminate, raising=False)
 
     with pytest.raises(HardExitObserved):
@@ -143,6 +143,8 @@ def test_terminal_escape_sequences_enter_and_leave_screen(
     app._leave_terminal_screen()
     assert "\033[?1049h" in "".join(writes)
     assert "\033[?1049l" in "".join(writes)
+    assert "\033[?1004s\033[?1004h" in "".join(writes)
+    assert "\033[?1004l\033[?1004r" in "".join(writes)
 
 
 def test_run_joins_output_worker_before_restoring_terminal(
@@ -153,7 +155,7 @@ def test_run_joins_output_worker_before_restoring_terminal(
             calls.append("input closed")
 
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     app.set_main_menu(menu)
     started = Event()
     release = Event()
@@ -185,7 +187,7 @@ def test_run_joins_output_worker_before_restoring_terminal(
     monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
     monkeypatch.setattr(app, "_enter_terminal_screen", lambda: calls.append("enter"))
     monkeypatch.setattr(app, "_leave_terminal_screen", lambda: calls.append("leave"))
-    monkeypatch.setattr(menu, "run", run_menu)
+    monkeypatch.setattr(app, "_run_application_loop", run_menu)
     releaser = Thread(target=allow_shutdown)
     releaser.start()
 
@@ -202,9 +204,9 @@ def test_run_joins_output_worker_before_restoring_terminal(
 
 def test_navigation_stack_transitions_and_reopening() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
-    leaf = TerminalMenu(app, ScreenContext("leaf", "Leaf"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
+    leaf = TerminalMenu(app, MenuDisplay("leaf", "Leaf"))
 
     app.push_menu(root)
     app.push_menu(child)
@@ -223,8 +225,8 @@ def test_navigation_stack_transitions_and_reopening() -> None:
 def test_navigation_rejects_foreign_and_simultaneous_duplicates_atomically() -> None:
     app = TerminalApp("App")
     other = TerminalApp("Other")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
-    foreign = TerminalMenu(other, ScreenContext("foreign", "Foreign"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
+    foreign = TerminalMenu(other, MenuDisplay("foreign", "Foreign"))
     app.push_menu(root)
 
     operations: tuple[Callable[[], None], ...] = (
@@ -241,7 +243,7 @@ def test_navigation_rejects_foreign_and_simultaneous_duplicates_atomically() -> 
 
 def test_pop_at_root_requests_application_shutdown() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
     app.push_menu(root)
     app._running = True
 
@@ -259,7 +261,7 @@ def test_run_accepts_entry_menu_without_registered_main(
             pass
 
     app = TerminalApp("App")
-    entry = TerminalMenu(app, ScreenContext("entry", "Entry"))
+    entry = TerminalMenu(app, MenuDisplay("entry", "Entry"))
     observed: list[TerminalMenu] = []
     monkeypatch.setattr("tuiloom.terminal_app.InputHandler", FakeInputHandler)
     monkeypatch.setattr(app, "_enter_terminal_screen", lambda: None)
@@ -280,8 +282,8 @@ def test_application_loop_services_hidden_menus_but_inputs_and_renders_only_top(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     calls: list[tuple[str, bool, bool, bool]] = []
 
     class Loop:
@@ -319,8 +321,8 @@ def test_reopening_retained_menu_resets_navigation_without_reinitializing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     initializations: list[TerminalMenu] = []
 
     class Loop:
@@ -340,7 +342,9 @@ def test_reopening_retained_menu_resets_navigation_without_reinitializing(
     app._initialized_menus.append(root)
     child._selected_index = 3
     child._focused_panel = object()  # type: ignore[assignment]
-    child._input_buffer = "old"
+    child.enter_input_mode("Value: ", lambda value: None)
+    assert child._input is not None
+    child._input.buffer = "old"
     app._running = True
     app._run_application_loop()
     app.pop_menu()
@@ -351,24 +355,24 @@ def test_reopening_retained_menu_resets_navigation_without_reinitializing(
     assert initializations == [child]
     assert child._selected_index == 0
     assert child._focused_panel is None
-    assert child._input_buffer == ""
+    assert child._display_input_buffer() == ""
 
 
 def test_push_is_lazy_and_first_open_starts_source_worker_once() -> None:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("stream", "Stream"))
+    menu = TerminalMenu(app, MenuDisplay("stream", "Stream"))
     menu.add_content_panel(ScreenContent.stream(iter(["done"])))
 
     app.push_menu(menu)
 
     assert menu._event_loop is None
-    assert menu.content_panels[0]._worker is None
+    assert menu.content_panels[0]._runtime.worker is None
 
 
 def test_shutdown_closes_every_initialized_menu_runtime_once() -> None:
     app = TerminalApp("App")
-    first = TerminalMenu(app, ScreenContext("first", "First"))
-    second = TerminalMenu(app, ScreenContext("second", "Second"))
+    first = TerminalMenu(app, MenuDisplay("first", "First"))
+    second = TerminalMenu(app, MenuDisplay("second", "Second"))
     calls: list[str] = []
 
     class Loop:

@@ -10,6 +10,7 @@ from tuiloom.choice_layout import (
     choice_token,
 )
 from tuiloom.command import MenuChoice
+from tuiloom.render.rendered_content import RenderResult
 from tuiloom.render.terminal_text import (
     center_display,
     clip_display,
@@ -32,6 +33,7 @@ class _MenuState:
     menu_name: str
     requested_width: int | None
     strict_width: bool
+    overlay: bool
     text: str | None
     message: str | None
     commands: tuple[tuple[str, bool], ...]
@@ -54,7 +56,7 @@ class MenuRenderer:
         """Capture a menu and initialize its render cache."""
         self._menu = menu
         self._state: _MenuState | None = None
-        self._cached_render: str | None = None
+        self._cached_result: RenderResult | None = None
         self._cached_width: int | None = None
         self._revision = 0
         self.update()
@@ -121,7 +123,7 @@ class MenuRenderer:
     def update(self) -> None:
         """Refresh the cached snapshot from the owning menu."""
         menu = self._menu
-        context = menu.screen_context
+        context = menu.display_state
         exit_view = menu._task_exit
         if exit_view is None:
             title = context.title
@@ -133,9 +135,13 @@ class MenuRenderer:
             )
             exit_label: str | None = menu._exit_label
             selected_index = menu._selected_index
-            alert = menu._alert_text
-            alert_prompt = menu._alert_prompt
-            input_prompt = menu._input_prompt if menu._alert_text is None else None
+            alert = menu._alert.text if menu._alert is not None else None
+            alert_prompt = menu._alert.prompt if menu._alert is not None else None
+            input_prompt = (
+                menu._input.prompt
+                if menu._input is not None and menu._alert is None
+                else None
+            )
             active = menu._active_choice()
             choice = (
                 (
@@ -164,6 +170,7 @@ class MenuRenderer:
             menu_name=context.menu_name,
             requested_width=context.width,
             strict_width=context.strict_width,
+            overlay=menu.presentation == "overlay",
             text=text,
             message=message,
             commands=commands,
@@ -172,7 +179,7 @@ class MenuRenderer:
             selected_index=selected_index,
             focus="menu" if menu._focused_panel is None else "content",
             has_content=bool(menu._visible_content_panels()),
-            show=menu.show,
+            show=menu._menu_box_visible,
             alert=alert,
             alert_prompt=alert_prompt,
             input_prompt=input_prompt,
@@ -181,20 +188,24 @@ class MenuRenderer:
         if state == self._state:
             return
         self._state = state
-        self._cached_render = None
+        self._cached_result = None
         self._revision += 1
 
     def render(self, *, max_width: int | None = None) -> str:
         """Render with an optional inner limit, preserving the minimum width."""
+        return "\n".join(self.render_result(max_width=max_width).lines)
+
+    def render_result(self, *, max_width: int | None = None) -> RenderResult:
+        """Return the menu lines together with the cursor on its prompt row."""
         self.update()
         state = self._require_state()
         if not state.show:
-            return ""
+            return RenderResult([])
         width = self.effective_width(max_width)
-        if self._cached_render is None or self._cached_width != width:
-            self._cached_render = self._render_menu(state, width)
+        if self._cached_result is None or self._cached_width != width:
+            self._cached_result = self._render_menu(state, width)
             self._cached_width = width
-        return self._cached_render
+        return self._cached_result
 
     def effective_width(self, max_width: int | None) -> int:
         """Return the same inner width used by rendering and choice navigation."""
@@ -203,7 +214,8 @@ class MenuRenderer:
             width = max(self.minimum_width, min(width, max_width))
         return width
 
-    def _render_menu(self, state: _MenuState, width: int) -> str:
+    def _render_menu(self, state: _MenuState, width: int) -> RenderResult:
+        input_cursor = None
         focused = (
             not state.has_content or state.focus == "menu" or state.alert is not None
         )
@@ -274,16 +286,28 @@ class MenuRenderer:
                 )
             if state.input_prompt is not None:
                 lines.append(f"{vertical}{'':{width}}{vertical}")
-                lines.extend(
-                    self._text_rows(
-                        f"{state.input_prompt}{state.input_text}", width, vertical
-                    )
+                input_rows = self._text_rows(
+                    f"{state.input_prompt}{state.input_text}",
+                    width,
+                    vertical,
+                    drop_whitespace=False,
+                )
+                lines.extend(input_rows)
+                padding = 1 if width >= 4 else 0
+                last_input = self._wrapped_lines(
+                    f"{state.input_prompt}{state.input_text}",
+                    width - 2 * padding,
+                    drop_whitespace=False,
+                )[-1]
+                input_cursor = (
+                    len(lines),
+                    min(width + 1, 2 + padding + display_width(last_input)),
                 )
         if state.message:
             lines.append(f"├{horizontal * width}┤")
             lines.extend(self._text_rows(state.message, width, vertical))
         lines.append(f"╰{horizontal * width}╯")
-        return "\n".join(lines)
+        return RenderResult(lines, input_cursor)
 
     @staticmethod
     def _content_row(
@@ -295,11 +319,13 @@ class MenuRenderer:
         return f"{vertical}{align(clipped, width)}{vertical}"
 
     @staticmethod
-    def _wrapped_lines(text: str, width: int) -> list[str]:
+    def _wrapped_lines(
+        text: str, width: int, *, drop_whitespace: bool = True
+    ) -> list[str]:
         return [
             line
             for raw_line in normalize_text_lines(text)
-            for line in wrap_display(raw_line, width)
+            for line in wrap_display(raw_line, width, drop_whitespace=drop_whitespace)
         ]
 
     @staticmethod
@@ -320,11 +346,15 @@ class MenuRenderer:
         ]
 
     @staticmethod
-    def _text_rows(text: str, width: int, vertical: str) -> list[str]:
+    def _text_rows(
+        text: str, width: int, vertical: str, *, drop_whitespace: bool = True
+    ) -> list[str]:
         padding = 1 if width >= 4 else 0
         return [
             MenuRenderer._content_row(" " * padding + line, width, vertical)
-            for line in MenuRenderer._wrapped_lines(text, width - 2 * padding)
+            for line in MenuRenderer._wrapped_lines(
+                text, width - 2 * padding, drop_whitespace=drop_whitespace
+            )
         ]
 
     def _require_state(self) -> _MenuState:

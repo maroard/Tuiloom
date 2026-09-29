@@ -10,8 +10,12 @@ from wcwidth import width as wc_width
 from wcwidth import wrap as wc_wrap
 
 RESET_SGR = "\x1b[0m"
-_SGR_PATTERN = compile_pattern(r"\x1b\[[0-?]*[ -/]*m\Z")
-_HYPERLINK_PATTERN = compile_pattern(r"\x1b\]8;;([^\x1b\\]*)\x1b\\\Z")
+CLOSE_HYPERLINK = "\x1b]8;;\x1b\\"
+_SGR_PATTERN = compile_pattern(r"\x1b\[[0-9;:]*m\Z")
+# wcwidth adds a shared id when wrapping a link onto several rows.
+_HYPERLINK_PATTERN = compile_pattern(
+    r"\x1b\]8;(?:id=[A-Za-z0-9._:-]+)?;([^\x1b\\]*)\x1b\\\Z"
+)
 
 
 @dataclass(frozen=True)
@@ -90,51 +94,88 @@ def sanitize_hyperlink_text(text: str) -> str:
 
 
 def display_width(text: str) -> int:
-    """Return the number of terminal cells occupied by safe text."""
+    """Measure one safe text line in terminal cells, retaining Unicode graphemes.
+
+    Safe SGR and hyperlink sequences occupy no cells. Tabs advance to the next
+    eight-cell stop from column zero. This is not a multiline layout function;
+    split lines first to compute a maximum width. Unsafe controls are removed.
+
+    Args:
+        text: One terminal text line, possibly containing safe SGR styles, OSC 8
+            HTTP(S) hyperlinks, tabs, wide characters or combining graphemes.
+            Split multiline text before calling this function; a newline does
+            not produce an independent line-width result.
+
+    Returns:
+        Visible cell count after sanitization, starting at column zero. Empty
+        text has width zero; styles and hyperlink controls contribute no cells.
+        This is a terminal width, not a character or UTF-8 byte count.
+
+    Raises:
+        TypeError: If ``text`` is not a string.
+    """
     return wc_width(sanitize_terminal_text(text), tabsize=8)
 
 
-def _finish_sgr_line(line: str) -> str:
-    """Reset a line that contains style sequences."""
-    has_sgr = any(is_sequence for _, is_sequence in iter_sequences(line))
+def _finish_terminal_line(line: str) -> str:
+    """Close a hyperlink and reset SGR before leaving a physical line."""
+    has_sgr = any(
+        is_sequence and _SGR_PATTERN.fullmatch(part)
+        for part, is_sequence in iter_sequences(line)
+    )
+    if hyperlink_continuation(line):
+        line += CLOSE_HYPERLINK
     return line + RESET_SGR if has_sgr and not line.endswith(RESET_SGR) else line
 
 
-def _expand_tabs(text: str) -> str:
-    """Expand tabs without rewriting embedded SGR sequences."""
-    expanded: list[str] = []
-    column = 0
-
+def hyperlink_continuation(text: str, prefix: str = "") -> str:
+    """Return the last active OSC 8 opening in already sanitized text."""
     for part, is_sequence in iter_sequences(text):
-        if is_sequence:
-            expanded.append(part)
-            continue
+        if is_sequence and (match := _HYPERLINK_PATTERN.fullmatch(part)):
+            prefix = part if match.group(1) else ""
+    return prefix
 
-        for grapheme in iter_graphemes(part):
-            if grapheme == "\t":
-                spaces = 8 - column % 8
-                expanded.append(" " * spaces)
-                column += spaces
-                continue
 
-            expanded.append(grapheme)
-            column += max(0, wc_width(grapheme))
+def sgr_continuation(text: str, prefix: str = "") -> str:
+    """Return the SGR prefix needed after already sanitized text."""
+    continuation = propagate_sgr([prefix + text, ""])[1]
+    return continuation.removesuffix(RESET_SGR)
 
+
+def expand_tabs(text: str, column: int = 0) -> str:
+    """Expand tabs from a terminal column without rewriting style sequences."""
+    if "\t" not in text:
+        return text
+    parts = text.split("\t")
+    expanded = [parts[0]]
+    column += max(0, wc_width(parts[0]))
+    for part in parts[1:]:
+        spaces = 8 - column % 8
+        expanded.extend([" " * spaces, part])
+        column += spaces + max(0, wc_width(part))
     return "".join(expanded)
 
 
 def normalize_line(text: str) -> str:
-    """Return one safe line with expanded tabs and a closed SGR state."""
+    """Return one safe line with expanded tabs and closed terminal styles."""
     safe = sanitize_terminal_text(text).replace("\n", "")
-    expanded = _expand_tabs(safe)
-    return _finish_sgr_line(expanded)
+    expanded = expand_tabs(safe)
+    return _finish_terminal_line(expanded)
 
 
 def normalize_text_lines(text: str) -> list[str]:
-    """Normalize text and propagate SGR state across newline boundaries."""
+    """Normalize text and carry SGR and hyperlinks across newline boundaries."""
     safe = sanitize_terminal_text(text)
     raw_lines = safe.splitlines() or [""]
-    return [normalize_line(line) for line in propagate_sgr(raw_lines)]
+    lines: list[str] = []
+    hyperlink = ""
+    sgr = ""
+    for raw_line in raw_lines:
+        line = hyperlink + sgr + raw_line
+        lines.append(normalize_line(line))
+        hyperlink = hyperlink_continuation(raw_line, hyperlink)
+        sgr = sgr_continuation(raw_line, sgr)
+    return lines
 
 
 def clip_display(text: str, start: int, end: int) -> str:
@@ -162,10 +203,24 @@ def center_display(text: str, width: int) -> str:
     return normalize_line(wc_center(sanitize_terminal_text(text), width))
 
 
-def wrap_display(text: str, width: int) -> list[str]:
+def overlay_display(background: str, foreground: str, column: int) -> str:
+    """Replace display cells with an opaque line, retaining both styled edges.
+
+    Clipping pads any partially covered wide grapheme with a space. Each
+    fragment closes its styles before the next fragment begins.
+    """
+    end = column + display_width(foreground)
+    prefix = ljust_display(clip_display(background, 0, column), column)
+    suffix = clip_display(background, end, max(end, display_width(background)))
+    return normalize_line(prefix + normalize_line(foreground) + suffix)
+
+
+def wrap_display(text: str, width: int, *, drop_whitespace: bool = True) -> list[str]:
     """Wrap safe text without splitting ANSI or Unicode graphemes."""
     safe = sanitize_terminal_text(text)
-    wrapped = wc_wrap(safe, width, tabsize=8, propagate_sgr=True)
+    wrapped = wc_wrap(
+        safe, width, tabsize=8, propagate_sgr=True, drop_whitespace=drop_whitespace
+    )
     return [normalize_line(line) for line in wrapped] or [""]
 
 

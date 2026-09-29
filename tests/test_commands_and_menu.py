@@ -5,8 +5,8 @@ import pytest
 from tuiloom import (
     CommandContext,
     KeyBinding,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     TerminalApp,
     TerminalMenu,
 )
@@ -19,7 +19,7 @@ def make_menu(
 ) -> tuple[TerminalApp, TerminalMenu]:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if isinstance(content, str) else content
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     if configured is not None:
         menu.add_content_panel(configured)
     return app, menu
@@ -36,7 +36,7 @@ def test_menu_command_handles_support_all_mutations_and_stable_identity() -> Non
     second = menu.add_command("Second", lambda context: calls.append("second"))
 
     menu.set_command_label(first, "Renamed")
-    menu.set_command_behavior(first, lambda context: calls.append("new"))
+    menu.set_command_callback(first, lambda context: calls.append("new"))
     menu.move_command(first, 1)
     assert menu.commands == (second, first)
     assert first.label == "Renamed"
@@ -69,7 +69,7 @@ def test_foreign_handles_and_submenus_are_rejected_immediately() -> None:
     foreign_app, foreign = make_menu()
     handle = foreign.add_command("Foreign", lambda context: None)
     with pytest.raises(ValueError, match="same TerminalApp"):
-        menu.add_menu(foreign, "Foreign")
+        menu.add_submenu(foreign, "Foreign")
     with pytest.raises(ValueError, match="does not belong"):
         menu.set_command_label(handle, "No")
     with pytest.raises(ValueError, match="belong"):
@@ -78,11 +78,10 @@ def test_foreign_handles_and_submenus_are_rejected_immediately() -> None:
 
 def test_add_menu_pushes_submenu_without_recursive_run_and_main_labels() -> None:
     app, parent = make_menu()
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     app.push_menu(parent)
-    child.run = lambda: pytest.fail("submenu.run must not be called")  # type: ignore[method-assign]
-    command = parent.add_menu(child, "Open")
-    command.behavior(CommandContext(app, parent, command, KeyBinding("enter")))
+    command = parent.add_submenu(child, "Open")
+    command.callback(CommandContext(app, parent, command, KeyBinding("enter")))
     assert app._menu_stack == [parent, child]
 
     app.set_main_menu(parent)
@@ -94,7 +93,7 @@ def test_add_menu_pushes_submenu_without_recursive_run_and_main_labels() -> None
 
 def test_back_and_quit_follow_stack_depth_and_explicit_label_wins() -> None:
     app, root = make_menu()
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     app.push_menu(root)
     app._running = True
     root.stop()
@@ -107,18 +106,6 @@ def test_back_and_quit_follow_stack_depth_and_explicit_label_wins() -> None:
     child.stop()
     assert app._running
     assert app._menu_stack == [root]
-
-
-def test_terminal_menu_run_is_deprecated_non_recursive_push() -> None:
-    app, root = make_menu()
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
-    app.push_menu(root)
-    app._running = True
-
-    with pytest.warns(DeprecationWarning):
-        child.run()
-
-    assert app._menu_stack == [root, child]
 
 
 def test_selection_wraps_skips_disabled_and_exit_is_always_last() -> None:
@@ -157,14 +144,14 @@ def test_global_commands_are_immediate_invisible_and_locally_configurable() -> N
     press(menu, "x", "x")
     assert calls == ["app"]
 
-    menu.set_global_command_behavior(command, lambda context: calls.append("menu"))
+    menu.set_global_command_callback(command, lambda context: calls.append("menu"))
     press(menu, "x", "x")
     assert calls[-1] == "menu"
     menu.disable_global_command(command)
     press(menu, "x", "x")
     assert calls == ["app", "menu"]
     menu.enable_global_command(command)
-    menu.clear_global_command_behavior(command)
+    menu.clear_global_command_callback(command)
     press(menu, "x", "x")
     assert calls[-1] == "app"
 
@@ -182,10 +169,10 @@ def test_global_handle_metadata_mutations_and_ownership() -> None:
     command = app.add_global_command(KeyBinding("x"), "Old", first)
     app.set_global_command_binding(command, KeyBinding("y", alt=True))
     app.set_global_command_label(command, "New")
-    app.set_global_command_behavior(command, second)
+    app.set_global_command_callback(command, second)
     assert command.binding == KeyBinding("y", alt=True)
     assert command.label == "New"
-    assert command.behavior is second
+    assert command.callback is second
     with pytest.raises(ValueError):
         other.set_global_command_label(command, "Foreign")
 
@@ -206,17 +193,17 @@ def test_delete_command_invalidates_handle_and_preserves_other_selection() -> No
     third = menu.add_command("Third", lambda context: None)
     menu._selected_index = second.position
 
-    menu.delete_command(first)
+    menu.remove_command(first)
 
     assert menu.commands == (second, third)
     assert menu._selected_index == second.position
     for mutation in (
         lambda: menu.set_command_label(first, "No"),
-        lambda: menu.set_command_behavior(first, lambda context: None),
+        lambda: menu.set_command_callback(first, lambda context: None),
         lambda: menu.move_command(first, 0),
         lambda: menu.disable_command(first),
         lambda: menu.enable_command(first),
-        lambda: menu.delete_command(first),
+        lambda: menu.remove_command(first),
         lambda: first.position,
     ):
         with pytest.raises(ValueError):
@@ -232,19 +219,19 @@ def test_deleting_selected_command_prefers_next_then_previous_then_exit() -> Non
     menu.disable_command(disabled)
     menu._selected_index = selected.position
 
-    menu.delete_command(selected)
+    menu.remove_command(selected)
     assert menu.commands[menu._selected_index] is following
 
-    menu.delete_command(following)
+    menu.remove_command(following)
     assert menu.commands[menu._selected_index] is first
 
-    menu.delete_command(first)
+    menu.remove_command(first)
     assert menu._selected_index == len(menu.commands)
 
 
 def test_command_can_delete_itself_during_activation() -> None:
     _, menu = make_menu()
-    command = menu.add_command("Delete", lambda context: menu.delete_command(command))
+    command = menu.add_command("Delete", lambda context: menu.remove_command(command))
 
     press(menu, "enter")
 
@@ -258,6 +245,6 @@ def test_delete_command_rejects_foreign_and_invalid_handles() -> None:
     foreign = foreign_menu.add_command("Foreign", lambda context: None)
 
     with pytest.raises(ValueError):
-        menu.delete_command(foreign)
+        menu.remove_command(foreign)
     with pytest.raises(ValueError):
-        menu.delete_command(object())  # type: ignore[arg-type]
+        menu.remove_command(object())  # type: ignore[arg-type]

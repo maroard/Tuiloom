@@ -38,6 +38,7 @@ class SourceWorker:
         self.description = description
         self._notify = notify
         self._cancelled = Event()
+        self._cancel_lock = Lock()
         self._dynamic_requested = Event()
         self._responsive_lock = Lock()
         self._responsive_request: tuple[int, ContentSize] | None = None
@@ -49,7 +50,9 @@ class SourceWorker:
         self._thread.start()
 
     def join(self, timeout: float | None = None) -> bool:
-        """Wait at most ``timeout`` seconds and report whether work stopped."""
+        """Wait for started work and report whether the worker is stopped."""
+        if self._thread.ident is None:
+            return True
         self._thread.join(timeout)
         return not self._thread.is_alive()
 
@@ -58,9 +61,12 @@ class SourceWorker:
         return self._thread.is_alive()
 
     def cancel(self) -> None:
-        """Stop publishing and wake a waiting dynamic worker."""
-        self._cancelled.set()
-        self._dynamic_requested.set()
+        """Stop publishing, wake the worker, and call the source hook once."""
+        with self._cancel_lock:
+            if self._cancelled.is_set():
+                return
+            self._cancelled.set()
+            self._dynamic_requested.set()
         cancel_source = getattr(self.source, "cancel", None)
         if callable(cancel_source):
             cancel_source()

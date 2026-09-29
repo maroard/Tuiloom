@@ -1,3 +1,6 @@
+import pytest
+
+from tuiloom import hyperlink
 from tuiloom.render.terminal_text import (
     RESET_SGR,
     center_display,
@@ -6,6 +9,9 @@ from tuiloom.render.terminal_text import (
     ljust_display,
     normalize_line,
     normalize_text_lines,
+    overlay_display,
+    sanitize_hyperlink_text,
+    sanitize_terminal_text,
     visual_cells,
     wrap_display,
 )
@@ -97,6 +103,13 @@ def test_normalize_line_expands_tabs_by_terminal_columns() -> None:
     assert normalize_line("界\tb") == "界      b"
 
 
+def test_tab_columns_ignore_style_sequences_inside_a_grapheme() -> None:
+    line = normalize_line("a👩\033[31m‍💻b\tX")
+
+    assert "b    X" in line
+    assert display_width(line) == 9
+
+
 def test_visual_cells_keep_grapheme_width_style_and_offsets() -> None:
     cells = visual_cells("\x1b[31mA界\x1b[0m")
 
@@ -113,3 +126,49 @@ def test_visual_cells_keep_combining_sequence_as_one_cell() -> None:
 
     assert len(cells) == 1
     assert cells[0].text == "e\u0301"
+
+
+def test_overlay_display_uses_columns_and_blanks_partial_graphemes() -> None:
+    assert overlay_display("A界B界D", "xy", 2) == "A xy界D"
+    assert overlay_display("A界B界D", "xy", 3) == "A界xy D"
+    assert overlay_display("", "👩‍💻e\u0301", 4) == "    👩‍💻e\u0301"
+
+
+def test_overlay_display_resets_background_style_and_restores_the_suffix() -> None:
+    line = overlay_display("\033[31mabcdef\033[0m", "XY", 2)
+    assert display_width(line) == 6
+    assert "\033[31mab\033[0mXY" in line
+    assert "\033[31mef" in line
+    assert line.endswith(RESET_SGR)
+
+
+@pytest.mark.parametrize("sequence", ["\033[>4;2m", "\033[?1m", "\033[31 m"])
+def test_sanitizers_reject_private_and_intermediate_csi_m(sequence: str) -> None:
+    assert sanitize_terminal_text(sequence + "text") == "text"
+    assert sanitize_hyperlink_text(sequence + "text") == "text"
+
+
+def test_wrap_display_preserves_a_hyperlink_on_every_wrapped_row() -> None:
+    lines = wrap_display(hyperlink("abcdef", "https://example.com"), 3)
+
+    assert [display_width(line) for line in lines] == [3, 3]
+    assert all("https://example.com\033\\" in line for line in lines)
+    assert all("\033]8;;\033\\" in line for line in lines)
+
+
+def test_normalize_text_lines_reopens_and_closes_hyperlinks_on_each_row() -> None:
+    lines = normalize_text_lines(
+        hyperlink("\033[31mfirst\nsecond\033[0m", "https://example.com")
+    )
+
+    assert len(lines) == 2
+    assert all("https://example.com\033\\" in line for line in lines)
+    assert all("\033]8;;\033\\" in line for line in lines)
+    assert all("\033[31m" in line for line in lines)
+    assert all(line.endswith(RESET_SGR) for line in lines)
+
+
+def test_normalize_line_closes_an_unterminated_safe_hyperlink() -> None:
+    line = normalize_line("\033]8;;https://example.com\033\\linked")
+
+    assert line.endswith("\033]8;;\033\\")

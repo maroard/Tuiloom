@@ -5,7 +5,7 @@ from selectors import BaseSelector
 from threading import Event
 from typing import cast
 
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.event_loop.source_worker import SourceWorker
 from tuiloom.input_handler.input_handler import InputHandler
@@ -56,30 +56,30 @@ def initialize(menu: TerminalMenu) -> EventLoop:
 
 def test_hidden_menu_turn_applies_source_events_without_rendering() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
     root.add_content_panel(ScreenContent.static("root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     child.add_content_panel(ScreenContent.stream(iter(["hidden update\n"])))
     root_loop = initialize(root)
     child_loop = initialize(child)
     app._initialized_menus = [root, child]
     app._menu_stack = [root]
     panel = child.content_panels[0]
-    assert panel._worker is not None
-    assert panel._worker.join(1)
+    assert panel._runtime.worker is not None
+    assert panel._runtime.worker.join(1)
 
     child_loop.run_once(process_input=False, render=False, block=False)
 
-    assert panel._renderer.rendered_content.lines == ["hidden update"]
+    assert panel._runtime.renderer.rendered_content.lines == ["hidden update"]
     root_loop.close()
     child_loop.close()
 
 
 def test_hidden_owner_receives_output_task_completion_callback() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
     root.add_content_panel(ScreenContent.static("root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     child.add_content_panel(ScreenContent.static("child"))
     root_loop = initialize(root)
     child_loop = initialize(child)
@@ -93,7 +93,7 @@ def test_hidden_owner_receives_output_task_completion_callback() -> None:
         completed.set()
 
     with app._output_capture.install():
-        child.run_with_output(
+        child.start_output_task(
             lambda: 42,
             on_success=record_success,
             on_error=lambda error: None,
@@ -119,9 +119,9 @@ def test_hidden_menu_turn_requests_and_applies_dynamic_updates() -> None:
         evaluated.set()
         return f"hidden {calls}"
 
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
     root.add_content_panel(ScreenContent.static("root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     child.add_content_panel(ScreenContent.dynamic(dynamic))
     root_loop = initialize(root)
     child_loop = initialize(child)
@@ -130,12 +130,12 @@ def test_hidden_menu_turn_requests_and_applies_dynamic_updates() -> None:
 
     child_loop.run_once(process_input=False, render=False, block=False)
     panel = child.content_panels[0]
-    assert panel._worker is not None
+    assert panel._runtime.worker is not None
     assert evaluated.wait(1)
     child_loop.run_once(process_input=False, render=False, block=False)
 
     assert calls == 1
-    assert panel._renderer.rendered_content.lines == ["hidden 1"]
+    assert panel._runtime.renderer.rendered_content.lines == ["hidden 1"]
     root_loop.close()
     child_loop.close()
 
@@ -151,9 +151,9 @@ def test_reopening_menu_retains_its_real_source_worker() -> None:
         started.set()
         yield "loaded"
 
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
     root.add_content_panel(ScreenContent.static("root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     child.add_content_panel(ScreenContent.stream(stream()))
     root_loop = initialize(root)
     app._initialized_menus = [root]
@@ -163,7 +163,7 @@ def test_reopening_menu_retains_its_real_source_worker() -> None:
     child_loop = initialize(child)
     app._initialized_menus.append(child)
     panel = child.content_panels[0]
-    first_worker = panel._worker
+    first_worker = panel._runtime.worker
     assert first_worker is not None
     assert started.wait(1)
     assert first_worker.join(1)
@@ -173,16 +173,16 @@ def test_reopening_menu_retains_its_real_source_worker() -> None:
 
     assert starts == 1
     assert child._event_loop is child_loop
-    assert panel._worker is first_worker
+    assert panel._runtime.worker is first_worker
     root_loop.close()
     child_loop.close()
 
 
 def test_app_shutdown_cancels_and_joins_each_menu_worker_once() -> None:
     app = TerminalApp("App")
-    root = TerminalMenu(app, ScreenContext("root", "Root"))
+    root = TerminalMenu(app, MenuDisplay("root", "Root"))
     root.add_content_panel(ScreenContent.static("root"))
-    child = TerminalMenu(app, ScreenContext("child", "Child"))
+    child = TerminalMenu(app, MenuDisplay("child", "Child"))
     child.add_content_panel(ScreenContent.static("child"))
     root_loop = initialize(root)
     child_loop = initialize(child)
@@ -202,8 +202,8 @@ def test_app_shutdown_cancels_and_joins_each_menu_worker_once() -> None:
 
     root_worker = CountingWorker()
     child_worker = CountingWorker()
-    root.content_panels[0]._worker = cast(SourceWorker, root_worker)
-    child.content_panels[0]._worker = cast(SourceWorker, child_worker)
+    root.content_panels[0]._runtime.worker = cast(SourceWorker, root_worker)
+    child.content_panels[0]._runtime.worker = cast(SourceWorker, child_worker)
 
     app._shutdown_menu_runtimes()
     app._shutdown_menu_runtimes()

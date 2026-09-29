@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from tuiloom import KeyBinding, ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import KeyBinding, MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.input_handler.input_handler import InputHandler
@@ -67,14 +67,14 @@ def test_legacy_menu_constructor_content_is_rejected() -> None:
     app = TerminalApp("App")
     with pytest.raises(TypeError, match="content"):
         TerminalMenu(
-            app, ScreenContext("main", "Main"), content=ScreenContent.static("old")
+            app, MenuDisplay("main", "Main"), content=ScreenContent.static("old")
         )  # type: ignore[call-arg]
 
 
 def test_global_content_creates_an_ordinary_panel_without_a_primary_role() -> None:
     content = ScreenContent.static("global")
     app = TerminalApp("App", global_content=content)
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     assert len(menu.content_panels) == 1
     inherited = menu.content_panels[0]
     local = menu.add_content_panel(ScreenContent.static("local"), auto_scroll="strict")
@@ -94,7 +94,7 @@ def test_global_content_creates_an_ordinary_panel_without_a_primary_role() -> No
 
 
 def test_empty_runtime_can_add_remove_and_readd_panels_without_aliases() -> None:
-    menu = TerminalMenu(TerminalApp("App"), ScreenContext("main", "Main"))
+    menu = TerminalMenu(TerminalApp("App"), MenuDisplay("main", "Main"))
     loop, renderer = make_runtime(menu)
     try:
         assert not hasattr(menu, "_content_renderer")
@@ -115,11 +115,11 @@ def test_empty_runtime_can_add_remove_and_readd_panels_without_aliases() -> None
         first = menu.add_content_panel(ScreenContent.static("first"))
         second = menu.add_content_panel(ScreenContent.static("second"))
         renderer._compose_frame(30, 25)
-        second_viewport = second._viewport
+        second_viewport = second._runtime.viewport
         first.set_content(ScreenContent.static("replacement"))
         renderer._compose_frame(30, 25)
-        assert first._renderer.rendered_content.lines == ["replacement"]
-        assert second._viewport is second_viewport
+        assert first._runtime.renderer.rendered_content.lines == ["replacement"]
+        assert second._runtime.viewport is second_viewport
         menu._handle_event(InputEvent(KeyBinding("tab")))
         assert menu._focused_panel is first
         first.remove()
@@ -130,8 +130,8 @@ def test_empty_runtime_can_add_remove_and_readd_panels_without_aliases() -> None
         new = menu.add_content_panel(ScreenContent.static("new"))
         renderer._compose_frame(30, 25)
         assert menu.content_panels == (new,)
-        assert new._viewport is not None
-        assert new._renderer.rendered_content.lines == ["new"]
+        assert new._runtime.viewport is not None
+        assert new._runtime.renderer.rendered_content.lines == ["new"]
     finally:
         loop.close()
 
@@ -148,7 +148,7 @@ def test_deferred_replacement_updates_render_cache_for_any_panel(
         release.wait()
         yield "late"
 
-    menu = TerminalMenu(TerminalApp("App"), ScreenContext("main", "Main"))
+    menu = TerminalMenu(TerminalApp("App"), MenuDisplay("main", "Main"))
     other = menu.add_content_panel(ScreenContent.static("other"))
     panel = menu.add_content_panel(ScreenContent.stream(stream()), position=position)
     loop, renderer = make_runtime(menu)
@@ -162,10 +162,10 @@ def test_deferred_replacement_updates_render_cache_for_any_panel(
         assert blocked.wait(1)
         loop._drain_source_events()
         renderer.render()
-        assert panel._renderer.rendered_content.revision == 0
+        assert panel._runtime.renderer.rendered_content.revision == 0
         assert "new" not in "\n".join(renderer._previous_lines or [])
-        other_viewport = other._viewport
-        worker = panel._worker
+        other_viewport = other._runtime.viewport
+        worker = panel._runtime.worker
         assert worker is not None
 
         panel.set_content(ScreenContent.static("new"))
@@ -179,8 +179,8 @@ def test_deferred_replacement_updates_render_cache_for_any_panel(
         frame = "\n".join(renderer._previous_lines or [])
         assert "new" in frame
         assert "late" not in frame
-        assert other._viewport is other_viewport
-        assert panel._renderer.rendered_content.revision == 0
+        assert other._runtime.viewport is other_viewport
+        assert panel._runtime.renderer.rendered_content.revision == 0
     finally:
         release.set()
         loop.close()

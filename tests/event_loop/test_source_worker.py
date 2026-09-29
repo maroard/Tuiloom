@@ -3,7 +3,9 @@ from queue import Queue
 from threading import Event
 from typing import cast
 
-from tuiloom import ContentSize, ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+import pytest
+
+from tuiloom import ContentSize, MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 from tuiloom.content_panel import ContentPanel
 from tuiloom.event_loop.source_event import SourceEvent
 from tuiloom.event_loop.source_worker import SourceWorker
@@ -12,7 +14,7 @@ from tuiloom.output_task import OutputTaskSession
 
 def make_panel() -> ContentPanel:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     menu.add_content_panel(ScreenContent.static(""))
     return menu.content_panels[0]
 
@@ -230,3 +232,31 @@ def test_cancelling_output_view_wakes_source_worker_without_finishing_task() -> 
     worker.join(timeout=1)
 
     assert stopped_without_outcome
+
+
+def test_cancel_calls_the_source_hook_once_even_when_it_raises() -> None:
+    class Source:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+
+        def __call__(self) -> str:
+            return "content"
+
+        def cancel(self) -> None:
+            self.cancel_calls += 1
+            raise ValueError("cancel hook failed")
+
+    source = Source()
+    worker = SourceWorker(
+        make_panel(), 1, source, Queue(maxsize=8), lambda: None, kind="dynamic"
+    )
+    worker.start()
+    try:
+        with pytest.raises(ValueError, match="cancel hook failed"):
+            worker.cancel()
+
+        worker.cancel()
+        assert source.cancel_calls == 1
+        assert worker.join(1)
+    finally:
+        worker.join(1)

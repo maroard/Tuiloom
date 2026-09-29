@@ -5,8 +5,8 @@ import pytest
 from tuiloom import (
     AutoScrollMode,
     ContentPanel,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     TerminalApp,
     TerminalMenu,
 )
@@ -15,7 +15,7 @@ from tuiloom import (
 def make_menu(content: str | None = "first") -> TerminalMenu:
     app = TerminalApp("App")
     configured = ScreenContent.static(content) if content is not None else None
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     if configured is not None:
         menu.add_content_panel(configured)
     return menu
@@ -26,7 +26,7 @@ def test_add_content_panel_configures_auto_scroll(
     mode: AutoScrollMode,
 ) -> None:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     menu.add_content_panel(ScreenContent.static("first"), auto_scroll=mode)
 
     assert menu.content_panels[0].auto_scroll == mode
@@ -61,12 +61,12 @@ def test_content_panels_are_stable_ordered_handles() -> None:
 def test_panel_explicit_methods_mutate_through_the_stable_handle() -> None:
     menu = make_menu()
     panel = menu.add_content_panel(ScreenContent.static("old"), description="Old")
-    panel._smart_auto_scroll_active = False
-    panel._pending_auto_scroll = "strict"
+    panel._runtime.smart_auto_scroll_active = False
+    panel._runtime.pending_auto_scroll = "strict"
 
     panel.set_content(ScreenContent.static("new"))
-    assert panel._smart_auto_scroll_active
-    assert panel._pending_auto_scroll is None
+    assert panel._runtime.smart_auto_scroll_active
+    assert panel._runtime.pending_auto_scroll is None
     panel.set_description("New")
     panel.set_auto_scroll("strict")
     panel.move(0)
@@ -222,7 +222,7 @@ def test_layout_mutation_rejects_unowned_panels() -> None:
 def test_collapse_transitions_preserve_panel_configuration() -> None:
     menu = make_menu()
     panel = menu.content_panels[0]
-    content, renderer = panel.content, panel._renderer
+    content, renderer = panel.content, panel._runtime.renderer
     assert panel.collapsed is False
     assert panel.collapsed_height == 1
     transitions: tuple[tuple[Callable[[], object], bool], ...] = (
@@ -236,7 +236,7 @@ def test_collapse_transitions_preserve_panel_configuration() -> None:
     for operation, collapsed in transitions:
         assert operation() is None
         assert panel.collapsed is collapsed
-    assert panel.content is content and panel._renderer is renderer
+    assert panel.content is content and panel._runtime.renderer is renderer
     assert menu.content_panels == (panel,)
 
 

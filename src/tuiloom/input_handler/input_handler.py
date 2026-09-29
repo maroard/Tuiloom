@@ -5,6 +5,7 @@ from sys import stdin
 from typing import TextIO, cast
 
 from blessed import Terminal
+from blessed.dec_modes import DecModeResponse, DecPrivateMode
 from blessed.keyboard import Keystroke
 
 from tuiloom.input_handler.input_event import InputEvent
@@ -38,6 +39,8 @@ def normalize_keystroke(key: Keystroke) -> InputEvent:
     terminal input can never block later events in the input buffer.
     """
     name = key.name
+    if name in {"FOCUS_IN", "FOCUS_OUT"}:
+        return InputEvent(None, terminal_focus=name == "FOCUS_IN")
     raw_value = getattr(key, "value", str(key))
     value = raw_value if isinstance(raw_value, str) else str(key)
 
@@ -94,8 +97,16 @@ class InputHandler:
         self._terminal = terminal if terminal is not None else Terminal()
         self._stream = stream
         self._escape_delay = escape_delay
+        # TerminalApp owns mode 1004 via save/set/restore, without querying it.
+        # Blessed >=1.48,<2 gates its native focus decoder on this private cache.
+        # Prime only that entry: focus reports must remain atomic even when
+        # NO_COLOR disables Blessed's queries. Avoid a second input parser and
+        # responses arriving after a negotiation timeout becoming user input.
+        self._focus_mode = int(DecPrivateMode.FOCUS_IN_OUT_EVENTS)
+        self._previous_focus_mode = self._terminal._dec_mode_cache.get(self._focus_mode)
         self._cbreak = cast(AbstractContextManager[object], self._terminal.cbreak())
         self._cbreak.__enter__()
+        self._terminal._dec_mode_cache[self._focus_mode] = DecModeResponse.SET
         self._closed = False
 
     def poll(self) -> InputEvent | None:
@@ -118,4 +129,12 @@ class InputHandler:
         if self._closed:
             return
         self._closed = True
-        self._cbreak.__exit__(None, None, None)
+        try:
+            if self._previous_focus_mode is None:
+                self._terminal._dec_mode_cache.pop(self._focus_mode, None)
+            else:
+                self._terminal._dec_mode_cache[self._focus_mode] = (
+                    self._previous_focus_mode
+                )
+        finally:
+            self._cbreak.__exit__(None, None, None)

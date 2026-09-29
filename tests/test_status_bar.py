@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 import tuiloom
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 
 
 def test_status_factories_are_explicit_and_validate_producers() -> None:
@@ -19,7 +19,7 @@ def test_status_factories_are_explicit_and_validate_producers() -> None:
 
 
 def test_menu_status_configuration_is_atomic_and_independent_of_panels() -> None:
-    menu = TerminalMenu(TerminalApp("App"), ScreenContext("main", "Main"))
+    menu = TerminalMenu(TerminalApp("App"), MenuDisplay("main", "Main"))
     assert getattr(menu, "status_bar", "missing") is None
     status_type = tuiloom.StatusBar
     status = status_type.static("Ready")
@@ -34,7 +34,7 @@ def test_menu_status_configuration_is_atomic_and_independent_of_panels() -> None
 
 
 def test_only_responsive_status_can_be_explicitly_refreshed() -> None:
-    menu = TerminalMenu(TerminalApp("App"), ScreenContext("main", "Main"))
+    menu = TerminalMenu(TerminalApp("App"), MenuDisplay("main", "Main"))
     for status in (None, "Ready", tuiloom.StatusBar.dynamic(lambda: "Ready")):
         if status is not None:
             menu.set_status_bar(status)

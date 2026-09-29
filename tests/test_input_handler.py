@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import cast
 
+import pytest
+from blessed import Terminal
+from blessed.dec_modes import DecModeResponse, DecPrivateMode
 from blessed.keyboard import Keystroke
 
 from tuiloom import KeyBinding
@@ -63,6 +66,18 @@ def test_modifier_special_key_and_synthesized_printable_name() -> None:
     assert printable.text == "a"
 
 
+@pytest.mark.parametrize("gained", [False, True])
+def test_terminal_focus_notifications_are_not_keyboard_commands(gained: bool) -> None:
+    event = normalize_keystroke(
+        stroke(
+            "\x1b[I" if gained else "\x1b[O", name="FOCUS_IN" if gained else "FOCUS_OUT"
+        )
+    )
+    assert event.binding is None
+    assert event.text is None
+    assert event.terminal_focus is gained
+
+
 class _BreakContext:
     def __init__(self) -> None:
         self.entered = False
@@ -84,6 +99,7 @@ class _FakeTerminal:
     def __init__(self, keys: Iterator[Keystroke]) -> None:
         self.keys = keys
         self.context = _BreakContext()
+        self._dec_mode_cache: dict[int, int] = {}
         self.calls: list[tuple[float, float]] = []
 
     def cbreak(self) -> _BreakContext:
@@ -99,8 +115,13 @@ class _FakeStream:
         return 42
 
 
-def test_input_handler_polls_without_blocking_and_restores_once() -> None:
+@pytest.mark.parametrize("previous", [None, DecModeResponse.SET, DecModeResponse.RESET])
+def test_input_handler_polls_without_blocking_and_restores_once(
+    previous: int | None,
+) -> None:
     terminal = _FakeTerminal(iter([stroke("é"), stroke("")]))
+    if previous is not None:
+        terminal._dec_mode_cache[DecPrivateMode.FOCUS_IN_OUT_EVENTS] = previous
     stream = _FakeStream()
     handler = InputHandler(
         terminal=cast(object, terminal),  # type: ignore[arg-type]
@@ -108,6 +129,10 @@ def test_input_handler_polls_without_blocking_and_restores_once() -> None:
         escape_delay=0.03,
     )
     assert terminal.context.entered
+    assert (
+        terminal._dec_mode_cache[DecPrivateMode.FOCUS_IN_OUT_EVENTS]
+        == DecModeResponse.SET
+    )
     assert handler.poll() is not None
     assert handler.poll() is None
     assert terminal.calls == [(0, 0.03), (0, 0.03)]
@@ -116,3 +141,28 @@ def test_input_handler_polls_without_blocking_and_restores_once() -> None:
     handler.close()
     handler.close()
     assert terminal.context.exited
+    assert terminal._dec_mode_cache.get(DecPrivateMode.FOCUS_IN_OUT_EVENTS) == previous
+
+
+def test_blessed_decodes_focus_unicode_navigation_and_escape_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NO_COLOR", "1")
+    terminal = Terminal()
+    handler = InputHandler(terminal=terminal)
+    try:
+        terminal.ungetch("\x1b[O\x1b[Ié\x1b[A\x1b")
+        lost = handler.poll()
+        gained = handler.poll()
+        text = handler.poll()
+        up = handler.poll()
+        escape = handler.poll()
+        assert lost is not None and lost.terminal_focus is False
+        assert gained is not None and gained.terminal_focus is True
+        assert text is not None and text.text == "é"
+        assert up is not None and up.binding == KeyBinding("up")
+        assert escape is not None and escape.binding == KeyBinding("escape")
+        assert handler.poll() is None
+    finally:
+        handler.close()
+    assert DecPrivateMode.FOCUS_IN_OUT_EVENTS not in terminal._dec_mode_cache

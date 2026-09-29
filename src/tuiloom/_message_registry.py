@@ -8,18 +8,28 @@ type MessageValue = str | MessageFactory
 class MessageKey(StrEnum):
     """Identify built-in messages that may be shown or disabled.
 
-    ``NO_CONTENT_SOURCE`` explains that a menu has no content box.
-    ``UNKNOWN_COMMAND`` describes discarded textual command input retained for
-    integrations. ``TASK_EXIT_CHOICES`` presents safe task-closing choices and
-    ``TASK_WAITING`` labels the animated wait state and ``TASK_STOPPING`` the
-    irreversible cooperative shutdown state.
+    Members are immutable string values accepted by ``TerminalMenu.show_message()``
+    and the application's ``enable_message()`` and ``disable_message()`` methods.
+    Custom messages use their registered string keys instead. Task-exit controls
+    are independent menu actions, not registered messages.
+
+    Args:
+        values: Single built-in string value for enum conversion, for example
+            ``MessageKey("no_content_source")``; an existing member also returns
+            that member. Access named members directly to avoid conversion.
+
+    Attributes:
+        NO_CONTENT_SOURCE: Read-only ``"no_content_source"`` key for the
+            contextual message explaining that a menu has no content source.
+        UNKNOWN_COMMAND: Read-only ``"unknown_command"`` key for discarded
+            textual command input, retained for integrations. Disabled by default.
+
+    Raises:
+        ValueError: If enum conversion is given an unknown built-in value.
     """
 
     NO_CONTENT_SOURCE = "no_content_source"
     UNKNOWN_COMMAND = "unknown_command"
-    TASK_EXIT_CHOICES = "task_exit_choices"
-    TASK_WAITING = "task_waiting"
-    TASK_STOPPING = "task_stopping"
 
 
 class MessageRegistry:
@@ -29,7 +39,7 @@ class MessageRegistry:
         """Create a registry populated with the built-in messages."""
         self._built_in_messages: dict[str, MessageValue] = {}
         self._custom_messages: dict[str, str] = {}
-        self._disabled: set[str] = set()
+        self._disabled: set[str] = {MessageKey.UNKNOWN_COMMAND}
 
         self._register_built_in_messages()
 
@@ -45,12 +55,6 @@ class MessageRegistry:
             MessageKey.UNKNOWN_COMMAND,
             self._unknown_command,
         )
-        self._add_built_in_message(
-            MessageKey.TASK_EXIT_CHOICES,
-            "1: Stop and quit\n2: Wait and quit\n0: Cancel",
-        )
-        self._add_built_in_message(MessageKey.TASK_WAITING, "Task in progress")
-        self._add_built_in_message(MessageKey.TASK_STOPPING, "Stopping…")
 
     # Register a message owned by the library.
     def _add_built_in_message(

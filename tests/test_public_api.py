@@ -13,8 +13,8 @@ from tuiloom import (
     KeyMap,
     MenuChoice,
     MenuCommand,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     StatusBar,
     TerminalApp,
     TerminalMenu,
@@ -26,22 +26,24 @@ from tuiloom.render.terminal_renderer import TerminalRenderer
 def test_public_api_contains_only_intentional_symbols() -> None:
     expected = {
         "AutoScrollMode",
-        "ChoiceBehavior",
+        "ChoiceCallback",
         "ChoiceContext",
         "ChoiceOption",
-        "CommandBehavior",
+        "CommandCallback",
         "CommandContext",
         "ContentPanel",
         "ContentRefreshMode",
         "ContentSize",
         "GlobalCommand",
-        "InputBehavior",
+        "InputCallback",
         "KeyBinding",
+        "KeyAction",
         "KeyMap",
         "MenuCommand",
         "MenuChoice",
+        "MenuPresentation",
         "MessageKey",
-        "ScreenContext",
+        "MenuDisplay",
         "ScreenContent",
         "StatusBar",
         "TerminalApp",
@@ -74,7 +76,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
         KeyMap,
         MenuCommand,
         MenuChoice,
-        ScreenContext,
+        MenuDisplay,
         ScreenContent,
         StatusBar,
         TerminalApp,
@@ -88,6 +90,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "__init__",
             "name",
             "global_content",
+            "global_content_factory",
             "keymap",
             "global_commands",
             "main_menu",
@@ -95,7 +98,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "add_global_command",
             "set_global_command_binding",
             "set_global_command_label",
-            "set_global_command_behavior",
+            "set_global_command_callback",
             "add_message",
             "disable_message",
             "enable_message",
@@ -104,10 +107,14 @@ def test_public_classes_and_methods_have_documentation() -> None:
         TerminalMenu: (
             "__init__",
             "app",
-            "screen_context",
+            "display_state",
             "commands",
             "is_main",
-            "show",
+            "presentation",
+            "menu_visible",
+            "show_menu",
+            "hide_menu",
+            "toggle_menu",
             "content_panels",
             "status_bar",
             "set_status_bar",
@@ -116,19 +123,21 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "add_content_panel",
             "add_command",
             "add_choice",
-            "set_choice_value",
-            "add_menu",
+            "set_choice_index",
+            "set_choice_callback",
+            "add_submenu",
+            "remove_command",
             "set_command_label",
-            "set_command_behavior",
+            "set_command_callback",
             "move_command",
             "disable_command",
             "enable_command",
             "set_exit_label",
-            "set_global_command_behavior",
-            "clear_global_command_behavior",
+            "set_global_command_callback",
+            "clear_global_command_callback",
             "disable_global_command",
             "enable_global_command",
-            "run_with_output",
+            "start_output_task",
             "enter_input_mode",
             "leave_input_mode",
             "show_alert",
@@ -140,7 +149,6 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "disable_message",
             "enable_message",
             "is_message_enabled",
-            "run",
             "stop",
         ),
         ContentPanel: (
@@ -158,6 +166,7 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "toggle_collapse",
             "set_collapsed_height",
             "set_layout",
+            "update_layout",
             "set_content",
             "refresh",
             "set_description",
@@ -165,8 +174,32 @@ def test_public_classes_and_methods_have_documentation() -> None:
             "move",
             "remove",
         ),
+        MenuCommand: ("label", "callback", "position", "enabled"),
+        MenuChoice: (
+            "options",
+            "rows",
+            "selected_index",
+            "selected_option",
+            "selected_label",
+            "on_select",
+            "callback",
+        ),
+        GlobalCommand: ("binding", "label", "callback"),
+        ScreenContent: ("static", "lines", "stream", "dynamic", "responsive"),
         StatusBar: ("static", "dynamic", "responsive"),
-        KeyMap: ("bindings", "set_binding", "action_for"),
+        KeyMap: (
+            "bindings",
+            "set_binding",
+            "action_for",
+            "copy",
+            "focus",
+            "up",
+            "down",
+            "left",
+            "right",
+            "activate",
+            "back",
+        ),
     }
     for public_type, names in methods.items():
         for name in names:
@@ -177,6 +210,23 @@ def test_public_classes_and_methods_have_documentation() -> None:
 
 
 def test_discarded_content_panel_aliases_are_absent() -> None:
+    for name in ("ScreenContext", "CommandBehavior", "ChoiceBehavior", "InputBehavior"):
+        assert not hasattr(tuiloom, name)
+    for name in (
+        "screen_context",
+        "add_menu",
+        "delete_command",
+        "set_choice_value",
+        "set_command_behavior",
+        "set_global_command_behavior",
+        "clear_global_command_behavior",
+        "run_with_output",
+        "run",
+    ):
+        assert not hasattr(TerminalMenu, name)
+    assert not hasattr(MenuChoice, "value")
+    assert not hasattr(MenuCommand, "behavior")
+    assert not hasattr(GlobalCommand, "behavior")
     assert not hasattr(tuiloom, "ContentSource")
     assert not hasattr(TerminalApp, "global_content_source")
     assert not hasattr(TerminalMenu, "set_content_source")
@@ -206,7 +256,7 @@ def test_discarded_content_panel_aliases_are_absent() -> None:
 
 def test_accidental_runtime_state_is_not_public() -> None:
     app = TerminalApp("App")
-    menu = TerminalMenu(app, ScreenContext("main", "Main"))
+    menu = TerminalMenu(app, MenuDisplay("main", "Main"))
     for name in ("input_handler", "running", "content_renderer"):
         assert not hasattr(app, name)
         assert not hasattr(menu, name)

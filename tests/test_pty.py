@@ -6,7 +6,7 @@ import select
 import subprocess
 import sys
 from pathlib import Path
-from time import monotonic
+from time import monotonic, sleep
 
 import pytest
 
@@ -113,11 +113,11 @@ def test_read_to_exit_stops_draining_at_pty_eof(
 
 def test_pty_unicode_navigation_and_terminal_restoration() -> None:
     script = """
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, MenuDisplay, TerminalApp, TerminalMenu
 app = TerminalApp("Unicode App")
 menu = TerminalMenu(
     app,
-    ScreenContext("main", "Menu界"),
+    MenuDisplay("main", "Menu界"),
 )
 menu.add_content_panel(ScreenContent.static("café 👨‍👩‍👧"))
 menu.add_command("Activate", lambda context: context.menu.stop())
@@ -134,11 +134,56 @@ print("RESTORED")
     assert b"\x1b[?1049l" in final
 
 
+@pytest.mark.parametrize("no_color", [False, True])
+def test_pty_focus_return_redraws_status_and_preserves_input(
+    monkeypatch: pytest.MonkeyPatch, no_color: bool
+) -> None:
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    else:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    script = """
+from tuiloom import ScreenContent, MenuDisplay, TerminalApp, TerminalMenu
+app = TerminalApp("App")
+menu = TerminalMenu(app, MenuDisplay("main", "Main"), presentation="overlay")
+menu.add_content_panel(ScreenContent.static("Graph"))
+menu.set_status_bar("DONE | Turn 15")
+menu.enter_input_mode("Name: ", lambda text: menu.stop())
+app.set_main_menu(menu)
+app.run()
+print("RESTORED", menu._display_input_buffer())
+"""
+    process, master = _spawn(script)
+    try:
+        initial = _read_until(master, process, b"Name:")
+        assert b"\x1b[?1004$p" not in initial  # No negotiation or late query responses.
+        assert b"\x1b[?1004s\x1b[?1004h" in initial
+        os.write(master, "é".encode())
+        _read_until(master, process, "é".encode())
+        os.write(master, b"\x1b[O\x1b[")  # Leave, then a fragmented return report.
+        sleep(0.005)
+        os.write(master, b"I")
+        restored = _read_until(master, process, b"DONE | Turn 15")
+        assert b"\x1b[H\x1b[J" in restored
+        assert "é".encode() in restored
+        os.write(master, b"\r")
+        final = _read_to_exit(master, process)
+        assert process.returncode == 0
+        assert b"\x1b[?1004r" in final
+        assert b"\x1b[?1049l" in final
+        assert "RESTORED é".encode() in final
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=2)
+
+
 def test_pty_hidden_input_submits_unicode_and_backspaces_a_grapheme() -> None:
     script = """
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, MenuDisplay, TerminalApp, TerminalMenu
 app = TerminalApp("Input App")
-menu = TerminalMenu(app, ScreenContext("main", "Input"))
+menu = TerminalMenu(app, MenuDisplay("main", "Input"))
 values = []
 def begin(context):
     def submit(value):
@@ -165,12 +210,12 @@ print("RESTORED")
 
 def test_pty_renders_two_labeled_content_panels() -> None:
     script = """
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import ScreenContent, MenuDisplay, TerminalApp, TerminalMenu
 
 app = TerminalApp("App")
 menu = TerminalMenu(
     app,
-    ScreenContext("main", "Main"),
+    MenuDisplay("main", "Main"),
 )
 menu.add_content_panel(ScreenContent.static("alpha"), description="Alpha")
 menu.add_content_panel(ScreenContent.static("beta"), description="Beta")
@@ -189,16 +234,63 @@ print("RESTORED")
     assert b"Main" in final
 
 
+def test_pty_overlay_global_toggle_restores_content_and_keeps_diff() -> None:
+    script = """
+from tuiloom import KeyBinding, ScreenContent, MenuDisplay, TerminalApp, TerminalMenu
+app = TerminalApp("Overlay")
+menu = TerminalMenu(
+    app, MenuDisplay("main", "Main", width=16), presentation="overlay"
+)
+menu.add_content_panel(
+    ScreenContent.static("\\n".join(["界" * 50] * 30)), description="Graph"
+)
+menu.add_content_panel(ScreenContent.static("logs"), description="Logs")
+menu.set_status_bar("READY")
+events = []
+def toggle(context):
+    menu.toggle_menu()
+    events.append(menu.menu_visible)
+menu.add_command("Launch", lambda context: menu.stop())
+app.add_global_command(KeyBinding("g"), "Toggle", toggle)
+app.set_main_menu(menu)
+menu.hide_menu()
+app.run()
+print(f"EVENTS={events}")
+print("RESTORED")
+"""
+    process, master = _spawn(script)
+    try:
+        _read_until(master, process, b"READY")
+        os.write(master, b"g")
+        opened = _read_until(master, process, b"Launch")
+        assert b"\x1b[J" not in opened
+        os.write(master, b"g")
+        restored = _read_until(master, process, "界界".encode())
+        assert b"\x1b[J" not in restored
+        os.write(master, b"g")
+        _read_until(master, process, b"Launch")
+        os.write(master, b"\r")
+        final = _read_until(master, process, b"RESTORED")
+        assert process.wait(timeout=2) == 0
+        assert b"EVENTS=[True, False, True]" in final
+        assert b"\x1b[?1049l" in final
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=2)
+
+
 def test_pty_multi_level_navigation_back_reopen_and_quit() -> None:
     script = """
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, TerminalApp, TerminalMenu
 
 app = TerminalApp("Journey App")
-root = TerminalMenu(app, ScreenContext("root", "Root"))
-child = TerminalMenu(app, ScreenContext("child", "Child"))
-leaf = TerminalMenu(app, ScreenContext("leaf", "Leaf"))
-root.add_menu(child, "Open child")
-child.add_menu(leaf, "Open leaf")
+root = TerminalMenu(app, MenuDisplay("root", "Root"))
+child = TerminalMenu(app, MenuDisplay("child", "Child"))
+leaf = TerminalMenu(app, MenuDisplay("leaf", "Leaf"))
+root.add_submenu(child, "Open child")
+child.add_submenu(leaf, "Open leaf")
 app.set_main_menu(root)
 app.run()
 print("RESTORED")
@@ -241,16 +333,16 @@ print("RESTORED")
 def test_force_quit_restores_terminal_and_kills_blocked_output_task() -> None:
     script = """
 from threading import Event
-from tuiloom import ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, TerminalApp, TerminalMenu
 
 app = TerminalApp("App")
-menu = TerminalMenu(app, ScreenContext("main", "Main"))
+menu = TerminalMenu(app, MenuDisplay("main", "Main"))
 def block_forever():
     print("TASK_STARTED")
     Event().wait()
 menu.add_command(
     "Start",
-    lambda context: menu.run_with_output(
+    lambda context: menu.start_output_task(
         block_forever,
         on_success=lambda result: None,
         on_error=lambda error: None,
@@ -284,13 +376,13 @@ def test_pty_status_resize_update_and_navigation_preserve_terminal() -> None:
     import termios
 
     script = """
-from tuiloom import ScreenContext, StatusBar, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, StatusBar, TerminalApp, TerminalMenu
 app = TerminalApp("App")
-root = TerminalMenu(app, ScreenContext("root", "Root"))
-child = TerminalMenu(app, ScreenContext("child", "Child"))
+root = TerminalMenu(app, MenuDisplay("root", "Root"))
+child = TerminalMenu(app, MenuDisplay("child", "Child"))
 root.set_status_bar(StatusBar.responsive(lambda width: f"WIDTH={width}"))
 child.set_status_bar("CHILD STATUS")
-root.add_menu(child, "Open child")
+root.add_submenu(child, "Open child")
 child.add_command("Clear status", lambda context: child.clear_status_bar())
 app.set_main_menu(root)
 app.run()
@@ -322,9 +414,9 @@ print("RESTORED")
 
 def test_pty_status_callback_failure_restores_terminal() -> None:
     script = """
-from tuiloom import ScreenContext, StatusBar, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, StatusBar, TerminalApp, TerminalMenu
 app = TerminalApp("App")
-menu = TerminalMenu(app, ScreenContext("main", "Main"))
+menu = TerminalMenu(app, MenuDisplay("main", "Main"))
 def fail():
     raise ValueError("status failure")
 menu.set_status_bar(StatusBar.dynamic(fail))

@@ -2,11 +2,11 @@ from typing import cast
 
 import pytest
 
-from tuiloom import ScreenContent, ScreenContext, TerminalApp, TerminalMenu
+from tuiloom import MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_text import display_width, visual_cells
-from tuiloom.task_exit import TaskExitView
+from tuiloom.task_exit import TaskExitState
 
 
 def make_renderer(
@@ -16,7 +16,7 @@ def make_renderer(
     app_name: str = "Application",
 ) -> tuple[TerminalMenu, MenuRenderer]:
     app = TerminalApp(app_name)
-    context = ScreenContext("main", "Title", width=width, text="Description")
+    context = MenuDisplay("main", "Title", width=width, text="Description")
     configured = ScreenContent.static(content) if content is not None else None
     menu = TerminalMenu(app, context)
     if configured is not None:
@@ -65,7 +65,7 @@ def test_exit_view_treats_a_retiring_panel_as_focusable_content() -> None:
         active_panels = (panel,)
 
     menu._event_loop = cast(EventLoop, Loop())
-    menu._task_exit = TaskExitView(
+    menu._task_exit = TaskExitState(
         mode="choice",
         selected_index=0,
         previous_focus=None,
@@ -117,7 +117,8 @@ def test_alert_replaces_body_without_false_prompt() -> None:
 def test_input_prompt_and_grapheme_mask_are_inside_menu_box() -> None:
     menu, renderer = make_renderer()
     menu.enter_input_mode("Password: ", lambda value: None, hidden=True)
-    menu._input_buffer = "e\u0301👨‍👩‍👧"
+    assert menu._input is not None
+    menu._input.buffer = "e\u0301👨‍👩‍👧"
     renderer.update()
     rendered = renderer.render()
     assert "Password: **" in rendered
@@ -126,10 +127,10 @@ def test_input_prompt_and_grapheme_mask_are_inside_menu_box() -> None:
 
 def test_messages_and_hidden_menu_renders_nothing() -> None:
     menu, renderer = make_renderer(width=10)
-    menu.screen_context.message = "A footer message that wraps"
+    menu.display_state.message = "A footer message that wraps"
     renderer.update()
     assert "footer" in renderer.render()
-    menu.show = False
+    menu.hide_menu()
     renderer.update()
     assert renderer.render() == ""
 
@@ -145,25 +146,25 @@ def test_disabled_suffix_is_included_in_natural_width() -> None:
 @pytest.mark.parametrize("width", [1, 2, 4, 12, 40])
 def test_strict_width_is_exact_and_changes_live(width: int) -> None:
     menu, renderer = make_renderer(width=width)
-    menu.screen_context.strict_width = True
+    menu.display_state.strict_width = True
     lines = renderer.render().splitlines()
     assert all(display_width(line) == width + 2 for line in lines)
-    menu.screen_context.strict_width = False
+    menu.display_state.strict_width = False
     expanded = renderer.render()
     assert display_width(expanded.splitlines()[0]) >= 15
-    menu.screen_context.strict_width = True
-    menu.screen_context.width = width + 1
+    menu.display_state.strict_width = True
+    menu.display_state.width = width + 1
     assert display_width(renderer.render().splitlines()[0]) == width + 3
 
 
 def test_strict_width_without_width_keeps_automatic_sizing() -> None:
     menu, renderer = make_renderer()
     automatic = renderer.render()
-    menu.screen_context.strict_width = True
+    menu.display_state.strict_width = True
     assert renderer.render() == automatic
-    menu.screen_context.width = 4
+    menu.display_state.width = 4
     assert display_width(renderer.render().splitlines()[0]) == 6
-    menu.screen_context.width = None
+    menu.display_state.width = None
     assert renderer.render() == automatic
 
 
@@ -210,9 +211,9 @@ def test_every_menu_element_wraps_without_losing_text(field: str) -> None:
     menu, renderer = make_renderer(
         width=8, app_name=long_text if field == "app" else "Application"
     )
-    menu.screen_context.strict_width = True
+    menu.display_state.strict_width = True
     if field in {"title", "text", "message"}:
-        setattr(menu.screen_context, field, long_text)
+        setattr(menu.display_state, field, long_text)
     elif field == "command":
         menu.set_command_label(menu.commands[0], long_text)
     elif field == "exit":
@@ -221,19 +222,21 @@ def test_every_menu_element_wraps_without_losing_text(field: str) -> None:
         menu.show_alert(long_text, on_confirm=lambda context: None)
     elif field == "input":
         menu.enter_input_mode("Prompt: ", lambda value: None)
-        menu._input_buffer = long_text
+        assert menu._input is not None
+        menu._input.buffer = long_text
     lines = renderer.render().splitlines()
     assert all(display_width(line) == 10 for line in lines)
     assert all(line.endswith(("│", "╮", "┤", "╯")) for line in lines)
     assert long_text in "".join(line[1:-1].strip() for line in lines)
     assert len(lines) > 15
     if field == "input":
-        assert menu._input_buffer == long_text
+        assert menu._input is not None
+        assert menu._input.buffer == long_text
 
 
 def test_wrapped_command_continuations_align_and_keep_one_selection_marker() -> None:
     menu, renderer = make_renderer(content=None, width=12)
-    menu.screen_context.strict_width = True
+    menu.display_state.strict_width = True
     menu.set_command_label(menu.commands[0], "alpha beta gamma")
     lines = renderer.render().splitlines()
     start = lines.index("│> alpha beta│")
@@ -244,7 +247,7 @@ def test_wrapped_command_continuations_align_and_keep_one_selection_marker() -> 
 
 def test_wrapped_disabled_command_keeps_its_complete_suffix() -> None:
     menu, renderer = make_renderer(content=None, width=12)
-    menu.screen_context.strict_width = True
+    menu.display_state.strict_width = True
     menu.disable_command(menu.commands[0])
     lines = renderer.render().splitlines()
     assert "│  (disabled)│" in lines

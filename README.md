@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.8.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.9.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -20,6 +20,7 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Core concepts](#core-concepts)
 - [Navigation and focus](#navigation-and-focus)
 - [Screen state and visibility](#screen-state-and-visibility)
+- [Overlay menus](#overlay-menus)
 - [Commands and submenus](#commands-and-submenus)
 - [Screen content](#screen-content)
 - [Status bar](#status-bar)
@@ -33,6 +34,7 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Terminal hyperlinks](#terminal-hyperlinks)
 - [API reference](#api-reference)
 - [Runtime constraints](#runtime-constraints)
+- [Strict API migration](#strict-api-migration)
 - [Development](#development)
 
 ## Installation
@@ -46,7 +48,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.8.0
+python -m pip install tuiloom==0.9.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -58,7 +60,7 @@ framework or event-loop dependency.
 from tuiloom import (
     CommandContext,
     ScreenContent,
-    ScreenContext,
+    MenuDisplay,
     TerminalApp,
     TerminalMenu,
 )
@@ -66,7 +68,7 @@ from tuiloom import (
 app = TerminalApp("Generator")
 menu = TerminalMenu(
     app,
-    ScreenContext(
+    MenuDisplay(
         menu_name="main",
         title="Generation",
         text="Choose an operation",
@@ -98,7 +100,7 @@ A Tuiloom application has three main layers:
    messages, captured-output state, and the root menu.
 2. `TerminalMenu` owns selectable commands, content panels, input, alerts,
    an optional status bar, local overrides, and its event loop.
-3. `ScreenContext` is the mutable visible state of one menu: name, title,
+3. `MenuDisplay` is the mutable visible state of one menu: name, title,
    minimum width, descriptive text, and footer message.
 
 Every menu belongs to exactly one application. A submenu and its parent must
@@ -108,8 +110,8 @@ navigation stack determines the automatic final row: the bottom menu displays
 restores `Back` on the previous one until stack depth determines its runtime
 label.
 
-Callbacks receive a frozen `CommandContext` containing the active application,
-menu, command handle, and triggering binding:
+Command callbacks receive a frozen `CommandContext` containing the active
+application, menu, command handle, and triggering binding:
 
 ```python
 from tuiloom import CommandContext
@@ -120,6 +122,14 @@ def inspect_invocation(context: CommandContext) -> None:
         f"Command: {context.command!r}\nBinding: {context.binding!r}"
     )
 ```
+
+Commands, choices, input submission, alert confirmation, and captured-task
+completion run on the UI thread during normal application execution. Keep these
+callbacks short; use `start_output_task()` for blocking application work.
+`ScreenContent.dynamic()` and `responsive()` producers run in content workers,
+while `StatusBar` producers run on the UI thread. Content producers should return
+text rather than mutate menus, and synchronize access to any shared application
+state.
 
 ## Navigation and focus
 
@@ -179,21 +189,27 @@ menu does not initialize it until the application loop reaches it. Its runtime
 and content workers are then initialized once per application run. Popping or
 replacing the menu removes it from the visible stack but retains and services
 that runtime in the background, including source processing and captured-task
-completion callbacks. Reopening it resets transient navigation state without
-restarting its workers. On graceful exit, `TerminalApp.run()` closes every
+completion callbacks. `push_menu()`, `replace_menu()`, and `reset_to()` reset the
+target's focus, command selection, option preview, and input buffer, then invoke
+its initial command-level `on_hover`, if configured. An existing input prompt and
+callback remain installed; only its buffer is cleared. The first `on_hover` runs
+before lazy runtime initialization, so it cannot start an output task in that
+menu yet. `pop_menu()` reveals the retained state of the previous menu without
+this reset. Reopening a retained runtime does not restart its workers.
+On graceful exit, `TerminalApp.run()` closes every
 initialized menu runtime and joins its workers, including menus no longer on the
 stack.
 
 ## Screen state and visibility
 
-`ScreenContext` fields are live and mutable. Tuiloom observes changes while the
+`MenuDisplay` fields are live and mutable. Tuiloom observes changes while the
 menu runs:
 
 ```python
-menu.screen_context.title = "New title"
-menu.screen_context.text = "Updated instructions"
-menu.screen_context.message = "Saved"
-menu.screen_context.width = 32
+menu.display_state.title = "New title"
+menu.display_state.text = "Updated instructions"
+menu.display_state.message = "Saved"
+menu.display_state.width = 32
 ```
 
 `width` is the minimum inner width. It must be a positive integer or `None`;
@@ -206,8 +222,8 @@ align under their label with the selection marker on the first line only.
 Set `strict_width=True` to keep the menu at exactly the specified inner `width`:
 
 ```python
-menu.screen_context.width = 32
-menu.screen_context.strict_width = True
+menu.display_state.width = 32
+menu.display_state.strict_width = True
 ```
 
 `strict_width` defaults to `False` and has no effect when `width=None` (automatic
@@ -224,10 +240,108 @@ may be smaller.
 By default, a content box and menu box have one blank row between them. Pass
 `content_spacing=False` to remove it.
 
-Setting `menu.show = False` clears the entire frame while its event loop,
-content sources, and tasks keep running. While hidden, only global commands and
-the Back/Escape binding are handled; other input is discarded and cannot be
-replayed when the menu becomes visible again.
+Use `menu.hide_menu()` to hide the menu box while keeping content panels,
+the status bar, and their runtime active. `show_menu()` reveals the box and
+`toggle_menu()` switches its visibility. The former whole-frame `show` property
+and constructor argument have been removed in v0.9.0.
+
+## Overlay menus
+
+Display the same `TerminalMenu` above a graph, dashboard, or logs:
+
+```python
+menu = TerminalMenu(
+    app,
+    MenuDisplay("dashboard", "Main Menu", width=24),
+    presentation="overlay",
+)
+menu.add_content_panel(ScreenContent.static("Graph / dashboard"), description="Graph")
+menu.add_content_panel(ScreenContent.static("Turn 15: done"), description="Simulation")
+menu.set_status_bar("DONE │ Turn 15 │ 25/25 delivered")
+menu.add_command("Resume dashboard", lambda context: context.menu.hide_menu())
+
+# The application chooses its own shortcut; Tuiloom registers none.
+app.add_global_command(
+    KeyBinding("m"), "Toggle menu", lambda context: context.menu.toggle_menu()
+)
+```
+
+`inline` retains the historical vertical layout. `overlay` centers the box
+in the entire terminal body above the status bar. It can cover multiple panels
+and their borders; it does not attach to one panel. The status row stays at the
+bottom and is never covered. Weighted sizing, minimum/maximum heights and
+collapsed heights still allocate panels as if the menu occupied zero rows.
+`content_spacing` adds no rows in overlay mode. Opening/closing an overlay does
+not change dimensions passed to responsive content producers.
+
+An overlay uses the existing automatic width, `width`, `strict_width`, wrapping,
+commands, choices, messages, alerts and input. If it cannot fit, the frame shows
+`Terminal window is too small.`; a configured status bar remains at the bottom.
+The current background continues updating behind the menu and is restored when
+it closes. Resizing recomputes both panel layout and centered menu placement.
+On terminals supporting focus reports, returning to a terminal tab also repaints
+the complete frame, including its bottom rows, even at an unchanged size. Focus
+notifications do not invoke commands or modify pending input. The terminal's
+previous focus-reporting mode is restored when the application closes.
+Focus reporting uses the terminal's mode save/restore controls without a capability
+query, so no late query response can become input. It also works with `NO_COLOR`.
+Terminals without focus reporting keep ordinary rendering, resizing and segment
+diffs. See the [terminal protocol](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html#h2-Focus-Tracking).
+
+### Menu visibility
+
+| API | Effect |
+| --- | --- |
+| `menu.hide_menu()` | Hide only the menu box; panels and status remain visible |
+| `menu.show_menu()` | Reveal a hidden box and focus it |
+| `menu.toggle_menu()` | Switch the box visibility |
+| `menu.menu_visible` | Read the requested box visibility, initially `True` |
+
+Box visibility works in both modes. Hiding an inline box also releases its
+height and spacing. These operations preserve sources, workers, the navigation
+stack, selection, alerts and input state. Showing/hiding an already
+shown/hidden box is a no-op. The frame stays visible throughout.
+
+Hiding keeps an already focused panel, or focuses the first available panel.
+Tab cycles only through panels while the box is hidden; local menu commands,
+alerts and input do not consume keys. Global commands remain available, including
+an application-defined toggle shortcut. With no panels, there is no local focus
+target; global commands and Back/Escape still work. When visible, input and
+alerts keep their existing modal priority. A root quit confirmation temporarily
+reveals the menu box while retaining `menu_visible=False`; cancelling restores
+the hidden dashboard and prior panel focus.
+
+### Submenu presentation inheritance
+
+Omitting `presentation` (or passing `None`) means inherit when opened:
+
+```python
+settings = TerminalMenu(app, MenuDisplay("settings", "Settings"))
+menu.add_submenu(settings, "Settings")  # Inherits overlay from menu on push.
+
+full_page = TerminalMenu(
+    app, MenuDisplay("details", "Details"), presentation="inline"
+)  # Explicit modes always override inheritance.
+```
+
+`push_menu()` inherits from the current top menu. `replace_menu()` inherits
+from the menu being replaced. Inheritance is resolved again on every opening,
+so the same unconfigured submenu can appear inline or overlay from different
+parents. `pop_menu()` restores the parent's presentation. `reset_to()` an
+existing stack entry preserves its mode; a new root defaults to inline.
+Read `menu.presentation` for the effective mode. Box visibility is local to
+each menu and does not inherit. Navigation retains each menu's own panels and
+status configuration, just as in v0.8.
+
+Run the complete graph/dashboard example from a checkout:
+
+```bash
+uv run python examples/overlay_dashboard.py
+```
+
+It starts with the menu hidden. Press M to open it, start a simulation, or open
+Settings to see presentation inheritance. The graph, logs and status keep
+updating while the menu is open or hidden.
 
 ## Commands and submenus
 
@@ -247,7 +361,7 @@ def disconnect(context: CommandContext) -> None:
 
 command = menu.add_command("Connect", connect)
 menu.set_command_label(command, "Disconnect")
-menu.set_command_behavior(command, disconnect)
+menu.set_command_callback(command, disconnect)
 menu.move_command(command, 0)
 menu.disable_command(command)
 menu.enable_command(command)
@@ -259,8 +373,11 @@ position inserts it there. Booleans, negative positions, and out-of-range
 positions are rejected before mutation. `menu.commands` is an immutable tuple
 view, and a handle from another menu is rejected.
 
-The handle exposes read-only `label`, `behavior`, `position`, and `enabled`
+The handle exposes read-only `label`, `callback`, `position`, and `enabled`
 properties. Their current values reflect mutations performed through the menu.
+`on_hover` means keyboard selection: it runs when selection reaches the command,
+including the initial selection when opening a menu. It does not require a mouse.
+Its initial invocation has `context.binding is None`.
 
 ### Horizontal choices
 
@@ -270,38 +387,58 @@ callback receives a `ChoiceContext` with `app`, `menu`, `command`, `option`,
 for options; the command label's `on_hover` receives a `CommandContext`.
 
 ```python
-from tuiloom import ChoiceOption
+from tuiloom import ChoiceContext, ChoiceOption
+
+
+def preview_accurate(context: ChoiceContext) -> None:
+    context.menu.display_state.message = "Preview: accurate simulation"
+
+
+def apply_mode(context: ChoiceContext) -> None:
+    context.menu.display_state.message = f"Mode: {context.option.label}"
 
 app.add_message("fast_help", "Run the simulation to completion.")
 mode = menu.add_choice(
     "Simulation mode",
     [
         ChoiceOption("Fast", hover_message="fast_help"),
-        ChoiceOption("Accurate", on_hover=lambda context: show_accurate_preview()),
+        ChoiceOption("Accurate", on_hover=preview_accurate),
         ChoiceOption("Custom", row=1),
     ],
-    lambda context: apply_mode(context.option.label),
+    on_select=apply_mode,
     rows=2,
     selected_index=0,
 )
-menu.set_choice_value(mode, 1)  # Update without calling on_select.
+menu.set_choice_index(mode, 1)  # Update without calling on_select.
+menu.set_choice_callback(mode, apply_mode)
 ```
 
 `ChoiceOption(label, *, row=0, on_hover=None, hover_message=None)` uses zero-based
 declared rows. `hover_message` names a registered application message shown only
 while the cursor is on that option. It overlays the persistent footer without
-changing `ScreenContext.message` or `active_message_key`; the previous footer
+changing `MenuDisplay.message` or `active_message_key`; the previous footer
 reappears when the cursor leaves. Unknown message keys raise `KeyError` when
 the choice is added. `on_hover` remains available for other actions.
 Empty declared rows are skipped. A narrow terminal wraps between options, and
 arrow navigation follows those visible lines. Right from the label enters the
 options; Down moves to the next command. Enter from the label moves to the
 active option. Moving the cursor previews an option without changing
-`mode.value`. Enter on an option validates it and calls `on_select`, including
+`mode.selected_index` or `mode.selected_option`. `mode.selected_label` returns
+the validated option's display text. Enter on an option validates it and calls
+`on_select`, including
 when it is already active. The `>` marker follows the cursor; `✓` appears after
 the validated option's label. Option lines start two cells to the right of
 command markers when the width permits. Use the owning menu's command mutation
-methods to rename, move, disable, or delete a choice.
+methods to rename, move, disable, or remove a choice. Replace its selection
+callback with `set_choice_callback()`, which accepts `ChoiceCallback`.
+`set_command_callback()` accepts only regular commands.
+
+`mode.on_select` exposes the original `ChoiceCallback`. The inherited
+`mode.callback` is a real `CommandCallback` adapter: it creates a `ChoiceContext`
+for the currently validated option, preserving the triggering binding. Calling
+that adapter invokes `on_select` without opening the chooser or changing its
+selected index. An option's label is display text; use its index or your own
+mapping for application values.
 
 Every time a menu opens, its marker starts on the first enabled command from
 the top. Disabled commands are skipped during initialization and navigation; if
@@ -313,18 +450,19 @@ row.
 ```python
 settings = TerminalMenu(
     app,
-    ScreenContext("settings", "Settings", text="Configure the application"),
+    MenuDisplay("settings", "Settings", text="Configure the application"),
 )
-open_settings = menu.add_menu(settings, "Settings", position=0)
+open_settings = menu.add_submenu(settings, "Settings", position=0)
 ```
 
 Activating the returned command pushes the submenu onto the application's
-navigation stack. `add_menu()` is the normal convenience helper for a submenu:
+navigation stack. `add_submenu()` is the normal convenience helper for a submenu:
 it creates a command whose callback calls `context.app.push_menu(settings)`; it
 does not start a recursive menu loop. It rejects a submenu owned by a different
 application. Use an explicit command callback with `push_menu()`,
-`replace_menu()`, or `reset_to()` when a different transition is needed. Do not
-call `settings.run()` from a callback.
+`replace_menu()`, or `reset_to()` when a different transition is needed.
+Application execution starts through `TerminalApp.run()`; menu navigation uses
+these stack methods.
 
 ## Screen content
 
@@ -438,6 +576,10 @@ status.set_layout(weight=2, min_height=3, max_height=10)
 
 # Replace the complete layout; omitted options use their defaults.
 logs.set_layout(weight=4, min_height=2, max_height=20)
+
+# Change only supplied options, retaining the others.
+logs.update_layout(weight=3)  # Keep min_height=2 and max_height=20.
+logs.update_layout(max_height=None)  # Remove only the upper bound.
 logs.set_layout()  # Restore equal sharing without an upper limit.
 ```
 
@@ -447,6 +589,9 @@ Minimum and maximum heights count visible content rows, excluding borders.
 Supplied heights must be positive integers, and `max_height` must be at least
 `min_height`. Booleans are rejected for all three options. Invalid creation or
 layout updates raise `TypeError` or `ValueError` before changing panel state.
+`set_layout()` replaces the full expanded configuration and resets omitted
+options to their defaults. `update_layout()` retains omitted options and uses
+`max_height=None` to remove an existing upper bound.
 
 Weights target ratios on the **total** available panel height, including each
 panel's two border rows and excluding the content/menu gap. For 23 rows,
@@ -526,7 +671,7 @@ app = TerminalApp(
     "Monitor",
     global_content=ScreenContent.static("Shared status"),
 )
-menu = TerminalMenu(app, ScreenContext("logs", "Logs"))
+menu = TerminalMenu(app, MenuDisplay("logs", "Logs"))
 shared = menu.content_panels[0]  # Automatically added from global_content.
 logs = menu.add_content_panel(ScreenContent.static("Local status"))
 
@@ -542,7 +687,42 @@ handle through `menu.content_panels`; it can be changed, reordered, or removed
 like any other panel. Explicitly added local panels are additional panels and
 do not override inherited content.
 
-When `global_content` is `None`, a new menu has no panels until one is added.
+For per-menu sources, pass `global_content_factory` instead. It is called once
+per menu construction, on the thread constructing that menu, and must return a
+`ScreenContent`. The two constructor options are mutually exclusive. A stream
+has one consumer: the factory must create a fresh iterator for each menu.
+
+```python
+from collections.abc import Iterator
+
+from tuiloom import MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
+
+
+def log_chunks() -> Iterator[str]:
+    yield "Starting\n"
+    yield "Ready\n"
+
+
+def make_log_content() -> ScreenContent:
+    return ScreenContent.stream(log_chunks())
+
+
+app = TerminalApp("Monitor", global_content_factory=make_log_content)
+main = TerminalMenu(app, MenuDisplay("main", "Monitor"))
+details = TerminalMenu(app, MenuDisplay("details", "Details"))
+main.add_submenu(details, "Details")
+app.set_main_menu(main)
+app.run()
+```
+
+The application rejects mounting the same iterator in two panels at once,
+including panels in different menus of that application. The claim remains
+while an old worker is retiring after removal or replacement, then ends once
+that worker has stopped. Releasing ownership does not rewind an iterator or
+make an exhausted stream reusable.
+
+When both global content options are `None`, a new menu has no panels until one
+is added.
 A menu without panels omits the content box without displaying an automatic
 message. Applications can still show `MessageKey.NO_CONTENT_SOURCE` explicitly
 with `show_message()`.
@@ -556,7 +736,9 @@ menu is running, Tuiloom installs the source through the active event loop.
 Replacing an iterator or an in-flight dynamic evaluation requests cooperative
 cancellation of the old source. The UI remains responsive, waits for the old
 worker to stop, and then installs only the latest requested replacement. If
-several replacements arrive during cleanup, the last request wins. Results and
+several replacements arrive during cleanup, the last request wins.
+`panel.content` continues to report the old mounted configuration until the new
+one is installed. Results and
 errors from an explicitly cancelled source are discarded; ordinary source
 errors still propagate after resources are cleaned up.
 
@@ -572,7 +754,7 @@ worker can stop.
 Set each panel's `auto_scroll` when adding it or through its handle later:
 
 ```python
-menu = TerminalMenu(app, ScreenContext("logs", "Logs"))
+menu = TerminalMenu(app, MenuDisplay("logs", "Logs"))
 logs = menu.add_content_panel(
     ScreenContent.stream(stream()),
     auto_scroll="smart",
@@ -591,14 +773,36 @@ logs.set_auto_scroll("smart")
 Changing a panel's mode or replacing its content resets its smart-scroll state.
 Invalid modes raise `ValueError`.
 
-### Migrating to panel-only content
+### Strict API migration
+
+This version uses the names below directly. Removed names have no aliases or
+deprecated wrappers; update imports, keyword arguments, and attribute access
+together. `stop()` and `on_hover` keep their existing names.
+
+| Removed API | Current API |
+| --- | --- |
+| `ScreenContext`, `menu.screen_context` | `MenuDisplay`, `menu.display_state` |
+| `CommandBehavior`, `InputBehavior`, `ChoiceBehavior` | `CommandCallback`, `InputCallback`, `ChoiceCallback` |
+| Command `behavior` parameter/property | `callback` parameter/property |
+| `set_command_behavior()` | `set_command_callback()` for regular commands; `set_choice_callback()` for choices |
+| `set_global_command_behavior()`, `clear_global_command_behavior()` | `set_global_command_callback()`, `clear_global_command_callback()` |
+| `set_choice_value()` | `set_choice_index()` |
+| `choice.value` | `choice.selected_label`; use `selected_option` for the option object |
+| `add_menu()` | `add_submenu()` |
+| `delete_command()` | `remove_command()` |
+| `run_with_output()` | `start_output_task()` |
+| `style(color=..., highlight=...)` | `style(foreground=..., background=...)` |
+| `TerminalMenu.run()` | `TerminalApp.run()` for execution; `push_menu()` for navigation |
+| `MessageKey.TASK_EXIT_CHOICES`, `TASK_WAITING`, `TASK_STOPPING` | Removed; shutdown uses its own temporary menu state |
 
 The panel-only API is a breaking change: `TerminalMenu` no longer accepts
 `content` or `auto_scroll`, and `menu.set_content()` and `menu.auto_scroll` have
 been removed. Create a panel with `menu.add_content_panel(content, ...)`, keep
 its handle, and use `panel.set_content()`, `panel.set_description()`,
-`panel.set_auto_scroll()`, and `panel.set_layout()` for updates. The menu's
-`content_spacing` and `show` constructor options are keyword-only.
+`panel.set_auto_scroll()`, and `panel.update_layout()` for partial updates. Use
+`panel.set_layout()` to replace the full expanded layout and reset omitted
+options. The menu's
+`content_spacing` constructor option is keyword-only.
 `TerminalApp.global_content` remains supported; access its automatically added
 panel through `menu.content_panels`.
 
@@ -662,14 +866,14 @@ appears above the status; when only one row is available, only the status appear
 A terminal reporting zero rows or columns receives an empty frame.
 
 Each menu owns its own status configuration, retained when returning from a
-submenu. Changes take effect without recreating the menu. `ScreenContext.message`
-continues to render independently inside the menu box. `menu.show = False`
-clears the entire frame, including the status line. Without a status bar, frame
+submenu. Changes take effect without recreating the menu. `MenuDisplay.message`
+continues to render independently inside the menu box. `menu.hide_menu()`
+keeps the status line visible and its producer running. Without a status bar, frame
 composition and sizing remain unchanged from v0.7.
 
 ## Captured task output
 
-`run_with_output()` runs blocking Python work on a non-daemon worker and uses
+`start_output_task()` runs blocking Python work on a non-daemon worker and uses
 its captured stdout/stderr in a temporary content panel:
 
 ```python
@@ -679,7 +883,7 @@ def download() -> str:
 
 
 def start_download(context: CommandContext) -> None:
-    context.menu.run_with_output(
+    context.menu.start_output_task(
         download,
         on_success=lambda path: context.menu.show_alert(f"Saved {path}"),
         on_error=lambda error: context.menu.show_alert(str(error)),
@@ -690,16 +894,21 @@ def start_download(context: CommandContext) -> None:
 menu.add_command("Download", start_download)
 ```
 
-The call itself starts the work and returns immediately. It is valid only while
-the menu is active, and only one captured task may run in the application at a
-time. A second task raises `RuntimeError`.
+The call itself starts the work and returns immediately. Its menu runtime must
+already be initialized and running; another menu may currently be visible.
+Only one captured task may run in the application at a time. A second task
+raises `RuntimeError`.
 
 During the task, output appears in a temporary panel with strict auto-scroll;
 the menu's other panels remain visible and unchanged. On normal completion,
-Tuiloom removes the temporary panel after its output is consumed, then runs
-`on_success(result)` or `on_error(exception)` on the UI thread.
+Tuiloom processes the outcome, releases the active task registration, requests
+removal of the temporary panel, and runs `on_success(result)` or
+`on_error(exception)` on the UI thread. Buffered output may still be draining
+at that point; the panel disappears after consumption finishes. The callback
+does not wait for the panel to disappear.
 
-Capture includes `print()` and Python writes to `sys.stdout` and `sys.stderr`.
+Capture includes `print()` and Python writes to `sys.stdout` and `sys.stderr`
+from non-UI threads while the task is running, including independent workers.
 It cannot capture subprocess output or direct POSIX file-descriptor writes.
 Tuiloom does not inject a cancellation token into `action`. Wait and quit
 therefore requires the action to return, while Force quit terminates the whole
@@ -730,20 +939,28 @@ Cancel
 Navigate with the configured Up/Down actions and activate with Enter. The former
 numeric shortcuts `1`, `2`, and `0` are not accepted.
 
-Iterator sources count as active work until they finish. Dynamic sources count
-as active only while an evaluation is in progress. Static content does not block
+Iterator sources count as active work until they finish. Dynamic and responsive
+sources count as active while an evaluation is in progress, including an old
+evaluation retiring during replacement. Static content does not block
 exit. Every active operation is displayed in its own labeled panel. The list is
 live in every mode: completed panels disappear immediately, singular/plural
 titles update, and newly started operations are included. The application exits
 automatically when no blocking operation remains, even before a choice is made.
 
-**Wait and quit** and ordinary shutdown use cooperative cancellation and wait
-without a timeout before restoring the terminal. **Force quit** is the escape
+While waiting to quit, Tuiloom stops scheduling new dynamic/responsive
+evaluations; it lets the currently running work and stream consumers finish.
+Cancel restores ordinary scheduling. Graceful shutdown requests cooperative
+cancellation and waits without a timeout before restoring the terminal.
+**Force quit** is the escape
 hatch for native or application code that does not return: it restores terminal
 modes and then terminates the whole process without waiting for workers.
 
-The same guarantee applies when a callback, source, or renderer raises: Tuiloom
-joins active workers before restoring the terminal and propagating the error.
+When a callback, source, or renderer raises, Tuiloom attempts all worker and
+terminal cleanup before propagating the error. If cleanup also fails, the
+original error and cleanup failures are retained in an `ExceptionGroup` (or
+`BaseExceptionGroup` when required). Iterator `cancel()`/`close()` hooks should
+release blocking work reliably: a worker that never returns can prevent graceful
+shutdown from finishing.
 
 ## Free-form and hidden input
 
@@ -758,13 +975,15 @@ menu.enter_input_mode("Password: ", submit_password, hidden=True)
 ```
 
 `enter_input_mode()` clears the previous buffer. Printable input is appended,
-Backspace removes a complete Unicode grapheme, Enter calls the `InputBehavior`
+Backspace removes a complete Unicode grapheme, Enter calls the `InputCallback`
 with the full string, and Escape calls `leave_input_mode()` without submitting.
 The callback decides whether input mode stays active after submission.
 
 With `hidden=True`, one `*` is displayed per grapheme, including combining
 characters and emoji sequences. The original Unicode text is passed to the
-callback. Every global command is disabled while free-form input is active.
+callback. Every global command is disabled while visible free-form input is active.
+Hiding only the menu box suspends input without clearing the buffer and restores
+panel/global handling; showing it resumes the same input state.
 
 An alert temporarily suspends the prompt, buffer, hidden state, and input
 callback without destroying them. Clearing the alert reveals the same input
@@ -800,7 +1019,7 @@ is displayed, and Escape still performs Back/Quit.
 
 ## Messages
 
-Messages occupy `ScreenContext.message`, the menu footer. Register custom
+Messages occupy `MenuDisplay.message`, the menu footer. Register custom
 messages on the application, then show or suppress them by key:
 
 ```python
@@ -824,9 +1043,6 @@ The built-in keys are:
 | --- | --- | --- |
 | `NO_CONTENT_SOURCE` | `"no_content_source"` | Explain missing content |
 | `UNKNOWN_COMMAND` | `"unknown_command"` | Report discarded textual command input |
-| `TASK_EXIT_CHOICES` | `"task_exit_choices"` | Compatibility key for the former numeric exit prompt |
-| `TASK_WAITING` | `"task_waiting"` | Compatibility key for the former waiting footer |
-| `TASK_STOPPING` | `"task_stopping"` | Compatibility key for the former stopping footer |
 
 `show_message()` validates the key and returns `False` without changing the
 footer when the message is suppressed. Otherwise it displays the message and
@@ -836,9 +1052,17 @@ returns `True`. Local and application-wide suppression combine;
 keys.
 
 Automatic messages use the same registry and respect suppression.
+`UNKNOWN_COMMAND` is disabled by default: unrecognized keys leave the current
+footer unchanged. Enable reporting explicitly for the application:
+
+```python
+app.enable_message(MessageKey.UNKNOWN_COMMAND)
+```
+
+You can then suppress it again per menu or application with `disable_message()`.
 `menu.active_message_key` is a read-only property identifying the registered
 message currently displayed, or `None` for an empty or directly assigned footer.
-Assigning `screen_context.message` directly resets that identity, even when the
+Assigning `display_state.message` directly resets that identity, even when the
 text is unchanged. Messages with identical text retain distinct keys.
 
 Register a message once during application setup, then toggle it from a callback:
@@ -857,9 +1081,6 @@ message is replaced only if the requested message is enabled. Unknown keys raise
 an active message, which can still be hidden by toggling it. Clearing does not
 restore a previous message.
 
-The three `TASK_*` compatibility keys remain available to application code but
-no longer control Tuiloom's automatic task-exit menu.
-
 ## Key bindings and global commands
 
 ### Custom system bindings
@@ -870,12 +1091,19 @@ from tuiloom import KeyBinding, KeyMap, TerminalApp
 keymap = KeyMap()
 keymap.set_binding("focus", KeyBinding("f", ctrl=True))
 app = TerminalApp("App", keymap=keymap)
+second_app = TerminalApp("Second app", keymap=keymap.copy())
 ```
 
 The seven system actions are `focus`, `up`, `down`, `left`, `right`, `activate`,
 and `back`. `keymap.bindings` is a read-only live mapping, and the same bindings
 are available as `keymap.focus`, `keymap.up`, and so on. `action_for(binding)`
-returns the matching action or `None`.
+returns the matching `KeyAction` or `None`. These seven properties are explicitly
+typed and read-only, so a type checker can report misspelled attribute names.
+`KeyAction` is a literal union of the seven action strings.
+
+A `KeyMap` belongs to one application. Passing the same instance to a second
+application raises `ValueError`. `copy()` copies its bindings into an independent,
+unowned map; later remapping affects only that map and its owner.
 
 `set_binding()` rejects unknown actions, non-`KeyBinding` values, and collisions
 with another system action or application global command. Validation happens
@@ -916,7 +1144,7 @@ refresh_command = app.add_global_command(
 
 app.set_global_command_binding(refresh_command, KeyBinding("f5"))
 app.set_global_command_label(refresh_command, "Reload")
-app.set_global_command_behavior(refresh_command, refresh)
+app.set_global_command_callback(refresh_command, refresh)
 ```
 
 Global commands are invoked immediately when their binding arrives and are not
@@ -926,17 +1154,17 @@ their read-only metadata can power a custom help screen.
 A menu can override or disable an application global command locally:
 
 ```python
-menu.set_global_command_behavior(refresh_command, refresh)
+menu.set_global_command_callback(refresh_command, refresh)
 menu.disable_global_command(refresh_command)
 menu.enable_global_command(refresh_command)
-menu.clear_global_command_behavior(refresh_command)
+menu.clear_global_command_callback(refresh_command)
 ```
 
 Global-command handles belong to one application. Foreign handles are rejected.
 Global commands remain available while a menu is hidden or an alert is shown,
-but not during free-form input or a root task-exit choice.
+but not during visible free-form input or a root task-exit choice.
 
-Input priority is: task-exit choice, hidden-menu handling, free-form input,
+Input priority is: task-exit choice, hidden-menu-box handling, free-form input,
 global commands, alerts, then focus/navigation. Unknown terminal sequences are
 consumed and do not block later input.
 
@@ -953,15 +1181,15 @@ warning = style(
     "Check this value",
     bold=True,
     underline=True,
-    color="red",
-    highlight="yellow",
+    foreground="red",
+    background="yellow",
 )
 ```
 
 The named colors are `black`, `red`, `green`, `yellow`, `blue`, `magenta`,
 `cyan`, and `white`, plus their `bright_` variants. These use the terminal's
 ANSI palette. The following additional names use fixed RGB values for both
-`color` (text) and `highlight` (background):
+`foreground` (text) and `background`:
 
 | Name | RGB hexadecimal |
 | --- | --- |
@@ -983,10 +1211,10 @@ their values from the terminal's configurable ANSI palette.
 Colors can also use an ANSI index, an RGB tuple, or a hexadecimal string:
 
 ```python
-indexed = style("Indexed", color=202)
-named = style("Warning", color="orange", highlight="dark_gray")
-rgb = style("RGB", color=(120, 40, 210), highlight=(245, 245, 245))
-hexadecimal = style("Hex", color="#7A28D2", highlight="#F5F5F5")
+indexed = style("Indexed", foreground=202)
+named = style("Warning", foreground="orange", background="dark_gray")
+rgb = style("RGB", foreground=(120, 40, 210), background=(245, 245, 245))
+hexadecimal = style("Hex", foreground="#7A28D2", background="#F5F5F5")
 ```
 
 The available effects are `bold`, `dim`, `italic`, `underline`,
@@ -1001,7 +1229,7 @@ selected, `style()` returns only that sanitized text.
 from tuiloom import hyperlink, style
 
 label = hyperlink(
-    style("Project", underline=True, color="bright_blue"),
+    style("Project", underline=True, foreground="bright_blue"),
     "https://github.com/maroard/Tuiloom",
 )
 ```
@@ -1020,23 +1248,30 @@ All supported imports come directly from `tuiloom`:
 ```python
 from tuiloom import (
     AutoScrollMode,
-    CommandBehavior,
+    ChoiceCallback,
+    ChoiceContext,
+    ChoiceOption,
+    CommandCallback,
     CommandContext,
     ContentPanel,
     ContentRefreshMode,
     ContentSize,
     GlobalCommand,
-    InputBehavior,
+    InputCallback,
+    KeyAction,
     KeyBinding,
     KeyMap,
+    MenuChoice,
     MenuCommand,
+    MenuDisplay,
+    MenuPresentation,
     MessageKey,
     ScreenContent,
-    ScreenContext,
     StatusBar,
     TerminalApp,
     TerminalMenu,
     TextColor,
+    display_width,
     hyperlink,
     style,
 )
@@ -1047,19 +1282,51 @@ Anything outside this export list is internal and may change without notice.
 ### Type aliases
 
 ```python
+from collections.abc import Callable
+from typing import Literal
+
+from tuiloom import ChoiceContext, CommandContext
+
 type ContentRefreshMode = Literal["resize", "continuous"]
 type AutoScrollMode = Literal["smart", "strict"]
-type CommandBehavior = Callable[[CommandContext], None]
-type InputBehavior = Callable[[str], None]
+type MenuPresentation = Literal["inline", "overlay"]
+type CommandCallback = Callable[[CommandContext], None]
+type ChoiceCallback = Callable[[ChoiceContext], None]
+type InputCallback = Callable[[str], None]
+type KeyAction = Literal["focus", "up", "down", "left", "right", "activate", "back"]
 type TextColor = str | int | tuple[int, int, int]
 ```
 
 `AutoScrollMode | None` is used where automatic scrolling may be disabled.
 
-`ContentSize` is a frozen dataclass with integer `width` and `height` fields.
-`ScreenContent` is an immutable configuration created with `static()`,
-`lines()`, `stream()`, `dynamic()`, or `responsive()`. Responsive minimums are
-positive integers or `None`; its refresh mode is `"resize"` or `"continuous"`.
+### `ScreenContent` and `ContentSize`
+
+`ContentSize` is a frozen dataclass with integer `width` and `height` fields,
+measured in terminal cells and content rows. `ScreenContent` is an immutable
+configuration created through named factories:
+
+```text
+ScreenContent.static(text: str) -> ScreenContent
+ScreenContent.lines(lines: list[str]) -> ScreenContent
+ScreenContent.stream(iterator: Iterator[str]) -> ScreenContent
+ScreenContent.dynamic(renderer: Callable[[], str | list[str]]) -> ScreenContent
+ScreenContent.responsive(
+    renderer: Callable[[ContentSize], str | list[str]],
+    *,
+    min_width: int | None = None,
+    min_height: int | None = None,
+    refresh_mode: ContentRefreshMode = "resize",
+) -> ScreenContent
+```
+
+Direct construction raises `TypeError`. `lines()` copies its list into an
+immutable tuple; `stream()` consumes the supplied iterator, which must yield
+strings. Dynamic/responsive callbacks run in content workers and must return a
+string or list of strings; only one evaluation per panel is in flight. Responsive
+minimums are positive integers or `None` and describe virtual rendering size,
+rather than physical panel allocation. Its refresh mode is `"resize"` or
+`"continuous"`. See [Screen content](#screen-content) for replacement and refresh
+timing.
 
 ### `StatusBar`
 
@@ -1076,10 +1343,10 @@ and responsive factories require a callable. Producers must return a string;
 invalid results raise `TypeError` during rendering. See [Status bar](#status-bar)
 for evaluation, refresh, normalization, and layout behavior.
 
-### `ScreenContext`
+### `MenuDisplay`
 
 ```text
-ScreenContext(
+MenuDisplay(
     menu_name: str,
     title: str,
     width: int | None = None,
@@ -1126,14 +1393,19 @@ described above.
 KeyMap()
 ```
 
-- `bindings` → `Mapping[str, KeyBinding]`: read-only live action mapping.
+- `bindings` → `Mapping[KeyAction, KeyBinding]`: read-only live action mapping.
 - `focus`, `up`, `down`, `left`, `right`, `activate`, `back -> KeyBinding`:
-  current bindings exposed as dynamic read-only properties.
-- `set_binding(action: str, binding: KeyBinding) -> None`: atomically replace a
+  current bindings exposed as explicitly typed read-only properties.
+- `set_binding(action: KeyAction, binding: KeyBinding) -> None`: atomically replace a
   system binding. Raises `KeyError` for an unknown action, `TypeError` for a
   non-binding, or `ValueError` for a collision.
-- `action_for(binding: KeyBinding) -> str | None`: return the matching system
+- `action_for(binding: KeyBinding) -> KeyAction | None`: return the matching system
   action.
+- `copy() -> KeyMap`: copy the bindings without an application owner or collision
+  validator. Later mutations are independent.
+
+An application takes exclusive ownership of its map. Reusing the same instance
+in another application raises `ValueError`; supply `keymap.copy()` instead.
 
 ### `CommandContext`
 
@@ -1151,9 +1423,34 @@ alert confirmation. `binding` may be `None` for programmatic execution.
 
 `ChoiceContext` is the corresponding frozen context for option hover and
 selection. It adds `option: ChoiceOption` and `index: int`, and its `command`
-is always the owning `MenuChoice`. `ChoiceBehavior` is a callback accepting
-this context. `MenuChoice` extends `MenuCommand` with read-only `options`,
-`rows`, `selected_index`, and the validated label in `value`.
+is always the owning `MenuChoice`. `ChoiceCallback` is a callback accepting
+this context. During an option preview, `option` and `index` can differ from the
+committed selection. When `on_select` is dispatched by the menu, the selection
+has already been committed.
+
+### `MenuChoice` and `ChoiceOption`
+
+```text
+ChoiceOption(
+    label: str,
+    *,
+    row: int = 0,
+    on_hover: ChoiceCallback | None = None,
+    hover_message: str | None = None,
+)
+```
+
+`ChoiceOption` is a frozen dataclass. `label` is display text, `row` is a logical
+row within the expanded choice, and `hover_message` is a registered message key.
+The menu validates option rows and message keys when the choice is added.
+
+Obtain a `MenuChoice` from `add_choice()`. It extends `MenuCommand` with read-only
+`options`, `rows`, `selected_index`, `selected_option`, `selected_label`, and
+`on_select`. `selected_option` is a `ChoiceOption`; `selected_label` is its text.
+`on_select` receives `ChoiceContext`. Its inherited `callback` receives
+`CommandContext` and adapts it to `on_select` using the currently committed
+option and the triggering binding. It does not change the selection or open the
+chooser. Use `set_choice_callback()` to replace `on_select`.
 
 ### `MenuCommand`
 
@@ -1161,15 +1458,16 @@ this context. `MenuChoice` extends `MenuCommand` with read-only `options`,
 MenuCommand(
     menu: TerminalMenu,
     label: str,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
+    on_hover: CommandCallback | None = None,
 )
 ```
 
 Applications normally obtain this stable handle from `add_command()` or
-`add_menu()` instead of constructing it directly. Its properties are read-only:
+`add_submenu()` instead of constructing it directly. Its properties are read-only:
 
 - `label -> str`;
-- `behavior -> CommandBehavior`;
+- `callback -> CommandCallback`;
 - `position -> int`, zero-based among user commands;
 - `enabled -> bool`.
 
@@ -1183,25 +1481,24 @@ GlobalCommand(
     app: TerminalApp,
     binding: KeyBinding,
     label: str,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
 )
 ```
 
 Applications normally obtain this handle from `add_global_command()`. Its
-read-only properties are `binding`, `label`, and `behavior`. Use the owning
+read-only properties are `binding`, `label`, and `callback`. Use the owning
 application's `set_global_command_*` methods for application-wide mutation, or a
 menu's global-command methods for local behavior and enablement.
 
 ### `MessageKey`
 
-`MessageKey` is a `StrEnum` with `NO_CONTENT_SOURCE`, `UNKNOWN_COMMAND`,
-`TASK_EXIT_CHOICES`, `TASK_WAITING`, and `TASK_STOPPING`. The values and purpose
-of each member are listed in [Messages](#messages). Enum members can be passed
+`MessageKey` is a `StrEnum` with `NO_CONTENT_SOURCE` and `UNKNOWN_COMMAND`.
+The values and purpose of each member are listed in [Messages](#messages).
+Enum members can be passed
 where a message key string is accepted.
 
-The three task-related members are retained for compatibility. The automatic
-safe-shutdown interface is rendered as a temporary menu and does not read these
-message values.
+The safe-shutdown interface is rendered as a temporary menu independent of
+registered messages.
 
 ### `ContentPanel`
 
@@ -1239,6 +1536,12 @@ set_layout(
     min_height: int = 1,
     max_height: int | None = None,
 ) -> None
+update_layout(
+    *,
+    weight: float = <unchanged>,
+    min_height: int = <unchanged>,
+    max_height: int | None = <unchanged>,
+) -> None
 move(position: int) -> None
 remove() -> None
 ```
@@ -1246,7 +1549,11 @@ remove() -> None
 The handle keeps its identity across content, label, mode, layout and position
 changes.
 `set_layout()` replaces the expanded sizing configuration; omitted arguments
-reset to their defaults. It leaves `collapsed` and `collapsed_height` unchanged.
+reset to their defaults. `update_layout()` changes only supplied options and
+retains omitted ones; `max_height=None` removes the upper bound. Both validate
+the resulting layout before mutation and leave `collapsed` and
+`collapsed_height` unchanged. `<unchanged>` denotes the private omission
+sentinel, not a value callers need to import.
 `collapse()` and `expand()` are idempotent; `toggle_collapse()` switches the state.
 `set_collapsed_height()` sets a positive integer content height independently of
 the expanded bounds. See [Collapsible content panels](#collapsible-content-panels)
@@ -1263,18 +1570,27 @@ TerminalApp(
     global_content: ScreenContent | None = None,
     *,
     keymap: KeyMap | None = None,
+    global_content_factory: Callable[[], ScreenContent] | None = None,
 )
 ```
 
 The constructor stores the display name, optional content inherited by every
 menu at construction as an ordinary panel, and an optional custom system key
 map. Each menu captures the global configuration when it is created.
+Alternatively, `global_content_factory` returns independent content for each
+menu and is called once at menu construction, on the constructing thread.
+Supplying both content options raises `ValueError`; an invalid factory or its
+non-`ScreenContent` result raises `TypeError`. Stream factories must create a
+fresh iterator per panel. The map has one application owner; reuse its
+configuration through `KeyMap.copy()`.
 
 Read-only properties:
 
 - `name -> str`: application name displayed by every menu;
 - `global_content -> ScreenContent | None`: content inherited at menu
   construction;
+- `global_content_factory -> Callable[[], ScreenContent] | None`: optional
+  per-menu content factory;
 - `keymap -> KeyMap`: configurable system key map;
 - `global_commands -> tuple[GlobalCommand, ...]`: immutable ordered handle view;
 - `main_menu -> TerminalMenu | None`: registered root menu.
@@ -1292,12 +1608,13 @@ Raises `ValueError` for a foreign menu.
 add_global_command(
     binding: KeyBinding,
     label: str,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
 ) -> GlobalCommand
 ```
 
 Register an invisible application command. Raises `TypeError` for a non-binding
-and `ValueError` when the binding collides with a system or global command.
+or non-callable callback and `ValueError` when the binding collides with a system
+or global command.
 
 ```text
 set_global_command_binding(
@@ -1305,9 +1622,9 @@ set_global_command_binding(
     binding: KeyBinding,
 ) -> None
 set_global_command_label(command: GlobalCommand, label: str) -> None
-set_global_command_behavior(
+set_global_command_callback(
     command: GlobalCommand,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
 ) -> None
 ```
 
@@ -1348,35 +1665,58 @@ stack. The bottom entry displays Quit and deeper entries display Back regardless
 of which menu was registered as the main menu, except that a label assigned with
 `set_exit_label()` always takes priority.
 
+Push, replace, and reset clear the target's transient selection, focus, option
+preview and input buffer, then run its initial `on_hover`. They retain the input
+prompt/callback and any initialized workers. Pop reveals the previous menu's
+retained state. When cleanup also fails, `run()` retains the original failure
+and cleanup errors in an exception group; all cleanup actions are attempted.
+
 ### `TerminalMenu`
 
 ```text
 TerminalMenu(
     app: TerminalApp,
-    screen_context: ScreenContext,
+    display_state: MenuDisplay,
     *,
     content_spacing: bool = True,
-    show: bool = True,
+    presentation: MenuPresentation | None = None,
 )
 ```
 
-Create a menu owned by `app`. When `app.global_content` is present, construction
-automatically adds an ordinary panel for it, available through `content_panels`.
-Otherwise the menu starts without panels. Add explicit panels with
+Create a menu owned by `app`. Global content or the result of
+`app.global_content_factory` automatically creates an ordinary panel, available
+through `content_panels`. Otherwise the menu starts without panels. Add explicit
+panels with
 `add_content_panel()`; they are additional to any inherited panel.
-`content_spacing` and `show` must be booleans and are keyword-only.
+`content_spacing` must be a boolean and is keyword-only.
+`presentation` is keyword-only: `None` inherits the parent on navigation or
+uses inline at a root. Invalid modes raise `ValueError`; an explicit mode
+overrides inheritance. The effective `presentation` property is read-only.
 
 Properties:
 
 - `app -> TerminalApp`: read-only owner;
-- `screen_context -> ScreenContext`: read-only reference to mutable display
+- `display_state -> MenuDisplay`: read-only reference to mutable display
   state;
 - `commands -> tuple[MenuCommand, ...]`: immutable ordered handle view;
 - `is_main -> bool`: whether this is the registered root;
-- `show -> bool`: readable and writable visibility state;
+- `presentation -> MenuPresentation`: read-only effective mode;
+- `menu_visible -> bool`: read-only requested menu-box visibility;
 - `content_panels -> tuple[ContentPanel, ...]`: immutable ordered panel-handle
   view;
 - `status_bar -> StatusBar | None`: read-only optional status configuration.
+
+#### Menu-box visibility methods
+
+```text
+show_menu() -> None
+hide_menu() -> None
+toggle_menu() -> None
+```
+
+Reveal/focus, hide, or toggle only the menu box, preserving the rest of the
+frame and its runtime. See [Overlay menus](#overlay-menus) for focus, suspension
+and visibility semantics.
 
 #### Status bar methods
 
@@ -1399,38 +1739,46 @@ focus, scroll state, and messages.
 ```text
 add_command(
     label: str,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
     *,
-    on_hover: CommandBehavior | None = None,
+    on_hover: CommandCallback | None = None,
     position: int | None = None,
 ) -> MenuCommand
 add_choice(
     label: str,
     options: list[ChoiceOption] | tuple[ChoiceOption, ...],
-    on_select: ChoiceBehavior,
+    on_select: ChoiceCallback,
     *,
     rows: int = 1,
     selected_index: int = 0,
-    on_hover: CommandBehavior | None = None,
+    on_hover: CommandCallback | None = None,
     position: int | None = None,
 ) -> MenuChoice
-set_choice_value(choice: MenuChoice, selected_index: int) -> None
-add_menu(
+set_choice_index(choice: MenuChoice, selected_index: int) -> None
+set_choice_callback(choice: MenuChoice, callback: ChoiceCallback) -> None
+add_submenu(
     submenu: TerminalMenu,
     label: str,
     *,
-    on_hover: CommandBehavior | None = None,
+    on_hover: CommandCallback | None = None,
     position: int | None = None,
 ) -> MenuCommand
-delete_command(command: MenuCommand) -> None
+remove_command(command: MenuCommand) -> None
 ```
 
 Add a command or application-owned submenu and return its stable handle.
 Invalid positions raise `TypeError` or `ValueError`; foreign submenus raise
-`ValueError`. `add_menu()` installs a normal command that pushes `submenu` onto
-the application's navigation stack; it never calls `TerminalMenu.run()`.
+`ValueError`. `add_submenu()` installs a normal command that pushes `submenu` onto
+the application's navigation stack without starting another application loop.
 
-`delete_command()` atomically removes an owned command. The deleted handle is
+`add_choice()` validates a nonempty set of `ChoiceOption` objects, positive
+`rows`, each option's row, and the initial `selected_index` before registration.
+`set_choice_index()` changes the committed option without invoking `on_select`.
+`set_choice_callback()` replaces that callback without invoking it or changing
+the selection. Invalid indices/layouts and foreign or removed handles raise
+`ValueError`; non-callable callbacks raise `TypeError`.
+
+`remove_command()` atomically removes an owned command. The deleted handle is
 immediately invalid: subsequent menu mutations, another deletion, and access to
 its position raise `ValueError`. Handles from another menu and objects that are
 not live command handles are also rejected. If the deleted command was
@@ -1441,9 +1789,9 @@ handle; the same selection rules apply before activation returns.
 
 ```text
 set_command_label(command: MenuCommand, label: str) -> None
-set_command_behavior(
+set_command_callback(
     command: MenuCommand,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
 ) -> None
 move_command(command: MenuCommand, position: int) -> None
 disable_command(command: MenuCommand) -> None
@@ -1453,15 +1801,17 @@ set_exit_label(label: str) -> None
 
 Mutate owned menu commands or the automatic Back/Quit label. `move_command()`
 requires an existing zero-based position. Foreign handles raise `ValueError`.
+`set_command_callback()` rejects a `MenuChoice`; its selection callback uses
+`ChoiceContext` and must be replaced through `set_choice_callback()` instead.
 
 #### Global-command methods
 
 ```text
-set_global_command_behavior(
+set_global_command_callback(
     command: GlobalCommand,
-    behavior: CommandBehavior,
+    callback: CommandCallback,
 ) -> None
-clear_global_command_behavior(command: GlobalCommand) -> None
+clear_global_command_callback(command: GlobalCommand) -> None
 disable_global_command(command: GlobalCommand) -> None
 enable_global_command(command: GlobalCommand) -> None
 ```
@@ -1497,7 +1847,7 @@ Change a panel through its `ContentPanel` handle. See
 semantics.
 
 ```text
-run_with_output[T](
+start_output_task[T](
     action: Callable[[], T],
     *,
     on_success: Callable[[T], None],
@@ -1506,28 +1856,34 @@ run_with_output[T](
 ) -> None
 ```
 
-Start one captured application task. Raises `RuntimeError` outside an active
-menu or when another task is running. Completion callbacks run on the UI thread.
+Start one captured application task and return immediately. Raises `RuntimeError`
+without an initialized running menu runtime or when another task is running;
+the owning menu may be hidden behind another menu. Completion callbacks run on
+the UI thread after processing the outcome and requesting panel removal, which
+may still be waiting for buffered output to drain.
 
 #### Input and alert methods
 
 ```text
 enter_input_mode(
     prompt: str,
-    behavior: InputBehavior,
+    callback: InputCallback,
     *,
     hidden: bool = False,
 ) -> None
 leave_input_mode() -> None
 ```
 
-Start a fresh input buffer or clear all input state.
+Start a fresh input buffer or clear all input state. Submission keeps the buffer
+and session until the callback calls `leave_input_mode()` or replaces it. The
+configured Back action cancels without submission. Visible input consumes global
+bindings; an alert or a hidden menu box suspends it without clearing its buffer.
 
 ```text
 show_alert(
     text: str,
     *,
-    on_confirm: CommandBehavior | None = None,
+    on_confirm: CommandCallback | None = None,
     prompt: str | None = None,
 ) -> None
 clear_alert() -> None
@@ -1554,16 +1910,8 @@ suppression.
 #### Lifecycle methods
 
 ```text
-run() -> None
 stop() -> None
 ```
-
-`run()` is a transitional compatibility method and emits `DeprecationWarning`.
-When an application is already running it delegates to `app.push_menu(self)` and
-does not start a nested event loop. New code should use `TerminalApp.run()` as
-the application entry point and `context.app.push_menu()` or `add_menu()` in
-callbacks; do not call `TerminalMenu.run()` from callbacks. Calling the
-compatibility method without an application lifecycle raises `RuntimeError`.
 
 `stop()` performs the current menu's Back/Quit action. At stack depth greater
 than one it pops the menu. At the bottom it requests shutdown and presents safe
@@ -1582,8 +1930,8 @@ style(
     underline: bool = False,
     strikethrough: bool = False,
     reverse: bool = False,
-    color: TextColor | None = None,
-    highlight: TextColor | None = None,
+    foreground: TextColor | None = None,
+    background: TextColor | None = None,
 ) -> str
 ```
 
@@ -1598,7 +1946,7 @@ strings, and out-of-range numbers raise `ValueError`.
 ```python
 from tuiloom import display_width, style
 
-display_width(style("●", color="green"))  # 1
+display_width(style("●", foreground="green"))  # 1
 display_width("e\u0301")  # 1: combining accent
 display_width("界")  # 2: wide character
 ```
@@ -1624,9 +1972,14 @@ Unsafe or non-HTTP(S) URLs raise `ValueError`.
   terminal.
 - Popped and replaced menu runtimes continue servicing their content workers
   until the application closes them when `TerminalApp.run()` exits.
-- Only one `run_with_output()` task can run per application.
+- Only one `start_output_task()` task can run per application.
 - Python stdout/stderr capture does not include subprocess or direct
   file-descriptor output.
+- Content producers run in workers; commands and status producers run on the UI
+  thread. Synchronize state shared between them and keep UI callbacks fast.
+- Stream history has no default size limit. Long-running logs retain their
+  completed lines until their panel is replaced or removed; plan the source's
+  volume and lifetime accordingly.
 - Normal shutdown joins non-daemon content and task workers before returning.
   Force quit instead restores terminal modes and terminates the process without
   joining workers.

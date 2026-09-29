@@ -1,6 +1,6 @@
 import pytest
 
-from tuiloom import ScreenContent
+from tuiloom import ScreenContent, hyperlink
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.render.terminal_text import normalize_line
 
@@ -157,3 +157,95 @@ def test_stream_normalization_does_not_reprocess_complete_active_line(
         renderer.append_stream_batch(["x"] * 64)
 
     assert max(normalized_lengths) <= 64
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "abcd\tX",
+        "界ab\tX",
+        "\033[31mRED\033[0m\nnext",
+        hyperlink("first\nsecond", "https://example.com"),
+        "e\u0301👩‍💻🇫🇷\nnext",
+    ],
+)
+def test_stream_rendering_is_invariant_across_separate_character_batches(
+    text: str,
+) -> None:
+    renderer = ContentRenderer(ScreenContent.stream(iter(())))
+    expected = ContentRenderer(ScreenContent.static(text)).update()
+
+    for character in text:
+        renderer.append_stream_batch([character])
+    renderer.finish_stream()
+
+    assert renderer.update().lines == expected.lines
+    assert renderer.update().width == expected.width
+
+
+@pytest.mark.parametrize(
+    "prefix", ["\033", "\033[", "\033[31", "\033]8;;https://example.com\033"]
+)
+def test_incomplete_stream_escape_is_withheld_until_the_next_batch(
+    prefix: str,
+) -> None:
+    renderer = ContentRenderer(ScreenContent.stream(iter(())))
+    renderer.append_stream_batch(["abc", prefix])
+
+    assert renderer.update().lines == ["abc"]
+    assert renderer.update().width == 3
+
+
+def test_stream_tabs_use_the_column_of_previous_batches() -> None:
+    renderer = ContentRenderer(ScreenContent.stream(iter(())))
+    renderer.append_stream_batch(["abc"])
+    renderer.append_stream_batch(["d\tX"])
+
+    assert renderer.update().lines == ["abcd    X"]
+    assert renderer.update().width == 9
+
+
+def test_stream_replacement_keeps_completed_history_width() -> None:
+    renderer = ContentRenderer(ScreenContent.stream(iter(())))
+    renderer.append_stream_batch(["a long completed line\nshort"])
+    renderer.append_stream_batch(["\rX"])
+
+    assert renderer.update().lines == ["a long completed line", "X"]
+    assert renderer.update().width == 21
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "\033[31mfirst\n",
+        "\033]8;;https://example.com\033\\first\n",
+    ],
+)
+def test_stream_trailing_newline_does_not_invent_a_styled_tail(text: str) -> None:
+    renderer = ContentRenderer(ScreenContent.stream(iter(())))
+    renderer.append_stream_batch([text])
+    renderer.finish_stream()
+
+    expected = ContentRenderer(ScreenContent.static(text)).update()
+    assert renderer.update().lines == expected.lines
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a👩\033[31m‍💻b\tX",
+        hyperlink("\033[31ma\nb\033[0m\nc", "https://example.com"),
+    ],
+)
+def test_stream_styled_graphemes_match_static_geometry_at_every_split(
+    text: str,
+) -> None:
+    expected = ContentRenderer(ScreenContent.static(text)).update()
+    for split in range(len(text) + 1):
+        renderer = ContentRenderer(ScreenContent.stream(iter(())))
+        renderer.append_stream_batch([text[:split]])
+        renderer.append_stream_batch([text[split:]])
+        renderer.finish_stream()
+
+        assert renderer.update().lines == expected.lines, split
+        assert renderer.update().width == expected.width, split

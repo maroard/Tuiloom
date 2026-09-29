@@ -1,3 +1,12 @@
+"""Format terminal strings while filtering unsafe control sequences.
+
+Attributes:
+    TextColor: A color name, an integer palette index from 0 to 255, an RGB
+        tuple of three integer components from 0 to 255, or a ``#RRGGBB``
+        string. Bool is not accepted as an index or RGB component. Names
+        are case-sensitive; hexadecimal digits are case-insensitive.
+"""
+
 from re import fullmatch
 
 from tuiloom.render.terminal_text import (
@@ -7,6 +16,7 @@ from tuiloom.render.terminal_text import (
 )
 
 type TextColor = str | int | tuple[int, int, int]
+"""Terminal color: a supported name, palette index, RGB tuple or #RRGGBB text."""
 
 _NAMED_COLORS = {
     "black": 0,
@@ -106,15 +116,51 @@ def style(
     underline: bool = False,
     strikethrough: bool = False,
     reverse: bool = False,
-    color: TextColor | None = None,
-    highlight: TextColor | None = None,
+    foreground: TextColor | None = None,
+    background: TextColor | None = None,
 ) -> str:
-    """Apply composable ANSI styling to sanitized terminal text.
+    """Apply terminal styles to text and remove unsafe control sequences.
 
-    Colors accept the 16 ANSI names, orange, gray, and dark_ variants of red,
-    green, yellow, blue, magenta, cyan, orange, and gray. An index from 0 to
-    255, an RGB tuple, or a ``#RRGGBB`` string is also accepted. Only the SGR
-    categories enabled by this call are reset after the text.
+    Safe existing SGR styles and HTTP(S) hyperlinks are preserved, as are
+    newlines and tabs. Other terminal commands and control characters are
+    removed. Enabled styles are opened before the text and their categories
+    reset afterward. Rendering support for colors and effects depends on the
+    terminal. Nesting the same category does not restore an outer value after
+    an inner reset; combine effects in one call when they must cover the whole
+    string. Bold and dim share the terminal's intensity-reset category.
+
+    Args:
+        text: String to sanitize and style, possibly containing safe styles.
+        bold: Enable bold intensity. Defaults to ``False``.
+        dim: Enable dim intensity. Defaults to ``False``.
+        italic: Enable italic text. Defaults to ``False``.
+        underline: Enable underlining. Defaults to ``False``.
+        strikethrough: Enable struck-through text. Defaults to ``False``.
+        reverse: Swap foreground and background visually. Defaults to ``False``.
+        foreground: Text color, or ``None`` to leave that category unchanged.
+            Accepts ``black``, ``red``, ``green``, ``yellow``, ``blue``,
+            ``magenta``, ``cyan``, ``white``, their ``bright_`` variants,
+            ``orange``, ``gray``, and ``dark_`` variants of red, green, yellow,
+            blue, magenta, cyan, orange and gray. Also accepts an integer palette
+            index in ``0..255``, a three-integer RGB tuple in ``0..255``, or a
+            ``#RRGGBB`` string. Names are case-sensitive.
+        background: Cell background color in the same formats as ``foreground``.
+            ``None`` leaves that category unchanged.
+
+    Returns:
+        Sanitized text wrapped in the requested SGR opening and category-reset
+        sequences. Without enabled effects or colors, returns sanitized text
+        without adding any sequences. No output is written to the terminal.
+
+    Raises:
+        TypeError: If ``text`` is not a string, an effect is not a bool, a color
+            has an unsupported type, or an RGB tuple is not exactly three
+            integers. Bool is not accepted as a color index or RGB component.
+        ValueError: If a color name or hexadecimal string is invalid, or a
+            palette index or RGB component is outside ``0..255``.
+
+    Example:
+        ``style("Ready", bold=True, foreground="green", background="#102030")``
     """
     if not isinstance(text, str):
         raise TypeError("text must be a string")
@@ -140,11 +186,11 @@ def style(
             if reset not in resets:
                 resets.append(reset)
 
-    if color is not None:
-        opening.extend(_color_code(color, background=False))
+    if foreground is not None:
+        opening.extend(_color_code(foreground, background=False))
         resets.append(39)
-    if highlight is not None:
-        opening.extend(_color_code(highlight, background=True))
+    if background is not None:
+        opening.extend(_color_code(background, background=True))
         resets.append(49)
 
     if not opening:
@@ -158,6 +204,10 @@ def style(
 def hyperlink(text: str, url: str) -> str:
     """Wrap safe styled text in a terminal OSC 8 HTTP(S) hyperlink.
 
+    This creates a string without writing it. A compatible terminal makes the
+    visible text clickable; terminals without hyperlink support still show the
+    text. Existing hyperlinks in ``text`` are removed to prevent nesting.
+
     Args:
         text: Visible link text. Unsafe terminal controls and nested OSC links
             are removed; safe SGR color and style sequences are retained.
@@ -169,6 +219,7 @@ def hyperlink(text: str, url: str) -> str:
 
     Raises:
         ValueError: If ``url`` is unsafe or is not an absolute HTTP(S) URL.
+        TypeError: If ``text`` is not a string.
 
     Example:
         ``hyperlink("Tuiloom", "https://github.com/maroard/Tuiloom")``

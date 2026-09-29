@@ -5,8 +5,8 @@ import pytest
 from tuiloom import (
     ChoiceOption,
     KeyBinding,
+    MenuDisplay,
     ScreenContent,
-    ScreenContext,
     TerminalApp,
     TerminalMenu,
 )
@@ -17,7 +17,7 @@ from tuiloom.render.terminal_text import display_width
 
 def menu() -> TerminalMenu:
     app = TerminalApp("App")
-    return TerminalMenu(app, ScreenContext("main", "Main"))
+    return TerminalMenu(app, MenuDisplay("main", "Main"))
 
 
 def press(target: TerminalMenu, key: str) -> None:
@@ -42,10 +42,10 @@ def test_choice_hover_and_deferred_selection() -> None:
     assert events == [("label", None)]
     press(target, "enter")
     assert target._choice_index == 0
-    assert choice.value == "Fast"
+    assert choice.selected_label == "Fast"
     assert events[-1] == ("fast", 0)
     press(target, "right")
-    assert choice.value == "Fast"
+    assert choice.selected_label == "Fast"
     assert events[-1] == ("accurate", 1)
     count = len(events)
     press(target, "right")
@@ -55,7 +55,7 @@ def test_choice_hover_and_deferred_selection() -> None:
     assert "> Accurate" in rendered
     assert ">   Accurate" not in rendered
     press(target, "enter")
-    assert choice.value == "Accurate"
+    assert choice.selected_label == "Accurate"
     assert events[-1] == ("select", 1)
     assert "> Accurate ✓" in MenuRenderer(target).render()
     press(target, "enter")
@@ -116,8 +116,8 @@ def test_visual_rows_and_resize_drive_navigation() -> None:
     target.add_command("Next", lambda c: None)
     target._prepare_open()
     renderer = MenuRenderer(target)
-    target.screen_context.width = 25
-    target.screen_context.strict_width = True
+    target.display_state.width = 25
+    target.display_state.strict_width = True
     press(target, "right")
     press(target, "down")
     assert target._choice_index == 2
@@ -126,7 +126,7 @@ def test_visual_rows_and_resize_drive_navigation() -> None:
     assert target._choice_index is None
     press(target, "up")
     assert target._selected_index == choice.position
-    target.screen_context.width = 12
+    target.display_state.width = 12
     press(target, "right")
     press(target, "down")
     assert target._choice_index == 1
@@ -147,8 +147,8 @@ def test_choice_mutations_and_validation() -> None:
     choice = target.add_choice(
         "Mode", [ChoiceOption("One"), ChoiceOption("Two")], lambda c: None
     )
-    target.set_choice_value(choice, 1)
-    assert choice.value == "Two"
+    target.set_choice_index(choice, 1)
+    assert choice.selected_label == "Two"
     assert choice.selected_index == 1
     target.set_command_label(choice, "Renamed")
     target.disable_command(choice)
@@ -157,7 +157,7 @@ def test_choice_mutations_and_validation() -> None:
     target.move_command(choice, 0)
     assert choice.label == "Renamed"
     with pytest.raises(ValueError):
-        target.set_choice_value(choice, 3)
+        target.set_choice_index(choice, 3)
 
 
 def test_choice_callback_can_be_replaced_through_command_mutation() -> None:
@@ -166,7 +166,7 @@ def test_choice_callback_can_be_replaced_through_command_mutation() -> None:
     choice = target.add_choice(
         "Mode", [ChoiceOption("One")], lambda c: calls.append("old")
     )
-    target.set_command_behavior(choice, lambda c: calls.append(c.option.label))
+    target.set_choice_callback(choice, lambda c: calls.append(c.option.label))
     target._prepare_open()
     press(target, "enter")
     press(target, "enter")
@@ -203,9 +203,9 @@ def test_command_hover_receives_triggering_binding() -> None:
 
 def test_submenu_command_can_hover_before_activation() -> None:
     target = menu()
-    child = TerminalMenu(target.app, ScreenContext("child", "Child"))
+    child = TerminalMenu(target.app, MenuDisplay("child", "Child"))
     calls: list[str] = []
-    target.add_menu(child, "Open", on_hover=lambda c: calls.append("hover"))
+    target.add_submenu(child, "Open", on_hover=lambda c: calls.append("hover"))
     target._prepare_open()
     assert calls == ["hover"]
 
@@ -238,8 +238,8 @@ def test_down_from_choice_label_skips_options_and_right_uses_row_order() -> None
 
 def test_long_option_wraps_without_becoming_multiple_targets() -> None:
     target = menu()
-    target.screen_context.width = 6
-    target.screen_context.strict_width = True
+    target.display_state.width = 6
+    target.display_state.strict_width = True
     target.add_choice(
         "Mode", [ChoiceOption("abcdefghij"), ChoiceOption("Next")], lambda c: None
     )
@@ -255,8 +255,8 @@ def test_long_option_wraps_without_becoming_multiple_targets() -> None:
 @pytest.mark.parametrize("width", [1, 2, 3])
 def test_choice_keeps_exact_strict_width(width: int) -> None:
     target = menu()
-    target.screen_context.width = width
-    target.screen_context.strict_width = True
+    target.display_state.width = width
+    target.display_state.strict_width = True
     target.add_choice(
         "Mode", [ChoiceOption("界a"), ChoiceOption("Other")], lambda c: None
     )
@@ -289,7 +289,7 @@ def test_hover_message_overlays_without_mutating_persistent_message() -> None:
     press(target, "right")
     assert "First preview" in renderer.render()
     assert "Saved footer" not in renderer.render()
-    assert target.screen_context.message == "Saved footer"
+    assert target.display_state.message == "Saved footer"
     assert target.active_message_key == "persistent"
     press(target, "right")
     assert "Second preview" in renderer.render()
@@ -302,7 +302,7 @@ def test_hover_message_overlays_without_mutating_persistent_message() -> None:
 def test_hover_message_disappears_on_next_command_and_content_focus() -> None:
     app = TerminalApp("App")
     app.add_message("preview", "Temporary preview")
-    target = TerminalMenu(app, ScreenContext("main", "Main"))
+    target = TerminalMenu(app, MenuDisplay("main", "Main"))
     target.add_content_panel(ScreenContent.static("Panel"))
     target.add_choice(
         "Mode", [ChoiceOption("First", hover_message="preview")], lambda c: None
@@ -342,6 +342,6 @@ def test_deleting_active_choice_resets_option_cursor() -> None:
     target._prepare_open()
     press(target, "right")
     press(target, "right")
-    target.delete_command(first)
+    target.remove_command(first)
     assert target._choice_index is None
     assert "Only" in MenuRenderer(target).render()

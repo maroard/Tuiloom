@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from typing import cast
 
 import pytest
@@ -100,14 +101,18 @@ class _FakeTerminal:
         self.keys = keys
         self.context = _BreakContext()
         self._dec_mode_cache: dict[int, int] = {}
-        self.calls: list[tuple[float, float]] = []
+        self.calls: list[float] = []
+        decoder = Terminal()
+        self._keymap = decoder._keymap
+        self._keycodes = decoder._keycodes
+        self._keymap_prefixes = decoder._keymap_prefixes
 
     def cbreak(self) -> _BreakContext:
         return self.context
 
-    def inkey(self, timeout: float, esc_delay: float) -> Keystroke:
-        self.calls.append((timeout, esc_delay))
-        return next(self.keys, Keystroke())
+    def flushinp(self, timeout: float) -> str:
+        self.calls.append(timeout)
+        return str(next(self.keys, Keystroke()))
 
 
 class _FakeStream:
@@ -135,7 +140,7 @@ def test_input_handler_polls_without_blocking_and_restores_once(
     )
     assert handler.poll() is not None
     assert handler.poll() is None
-    assert terminal.calls == [(0, 0.03), (0, 0.03)]
+    assert terminal.calls == [0, 0]
     assert handler.fileno() == 42
     assert handler.get_pending_timeout(1.0) is None
     handler.close()
@@ -148,6 +153,10 @@ def test_blessed_decodes_focus_unicode_navigation_and_escape_atomically(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("NO_COLOR", "1")
+    clock = _Clock()
+    monkeypatch.setattr(
+        "tuiloom.input_handler.input_handler.monotonic", clock, raising=False
+    )
     terminal = Terminal()
     handler = InputHandler(terminal=terminal)
     try:
@@ -156,6 +165,8 @@ def test_blessed_decodes_focus_unicode_navigation_and_escape_atomically(
         gained = handler.poll()
         text = handler.poll()
         up = handler.poll()
+        assert handler.poll() is None
+        clock.now += 0.02
         escape = handler.poll()
         assert lost is not None and lost.terminal_focus is False
         assert gained is not None and gained.terminal_focus is True
@@ -166,3 +177,220 @@ def test_blessed_decodes_focus_unicode_navigation_and_escape_atomically(
     finally:
         handler.close()
     assert DecPrivateMode.FOCUS_IN_OUT_EVENTS not in terminal._dec_mode_cache
+
+
+@dataclass
+class _Clock:
+    now: float = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def progressive_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[tuple[InputHandler, Terminal, _Clock]]:
+    clock = _Clock()
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(
+        "tuiloom.input_handler.input_handler.monotonic", clock, raising=False
+    )
+    terminal = Terminal()
+    handler = InputHandler(terminal=terminal)
+    try:
+        yield handler, terminal, clock
+    finally:
+        handler.close()
+
+
+@pytest.mark.parametrize("report,gained", [("I", True), ("O", False)])
+def test_fragmented_focus_report_survives_escape_delay(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+    report: str,
+    gained: bool,
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1b[")
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) == pytest.approx(1.0)
+    clock.now = 0.05
+    terminal.ungetch(report)
+    event = handler.poll()
+    assert event is not None and event.terminal_focus is gained
+    assert event.binding is None and event.text is None
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) is None
+
+
+def test_fragmented_focus_reports_preserve_surrounding_event_order(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("é\x1b[O\x1b[")
+    before = handler.poll()
+    lost = handler.poll()
+    assert before is not None and before.text == "é"
+    assert lost is not None and lost.terminal_focus is False
+    assert handler.poll() is None
+    clock.now = 0.05
+    terminal.ungetch("I界\x1b[A")
+    gained = handler.poll()
+    after = handler.poll()
+    up = handler.poll()
+    assert gained is not None and gained.terminal_focus is True
+    assert gained.binding is None and gained.text is None
+    assert after is not None and after.text == "界"
+    assert up is not None and up.binding == KeyBinding("up")
+    assert handler.poll() is None
+
+
+def test_bare_escape_waits_only_twenty_milliseconds(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1b")
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) == pytest.approx(0.02)
+    clock.now = 0.019
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) == pytest.approx(0.001)
+    clock.now = 0.02
+    assert handler.get_pending_timeout(clock.now) == 0
+    escape = handler.poll()
+    assert escape is not None and escape.binding == KeyBinding("escape")
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) is None
+
+
+@pytest.mark.parametrize(
+    "prefix,continuation,binding",
+    [
+        ("\x1b[1;", "6D", KeyBinding("left", ctrl=True, shift=True)),
+        ("\x1bO", "2P", KeyBinding("f1", shift=True)),
+    ],
+)
+def test_fragmented_navigation_uses_blessed_decoder(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+    prefix: str,
+    continuation: str,
+    binding: KeyBinding,
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch(prefix)
+    assert handler.poll() is None
+    clock.now = 0.05
+    terminal.ungetch(continuation)
+    event = handler.poll()
+    assert event is not None and event.binding == binding
+    assert handler.poll() is None
+
+
+def test_sequence_progress_extends_escape_to_bounded_sequence_deadline(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1b")
+    assert handler.poll() is None
+    clock.now = 0.01
+    terminal.ungetch("[")
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) == pytest.approx(0.99)
+    clock.now = 0.9
+    terminal.ungetch("1;")
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) == pytest.approx(0.1)
+    clock.now = 1.5
+    assert handler.get_pending_timeout(clock.now) == 0
+    expired = handler.poll()
+    assert expired is not None
+    terminal.ungetch("é")
+    remaining = []
+    while (event := handler.poll()) is not None:
+        remaining.append(event)
+    assert remaining[-1].text == "é"
+    assert handler.get_pending_timeout(clock.now) is None
+
+
+def test_available_continuation_is_read_before_sequence_expiry(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1b[")
+    assert handler.poll() is None
+    clock.now = 1.5
+    terminal.ungetch("Ié")
+    gained = handler.poll()
+    text = handler.poll()
+    assert gained is not None and gained.terminal_focus is True
+    assert gained.binding is None and gained.text is None
+    assert text is not None and text.text == "é"
+    assert handler.poll() is None
+
+
+def test_alt_key_and_complete_unknown_sequence_do_not_wait(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1bz\x1b[99~é")
+    events = []
+    while (event := handler.poll()) is not None:
+        events.append(event)
+    assert events[0].binding == KeyBinding("z", alt=True)
+    assert events[-1].text == "é"
+    assert handler.get_pending_timeout(clock.now) is None
+
+
+def test_kitty_escape_is_available_immediately(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1b[27u")
+    event = handler.poll()
+    assert event is not None and event.binding == KeyBinding("escape")
+    assert handler.get_pending_timeout(clock.now) is None
+
+
+def test_close_clears_partial_sequence_deadline(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("\x1b[")
+    assert handler.poll() is None
+    handler.close()
+    handler.close()
+    assert handler.get_pending_timeout(clock.now) is None
+    assert handler.poll() is None
+
+
+@pytest.mark.parametrize("prefix", ["\x1b", "\x1b["])
+def test_buffered_prefix_expires_from_reception_before_slow_callback(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock], prefix: str
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("a" + prefix)
+    first = handler.poll()
+    assert first is not None and first.text == "a"
+    clock.now = 1.5
+    assert handler.poll() is not None
+    assert handler.get_pending_timeout(clock.now) is None
+
+
+def test_new_prefix_after_old_continuation_has_its_own_reception_deadline(
+    progressive_handler: tuple[InputHandler, Terminal, _Clock],
+) -> None:
+    handler, terminal, clock = progressive_handler
+    terminal.ungetch("a\x1b[")
+    first = handler.poll()
+    assert first is not None and first.text == "a"
+    clock.now = 1.5
+    terminal.ungetch("I\x1b[")
+    gained = handler.poll()
+    assert gained is not None and gained.terminal_focus is True
+    assert handler.poll() is None
+    assert handler.get_pending_timeout(clock.now) == pytest.approx(1.0)
+    clock.now = 1.55
+    terminal.ungetch("O")
+    lost = handler.poll()
+    assert lost is not None and lost.terminal_focus is False
+    assert handler.poll() is None

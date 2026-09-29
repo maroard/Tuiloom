@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.9.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.9.1. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -48,7 +48,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.9.0
+python -m pip install tuiloom==0.9.1
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -281,8 +281,9 @@ The current background continues updating behind the menu and is restored when
 it closes. Resizing recomputes both panel layout and centered menu placement.
 On terminals supporting focus reports, returning to a terminal tab also repaints
 the complete frame, including its bottom rows, even at an unchanged size. Focus
-notifications do not invoke commands or modify pending input. The terminal's
-previous focus-reporting mode is restored when the application closes.
+notifications do not invoke commands or modify pending input, even when a report
+arrives in separate fragments. The terminal's previous focus-reporting mode is
+restored when the application closes.
 Focus reporting uses the terminal's mode save/restore controls without a capability
 query, so no late query response can become input. It also works with `NO_COLOR`.
 Terminals without focus reporting keep ordinary rendering, resizing and segment

@@ -135,8 +135,9 @@ print("RESTORED")
 
 
 @pytest.mark.parametrize("no_color", [False, True])
+@pytest.mark.parametrize("fragment_delay", [0.005, 0.05])
 def test_pty_focus_return_redraws_status_and_preserves_input(
-    monkeypatch: pytest.MonkeyPatch, no_color: bool
+    monkeypatch: pytest.MonkeyPatch, no_color: bool, fragment_delay: float
 ) -> None:
     if no_color:
         monkeypatch.setenv("NO_COLOR", "1")
@@ -161,7 +162,7 @@ print("RESTORED", menu._display_input_buffer())
         os.write(master, "é".encode())
         _read_until(master, process, "é".encode())
         os.write(master, b"\x1b[O\x1b[")  # Leave, then a fragmented return report.
-        sleep(0.005)
+        sleep(fragment_delay)
         os.write(master, b"I")
         restored = _read_until(master, process, b"DONE | Turn 15")
         assert b"\x1b[H\x1b[J" in restored

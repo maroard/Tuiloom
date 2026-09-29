@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from collections import deque
 from contextlib import AbstractContextManager
+from re import compile
 from sys import stdin
+from time import monotonic
 from typing import TextIO, cast
 
 from blessed import Terminal
 from blessed.dec_modes import DecModeResponse, DecPrivateMode
-from blessed.keyboard import Keystroke
+from blessed.keyboard import Keystroke, resolve_sequence
 
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.key_binding import KeyBinding
@@ -30,6 +33,10 @@ _SPECIAL_NAMES = {
     "LEFT": "left",
     "RIGHT": "right",
 }
+# CSI/SS3 parameters and intermediates without a final byte are only prefixes.
+# This detects when to wait; Blessed remains responsible for decoding keys.
+_INCOMPLETE_CONTROL_SEQUENCE = compile(r"\x1b(?:\[[0-?]*[ -/]*|O[0-?]*[ -/]*)\Z")
+_SEQUENCE_DELAY = 1.0
 
 
 def normalize_keystroke(key: Keystroke) -> InputEvent:
@@ -97,6 +104,11 @@ class InputHandler:
         self._terminal = terminal if terminal is not None else Terminal()
         self._stream = stream
         self._escape_delay = escape_delay
+        self._input_buffer = ""
+        # Keep reception times aligned with buffered codepoints, including keys
+        # behind the event being returned and tails of later continuations.
+        self._input_chunks: deque[tuple[int, float]] = deque()
+        self._pending_deadline: float | None = None
         # TerminalApp owns mode 1004 via save/set/restore, without querying it.
         # Blessed >=1.48,<2 gates its native focus decoder on this private cache.
         # Prime only that entry: focus reports must remain atomic even when
@@ -111,24 +123,72 @@ class InputHandler:
 
     def poll(self) -> InputEvent | None:
         """Return one decoded event immediately, or ``None`` when idle."""
-        key = self._terminal.inkey(timeout=0, esc_delay=self._escape_delay)
-        if not key:
+        # Receive every currently available continuation before checking expiry.
+        # inkey(timeout=0) still waits esc_delay and finalizes partial CSI/SS3;
+        # keep those fragments between polls and leave decoding to Blessed.
+        received = self._terminal.flushinp(timeout=0)
+        if received:
+            self._input_buffer += received
+            self._input_chunks.append((len(received), monotonic()))
+        if not self._input_buffer:
             return None
+        key = self._resolve(final=False)
+        incomplete = (
+            self._input_buffer == "\x1b"
+            or bool(_INCOMPLETE_CONTROL_SEQUENCE.fullmatch(self._input_buffer))
+            or (
+                self._input_buffer in self._terminal._keymap_prefixes
+                and len(key) < len(self._input_buffer)
+            )
+        )
+        if incomplete:
+            now = monotonic()
+            delay = (
+                self._escape_delay if self._input_buffer == "\x1b" else _SEQUENCE_DELAY
+            )
+            self._pending_deadline = self._input_chunks[0][1] + delay
+            if now < self._pending_deadline:
+                return None
+            key = self._resolve(final=True)
+        self._input_buffer = self._input_buffer[len(key) :]
+        remaining = len(key)
+        while remaining:
+            length, received_at = self._input_chunks.popleft()
+            if length > remaining:
+                self._input_chunks.appendleft((length - remaining, received_at))
+                break
+            remaining -= length
+        self._pending_deadline = None
         return normalize_keystroke(key)
+
+    def _resolve(self, *, final: bool) -> Keystroke:
+        return resolve_sequence(
+            self._input_buffer,
+            self._terminal._keymap,
+            self._terminal._keycodes,
+            self._terminal._keymap_prefixes,
+            final=final,
+            dec_mode_cache=self._terminal._dec_mode_cache,
+        )
 
     def fileno(self) -> int:
         """Return the terminal descriptor watched by the event loop."""
         return self._stream.fileno()
 
     def get_pending_timeout(self, now: float) -> float | None:
-        """Return no external deadline because Blessed owns Escape timing."""
-        return None
+        """Return the remaining time before a partial sequence is finalized."""
+        if self._pending_deadline is None:
+            return None
+        return max(0.0, self._pending_deadline - now)
 
     def close(self) -> None:
         """Restore terminal input settings exactly once."""
         if self._closed:
             return
         self._closed = True
+        self._input_buffer = ""
+        self._input_chunks.clear()
+        self._pending_deadline = None
         try:
             if self._previous_focus_mode is None:
                 self._terminal._dec_mode_cache.pop(self._focus_mode, None)

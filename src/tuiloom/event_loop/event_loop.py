@@ -218,6 +218,7 @@ class EventLoop:
             raise RuntimeError("Animated content rate is missing")
         if worker is None or self._refreshes_suspended() or not self._animation_active:
             panel._runtime.responsive_refresh_pending = True
+            panel._runtime.next_dynamic_at = self._clock()
             return
         now = self._clock()
         elapsed = self._animation_timeline.elapsed(now)
@@ -558,7 +559,9 @@ class EventLoop:
                 and panel._runtime.effective_size is not None
             ):
                 self._request_animated_update(
-                    panel, panel._runtime.effective_size, force=False
+                    panel,
+                    panel._runtime.effective_size,
+                    force=panel._runtime.responsive_refresh_pending,
                 )
 
     def _ui_animation_rates(self) -> tuple[float, ...]:

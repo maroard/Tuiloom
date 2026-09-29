@@ -255,6 +255,41 @@ def test_animated_panel_resume_waits_for_next_active_frame() -> None:
         loop.close()
 
 
+def test_animated_panel_refresh_while_covered_runs_on_resume() -> None:
+    now = [0.0]
+    received: list[int] = []
+    evaluated = Event()
+
+    def animate(size: ContentSize, frame: AnimationFrame) -> str:
+        received.append(frame.index)
+        evaluated.set()
+        return str(len(received))
+
+    menu, loop, _, renderer = make_loop(
+        [None],
+        content=ScreenContent.animated(animate, fps=0.1),
+        clock=lambda: now[0],
+    )
+    try:
+        renderer._compose_frame(40, 20)
+        assert evaluated.wait(1)
+        loop._drain_source_events()
+        evaluated.clear()
+
+        now[0] = 0.1
+        loop.set_animation_active(False)
+        menu.content_panels[0].refresh()
+        assert menu.content_panels[0]._runtime.responsive_refresh_pending
+        now[0] = 2.0
+        loop.set_animation_active(True)
+        loop._request_dynamic_updates()
+
+        assert evaluated.wait(0.2)
+        assert received == [0, 0]
+    finally:
+        loop.close()
+
+
 def test_slow_animated_panel_coalesces_to_latest_due_frame() -> None:
     now = [0.0]
     started = Event()

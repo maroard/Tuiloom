@@ -116,6 +116,7 @@ class MenuRenderer:
             menu.display_state.title,
             menu.display_state.text,
             menu.display_state.message,
+            menu._hover_message(),
             *(command.label for command in menu.commands),
         ]
         for command in menu.commands:

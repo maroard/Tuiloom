@@ -92,6 +92,29 @@ def test_replaced_menu_animation_does_not_remain_cached() -> None:
     assert renderer._animated_cache == {}
 
 
+def test_animated_hover_message_is_evaluated_once_per_frame() -> None:
+    menu, renderer = make_renderer()
+    calls: list[int] = []
+
+    def animated(frame: AnimationFrame) -> str:
+        calls.append(frame.index)
+        return f"Preview {frame.index}"
+
+    menu.app.add_message("preview", AnimatedText("Preview", animated, fps=10))
+    menu.add_choice(
+        "Mode", [ChoiceOption("First", hover_message="preview")], lambda _: None
+    )
+    menu._selected_index = 2
+    menu._choice_index = 0
+
+    renderer.set_animation_elapsed(0)
+    assert "Preview 0" in renderer.render()
+    assert calls == [0]
+    renderer.set_animation_elapsed(0.11)
+    assert "Preview 1" in renderer.render()
+    assert calls == [0, 1]
+
+
 def test_hidden_menu_does_not_evaluate_animated_text() -> None:
     menu, renderer = make_renderer()
     calls: list[int] = []

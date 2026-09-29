@@ -116,12 +116,14 @@ class MenuRenderer:
             menu.display_state.title,
             menu.display_state.text,
             menu.display_state.message,
-            menu._hover_message(),
             *(command.label for command in menu.commands),
         ]
         for command in menu.commands:
             if isinstance(command, MenuChoice):
                 sources.extend(option.label for option in command.options)
+                for option in command.options:
+                    if option.hover_message is not None:
+                        sources.append(menu._message_text(option.hover_message))
         return tuple(source for source in sources if isinstance(source, AnimatedText))
 
     @property

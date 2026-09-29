@@ -110,6 +110,11 @@ def test_animated_hover_message_is_evaluated_once_per_frame() -> None:
     renderer.set_animation_elapsed(0)
     assert "Preview 0" in renderer.render()
     assert calls == [0]
+    menu._choice_index = None
+    renderer.update()
+    menu._choice_index = 0
+    assert "Preview 0" in renderer.render()
+    assert calls == [0]
     renderer.set_animation_elapsed(0.11)
     assert "Preview 1" in renderer.render()
     assert calls == [0, 1]

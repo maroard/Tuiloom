@@ -285,10 +285,14 @@ def test_application_loop_services_hidden_menus_but_inputs_and_renders_only_top(
     root = TerminalMenu(app, MenuDisplay("root", "Root"))
     child = TerminalMenu(app, MenuDisplay("child", "Child"))
     calls: list[tuple[str, bool, bool, bool]] = []
+    animation_calls: list[tuple[str, bool]] = []
 
     class Loop:
         def __init__(self, name: str) -> None:
             self.name = name
+
+        def set_animation_active(self, active: bool) -> None:
+            animation_calls.append((self.name, active))
 
         def run_once(self, *, process_input: bool, render: bool, block: bool) -> None:
             calls.append((self.name, process_input, render, block))
@@ -310,6 +314,8 @@ def test_application_loop_services_hidden_menus_but_inputs_and_renders_only_top(
     app._running = True
 
     app._run_application_loop()
+    assert ("root", False) in animation_calls
+    assert ("child", True) in animation_calls
 
     assert calls == [
         ("root", False, False, False),
@@ -326,6 +332,9 @@ def test_reopening_retained_menu_resets_navigation_without_reinitializing(
     initializations: list[TerminalMenu] = []
 
     class Loop:
+        def set_animation_active(self, active: bool) -> None:
+            pass
+
         def run_once(self, **kwargs: object) -> None:
             if kwargs.get("process_input"):
                 app._running = False

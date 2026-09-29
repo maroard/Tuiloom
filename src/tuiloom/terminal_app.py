@@ -858,6 +858,8 @@ class TerminalApp:
                 top._initialize_runtime()
                 self._initialized_menus.append(top)
             for menu in tuple(self._initialized_menus):
+                if menu._event_loop is not None:
+                    menu._event_loop.set_animation_active(menu is top)
                 if menu is top:
                     continue
                 if menu._event_loop is not None:

@@ -1,4 +1,4 @@
-"""Shared horizontal choice geometry for rendering and navigation."""
+"""Shared choice geometry for rendering and navigation."""
 
 from __future__ import annotations
 
@@ -29,11 +29,17 @@ def choice_slot_width(label: str) -> int:
     return 4 + display_width(label)
 
 
-def choice_lines(choice: MenuChoice, width: int) -> tuple[ChoiceLine, ...]:
-    """Group options by declared row, then wrap only between options."""
+def choice_lines(
+    choice: MenuChoice, width: int, labels: tuple[str, ...] | None = None
+) -> tuple[ChoiceLine, ...]:
+    """Group options into logical rows, then wrap only between options."""
     result: list[ChoiceLine] = []
     width = max(1, width)
     indent = choice_indent(width)
+    if choice.vertical:
+        return tuple(
+            ChoiceLine((index,), (indent,)) for index in range(len(choice.options))
+        )
     for declared in range(choice.rows):
         indices: list[int] = []
         starts: list[int] = []
@@ -41,7 +47,8 @@ def choice_lines(choice: MenuChoice, width: int) -> tuple[ChoiceLine, ...]:
         for index, option in enumerate(choice.options):
             if option.row != declared:
                 continue
-            size = choice_slot_width(option.label)
+            label = labels[index] if labels is not None else option.label
+            size = choice_slot_width(label)
             separator = 2 if indices else 0
             if indices and used + separator + size > width:
                 result.append(ChoiceLine(tuple(indices), tuple(starts)))

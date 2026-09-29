@@ -12,12 +12,15 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from tuiloom.animation import AnimationFrame, validate_fps
+
 
 @dataclass(frozen=True, slots=True, init=False)
 class StatusBar:
-    """Describe an immutable fixed, dynamic, or width-responsive status line.
+    """Describe an immutable fixed, dynamic, responsive, or animated status line.
 
-    Use ``static(text)``, ``dynamic(renderer)`` or ``responsive(renderer)``;
+    Use ``static(text)``, ``dynamic(renderer)``, ``responsive(renderer)``, or
+    ``animated(renderer, fps=12)``;
     direct construction is rejected. Install the result with
     ``TerminalMenu.set_status_bar()`` to reserve one bottom terminal row even
     while the menu box is hidden. The status configuration has no public mutable
@@ -32,6 +35,9 @@ class StatusBar:
     requests can cause additional evaluations. Responsive providers cache output
     until installation, terminal width change, or ``menu.refresh_status_bar()``
     requests reevaluation.
+    Animated providers receive a width and an ``AnimationFrame`` on the menu's
+    active-time timeline at their configured maximum rate. Covered menus pause
+    that timeline; sources added later join its current phase.
 
     Rendering removes newline characters instead of creating additional rows,
     expands tabs to eight-cell stops measured from column zero, and clips the
@@ -39,8 +45,10 @@ class StatusBar:
     and HTTP(S) OSC 8 hyperlinks are retained; other terminal controls are removed.
     """
 
-    _kind: Literal["static", "dynamic", "responsive"]
+    _kind: Literal["static", "dynamic", "responsive", "animated"]
     _producer: Callable[[int], str]
+    _animated_renderer: Callable[[int, AnimationFrame], str] | None
+    fps: float | None
 
     def __init__(self) -> None:
         """Reject direct construction in favor of an explicit status factory.
@@ -57,12 +65,36 @@ class StatusBar:
     @classmethod
     def _create(
         cls,
-        kind: Literal["static", "dynamic", "responsive"],
+        kind: Literal["static", "dynamic", "responsive", "animated"],
         producer: Callable[[int], str],
     ) -> StatusBar:
         status = object.__new__(cls)
         object.__setattr__(status, "_kind", kind)
         object.__setattr__(status, "_producer", producer)
+        object.__setattr__(status, "_animated_renderer", None)
+        object.__setattr__(status, "fps", None)
+        return status
+
+    @classmethod
+    def animated(
+        cls,
+        renderer: Callable[[int, AnimationFrame], str],
+        *,
+        fps: float = 12,
+    ) -> StatusBar:
+        """Create a width-aware status line sampled on the menu timeline.
+
+        The renderer runs on the UI thread when its frame is due. It must be
+        fast, return a string, and should derive its output from ``frame``.
+        """
+        if not callable(renderer):
+            raise TypeError("StatusBar.animated() requires a callable")
+        rate = validate_fps(fps)
+        status = cls._create(
+            "animated", lambda width: renderer(width, AnimationFrame(0.0, 0))
+        )
+        object.__setattr__(status, "_animated_renderer", renderer)
+        object.__setattr__(status, "fps", rate)
         return status
 
     @classmethod

@@ -6,11 +6,13 @@ following, or ``"strict"`` when every new batch follows the bottom.
 
 from __future__ import annotations
 
+from math import floor
 from os import terminal_size
 from shutil import get_terminal_size
 from sys import stdout
 from typing import TYPE_CHECKING, Literal
 
+from tuiloom.animation import AnimationFrame
 from tuiloom.configuration import AutoScrollMode
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.panel_layout import allocate_panel_heights
@@ -51,6 +53,11 @@ class TerminalRenderer:
         self._status_key: tuple[object, ...] | None = None
         self._status_line: str | None = None
         self._last_composition: RenderResult | None = None
+        self._animation_elapsed = 0.0
+
+    def set_animation_elapsed(self, elapsed: float) -> None:
+        """Use a shared menu-time snapshot for animated status rendering."""
+        self._animation_elapsed = elapsed
 
     def render(self, input_buffer: str = "") -> None:
         """Render and write one complete terminal frame."""
@@ -107,9 +114,20 @@ class TerminalRenderer:
         if status is None:
             return None
         width = max(0, width)
-        key = (status, width, self._menu._status_bar_revision)
+        index = (
+            floor(self._animation_elapsed * status.fps + 1e-9)
+            if status._kind == "animated" and status.fps is not None
+            else None
+        )
+        key = (status, width, self._menu._status_bar_revision, index)
         if key != self._status_key or status._kind == "dynamic":
-            value = status._producer(width)
+            if status._kind == "animated":
+                animated = status._animated_renderer
+                if animated is None or index is None:
+                    raise RuntimeError("Animated status renderer is missing")
+                value = animated(width, AnimationFrame(self._animation_elapsed, index))
+            else:
+                value = status._producer(width)
             if not isinstance(value, str):
                 raise TypeError("StatusBar renderer must return a str")
             self._status_line = clip_display(normalize_line(value), 0, width)

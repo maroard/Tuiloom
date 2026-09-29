@@ -16,6 +16,17 @@ def test_status_factories_are_explicit_and_validate_producers() -> None:
     for factory in (status_type.dynamic, status_type.responsive):
         with pytest.raises(TypeError, match="callable"):
             factory("not callable")
+    with pytest.raises(TypeError, match="callable"):
+        status_type.animated("not callable")
+
+
+@pytest.mark.parametrize("fps", [0, -1, 61, True, float("nan"), "12"])
+def test_animated_status_rejects_invalid_rate(fps: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        tuiloom.StatusBar.animated(
+            lambda width, frame: "",
+            fps=fps,  # type: ignore[arg-type]
+        )
 
 
 def test_menu_status_configuration_is_atomic_and_independent_of_panels() -> None:

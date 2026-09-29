@@ -25,6 +25,8 @@ from tuiloom.render.terminal_renderer import TerminalRenderer
 
 def test_public_api_contains_only_intentional_symbols() -> None:
     expected = {
+        "AnimatedText",
+        "AnimationFrame",
         "AutoScrollMode",
         "ChoiceCallback",
         "ChoiceContext",
@@ -51,6 +53,7 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "TextColor",
         "display_width",
         "hyperlink",
+        "rainbow_color",
         "style",
     }
     assert set(tuiloom.__all__) == expected

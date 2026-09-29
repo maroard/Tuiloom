@@ -8,6 +8,7 @@ from socket import socketpair
 from time import monotonic
 from typing import TYPE_CHECKING
 
+from tuiloom.animation import AnimationFrame, AnimationTimeline
 from tuiloom.background_work import BackgroundWork
 from tuiloom.cleanup import run_cleanup
 from tuiloom.content_panel import ContentPanel
@@ -64,6 +65,9 @@ class EventLoop:
             self._retiring_panels: list[ContentPanel] = []
             self._dirty = True
             now = self._clock()
+            self._animation_timeline = AnimationTimeline(now)
+            self._animation_active = True
+            self._last_ui_animation: tuple[tuple[float, int], ...] | None = None
             self._next_frame_at = now
             self._next_state_check_at = now
             self._terminal_size = get_terminal_size()
@@ -140,6 +144,15 @@ class EventLoop:
         if immediate:
             self._next_frame_at = self._clock()
 
+    def set_animation_active(self, active: bool) -> None:
+        """Pause covered-menu animations and resume their active-time phase."""
+        if self._animation_active == active:
+            return
+        self._animation_timeline.set_active(active, self._clock())
+        self._animation_active = active
+        if active:
+            self.request_render(immediate=True)
+
     @property
     def active_work(self) -> BackgroundWork | None:
         """Return source work that currently prevents a safe menu exit."""
@@ -175,10 +188,13 @@ class EventLoop:
         """Record layout geometry and request responsive work when required."""
         previous = panel._runtime.effective_size
         panel._runtime.effective_size = size
-        if panel._runtime.renderer.state != "responsive":
+        if panel._runtime.renderer.state not in ("responsive", "animated"):
             return
         if previous != size or panel._runtime.responsive_refresh_pending:
-            self._request_responsive_update(panel, size)
+            if panel._runtime.renderer.state == "animated":
+                self._request_animated_update(panel, size)
+            else:
+                self._request_responsive_update(panel, size)
 
     def refresh_content_panel(self, panel: ContentPanel) -> None:
         """Request an immediate responsive result, if layout is known."""
@@ -187,7 +203,41 @@ class EventLoop:
             panel._runtime.responsive_refresh_pending = True
             self.request_render(immediate=True)
             return
-        self._request_responsive_update(panel, size)
+        if panel._runtime.renderer.state == "animated":
+            self._request_animated_update(panel, size)
+        else:
+            self._request_responsive_update(panel, size)
+
+    def _request_animated_update(
+        self, panel: ContentPanel, size: ContentSize, *, force: bool = True
+    ) -> None:
+        """Request one numbered frame using the shared active-time timeline."""
+        worker = panel._runtime.worker
+        fps = panel._content.fps
+        if fps is None:
+            raise RuntimeError("Animated content rate is missing")
+        if worker is None or self._refreshes_suspended() or not self._animation_active:
+            panel._runtime.responsive_refresh_pending = True
+            panel._runtime.next_dynamic_at = self._clock()
+            return
+        now = self._clock()
+        elapsed = self._animation_timeline.elapsed(now)
+        frame = AnimationFrame(elapsed, int(elapsed * fps + 1e-9))
+        if not force and panel._runtime.last_animation_index == frame.index:
+            panel._runtime.next_dynamic_at = now + max(
+                0.0, (frame.index + 1) / fps - elapsed
+            )
+            return
+        panel._runtime.responsive_refresh_pending = False
+        panel._runtime.last_animation_index = frame.index
+        panel._runtime.responsive_request_id += 1
+        panel._runtime.dynamic_in_flight = True
+        panel._runtime.next_dynamic_at = now + max(
+            0.0, (frame.index + 1) / fps - elapsed
+        )
+        worker.request_animated_update(
+            panel._runtime.responsive_request_id, size, frame
+        )
 
     def _request_responsive_update(
         self,
@@ -313,6 +363,8 @@ class EventLoop:
             source = content._dynamic()
         elif panel._runtime.renderer.state == "responsive":
             source = content._responsive()
+        elif panel._runtime.renderer.state == "animated":
+            source = content._animated()
         else:
             raise RuntimeError("Non-static screen content cannot be consumed")
 
@@ -403,7 +455,7 @@ class EventLoop:
             ):
                 continue
             if (
-                event.panel._runtime.renderer.state == "responsive"
+                event.panel._runtime.renderer.state in ("responsive", "animated")
                 and event.request_id != event.panel._runtime.responsive_request_id
             ):
                 continue
@@ -436,12 +488,12 @@ class EventLoop:
                     renderer.replace_dynamic_content(value)
                     self.request_render()
                 panel._runtime.dynamic_in_flight = False
-            elif renderer.state == "responsive":
+            elif renderer.state in ("responsive", "animated"):
                 values = [event.value for event in events if event.kind == "data"]
                 if values:
                     value = values[-1]
                     if not isinstance(value, (str, list)):
-                        raise RuntimeError("Responsive worker returned invalid content")
+                        raise RuntimeError("Generated worker returned invalid content")
                     renderer.replace_generated_content(value)
                     self.request_render()
                 panel._runtime.dynamic_in_flight = False
@@ -481,16 +533,19 @@ class EventLoop:
             if (
                 worker is None
                 or panel._runtime.pending_content is not None
-                or panel._runtime.dynamic_in_flight
                 or now < panel._runtime.next_dynamic_at
             ):
                 continue
-            if panel._runtime.renderer.state == "dynamic":
+            if (
+                panel._runtime.renderer.state == "dynamic"
+                and not panel._runtime.dynamic_in_flight
+            ):
                 panel._runtime.dynamic_in_flight = True
                 panel._runtime.next_dynamic_at = now + self._FRAME_INTERVAL
                 worker.request_dynamic_update()
             elif (
                 panel._runtime.renderer.state == "responsive"
+                and not panel._runtime.dynamic_in_flight
                 and (
                     panel._content.refresh_mode == "continuous"
                     or panel._runtime.responsive_refresh_pending
@@ -498,6 +553,26 @@ class EventLoop:
                 and panel._runtime.effective_size is not None
             ):
                 self._request_responsive_update(panel, panel._runtime.effective_size)
+            elif (
+                panel._runtime.renderer.state == "animated"
+                and self._animation_active
+                and panel._runtime.effective_size is not None
+            ):
+                self._request_animated_update(
+                    panel,
+                    panel._runtime.effective_size,
+                    force=panel._runtime.responsive_refresh_pending,
+                )
+
+    def _ui_animation_rates(self) -> tuple[float, ...]:
+        """Return the distinct rates of visible text/status animations."""
+        if not self._animation_active:
+            return ()
+        rates = list(self._menu_renderer.animation_rates())
+        status = self._menu.status_bar
+        if status is not None and status._kind == "animated" and status.fps is not None:
+            rates.append(status.fps)
+        return tuple(sorted(set(rates)))
 
     def _has_dynamic_status(self) -> bool:
         status = self._menu.status_bar
@@ -512,14 +587,26 @@ class EventLoop:
         """Render dirty state no faster than the configured frame interval."""
         now = self._clock()
 
+        rates = self._ui_animation_rates()
+        elapsed = self._animation_timeline.elapsed(now)
+        ui_frame = (
+            tuple((rate, int(elapsed * rate + 1e-9)) for rate in rates)
+            if rates
+            else None
+        )
+        if ui_frame is not None and ui_frame != self._last_ui_animation:
+            self._dirty = True
+
         if (
             not self._dirty and not self._has_dynamic_status()
         ) or now < self._next_frame_at:
             return
 
-        self._menu_renderer.update()
+        self._menu_renderer.set_animation_elapsed(elapsed)
+        self._terminal_renderer.set_animation_elapsed(elapsed)
         self._terminal_renderer.render()
         self._dirty = False
+        self._last_ui_animation = ui_frame
         self._next_frame_at = now + self._FRAME_INTERVAL
 
     def _get_wait_timeout(self) -> float:
@@ -529,6 +616,13 @@ class EventLoop:
 
         if self._dirty or self._has_dynamic_status():
             deadlines.append(self._next_frame_at)
+
+        rates = self._ui_animation_rates()
+        if rates:
+            elapsed = self._animation_timeline.elapsed(now)
+            for rate in rates:
+                next_index = int(elapsed * rate + 1e-9) + 1
+                deadlines.append(now + max(0.0, next_index / rate - elapsed))
 
         input_timeout = self._input_handler.get_pending_timeout(now)
 
@@ -547,8 +641,14 @@ class EventLoop:
                         or panel._runtime.responsive_refresh_pending
                     )
                     and panel._runtime.effective_size is not None
+                    or panel._runtime.renderer.state == "animated"
+                    and self._animation_active
+                    and panel._runtime.effective_size is not None
                 )
-                and not panel._runtime.dynamic_in_flight
+                and (
+                    panel._runtime.renderer.state == "animated"
+                    or not panel._runtime.dynamic_in_flight
+                )
                 and panel._runtime.pending_content is None
             )
 

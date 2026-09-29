@@ -38,6 +38,14 @@ _NAMED_COLORS = {
 }
 _NAMED_RGB_COLORS = {
     "orange": (255, 165, 0),
+    "brown": (165, 42, 42),
+    "crimson": (220, 20, 60),
+    "darkred": (139, 0, 0),
+    "gold": (255, 215, 0),
+    "lime": (0, 255, 0),
+    "maroon": (128, 0, 0),
+    "purple": (128, 0, 128),
+    "violet": (238, 130, 238),
     "gray": (128, 128, 128),
     "dark_red": (127, 0, 0),
     "dark_green": (0, 127, 0),
@@ -140,8 +148,10 @@ def style(
         foreground: Text color, or ``None`` to leave that category unchanged.
             Accepts ``black``, ``red``, ``green``, ``yellow``, ``blue``,
             ``magenta``, ``cyan``, ``white``, their ``bright_`` variants,
-            ``orange``, ``gray``, and ``dark_`` variants of red, green, yellow,
-            blue, magenta, cyan, orange and gray. Also accepts an integer palette
+            ``orange``, ``brown``, ``crimson``, ``darkred``, ``gold``, ``lime``,
+            ``maroon``, ``purple``, ``violet``, ``gray``, and ``dark_`` variants
+            of red, green, yellow, blue, magenta, cyan, orange and gray.
+            Also accepts an integer palette
             index in ``0..255``, a three-integer RGB tuple in ``0..255``, or a
             ``#RRGGBB`` string. Names are case-sensitive.
         background: Cell background color in the same formats as ``foreground``.

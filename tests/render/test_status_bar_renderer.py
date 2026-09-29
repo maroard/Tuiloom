@@ -4,7 +4,16 @@ from os import terminal_size
 
 import pytest
 
-from tuiloom import KeyBinding, MenuDisplay, ScreenContent, TerminalApp, TerminalMenu
+from tuiloom import (
+    AnimatedText,
+    AnimationFrame,
+    KeyBinding,
+    MenuDisplay,
+    ScreenContent,
+    StatusBar,
+    TerminalApp,
+    TerminalMenu,
+)
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.terminal_renderer import TerminalRenderer
@@ -100,6 +109,63 @@ def test_hidden_menu_preserves_status() -> None:
     assert renderer._compose_frame(40, 20)[-1] == "READY"
     menu.show_menu()
     assert renderer._compose_frame(40, 20)[-1] == "READY"
+
+
+def test_animated_status_uses_width_and_frame_with_rate_cache() -> None:
+    menu, renderer = make_renderer()
+    calls: list[tuple[int, int]] = []
+
+    def render_status(width: int, frame: object) -> str:
+        index = frame.index  # type: ignore[attr-defined]
+        calls.append((width, index))
+        return f"\x1b[31m{width}:{index}\x1b[39m\x1b[2J"
+
+    menu.set_status_bar(StatusBar.animated(render_status, fps=10))
+    assert "40:0" in renderer._compose_frame(40, 20)[-1]
+    renderer.set_animation_elapsed(0.05)
+    assert "40:0" in renderer._compose_frame(40, 20)[-1]
+    assert calls == [(40, 0)]
+    renderer.set_animation_elapsed(0.11)
+    line = renderer._compose_frame(40, 20)[-1]
+    assert "40:1" in line
+    assert "\x1b[2J" not in line
+    assert calls == [(40, 0), (40, 1)]
+    assert "20:1" in renderer._compose_frame(20, 20)[-1]
+    assert calls[-1] == (20, 1)
+
+
+def test_constant_animation_output_does_not_write_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    menu, renderer = make_renderer()
+    title_frames: list[int] = []
+    status_frames: list[int] = []
+
+    def title(frame: AnimationFrame) -> str:
+        title_frames.append(frame.index)
+        return "Same title"
+
+    def status(width: int, frame: AnimationFrame) -> str:
+        status_frames.append(frame.index)
+        return "Same status"
+
+    menu.display_state.title = AnimatedText("Fallback", title, fps=5)
+    menu.set_status_bar(StatusBar.animated(status, fps=5))
+    writes: list[str] = []
+    monkeypatch.setattr(
+        "tuiloom.render.terminal_renderer.get_terminal_size",
+        lambda: terminal_size((40, 20)),
+    )
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
+    monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.flush", lambda: None)
+    renderer.render()
+    writes.clear()
+    renderer._menu_renderer.set_animation_elapsed(0.21)
+    renderer.set_animation_elapsed(0.21)
+    renderer.render()
+    assert title_frames == [0, 1]
+    assert status_frames == [0, 1]
+    assert writes == []
 
 
 def test_status_does_not_change_messages_focus_or_scrolling() -> None:

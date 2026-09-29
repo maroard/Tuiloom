@@ -9,10 +9,13 @@ from typing import cast
 import pytest
 
 from tuiloom import (
+    AnimatedText,
+    AnimationFrame,
     ContentSize,
     KeyBinding,
     MenuDisplay,
     ScreenContent,
+    StatusBar,
     TerminalApp,
     TerminalMenu,
 )
@@ -132,6 +135,232 @@ def test_event_loop_drains_immediate_input_and_stops() -> None:
     loop.run_once()
     assert not menu._running
     loop.close()
+
+
+def test_menu_animation_uses_elapsed_time_and_skips_late_frames() -> None:
+    now = [0.0]
+    menu, loop, _, _ = make_loop([None], clock=lambda: now[0])
+    calls: list[AnimationFrame] = []
+
+    def render_title(frame: AnimationFrame) -> str:
+        calls.append(frame)
+        return f"T{frame.index}"
+
+    menu.display_state.title = AnimatedText("Title", render_title, fps=5)
+    loop._render_if_due()
+    assert [frame.index for frame in calls] == [0]
+    now[0] = 0.11
+    loop._render_if_due()
+    assert [frame.index for frame in calls] == [0]
+    now[0] = 0.61
+    loop._render_if_due()
+    assert [frame.index for frame in calls] == [0, 3]
+    loop.set_animation_active(False)
+    now[0] = 5.0
+    loop._render_if_due()
+    assert [frame.index for frame in calls] == [0, 3]
+    loop.set_animation_active(True)
+    now[0] = 5.2
+    loop._render_if_due()
+    assert [frame.index for frame in calls] == [0, 3, 4]
+    loop.close()
+
+
+def test_menu_and_status_animations_keep_independent_rates() -> None:
+    now = [0.0]
+    menu, loop, _, _ = make_loop([None], clock=lambda: now[0])
+    title_frames: list[int] = []
+    status_frames: list[int] = []
+
+    def title(frame: AnimationFrame) -> str:
+        title_frames.append(frame.index)
+        return str(frame.index)
+
+    def status(width: int, frame: AnimationFrame) -> str:
+        status_frames.append(frame.index)
+        return str(frame.index)
+
+    menu.display_state.title = AnimatedText("Title", title, fps=2)
+    menu.set_status_bar(StatusBar.animated(status, fps=3))
+    try:
+        loop._render_if_due()
+        now[0] = 0.34
+        loop._render_if_due()
+        now[0] = 0.51
+        loop._render_if_due()
+        assert title_frames == [0, 1]
+        assert status_frames == [0, 1]
+    finally:
+        loop.close()
+
+
+def test_animated_panel_receives_size_and_shared_frame() -> None:
+    now = [0.0]
+    received: list[tuple[ContentSize, AnimationFrame]] = []
+    evaluated = Event()
+
+    def animate(size: ContentSize, frame: AnimationFrame) -> str:
+        received.append((size, frame))
+        evaluated.set()
+        return f"frame {frame.index}"
+
+    content = ScreenContent.animated(animate, fps=5)
+    menu, loop, _, renderer = make_loop([None], content=content, clock=lambda: now[0])
+    renderer._compose_frame(40, 20)
+    assert evaluated.wait(1)
+    loop._drain_source_events()
+    assert received[0][1].index == 0
+    assert received[0][0].width > 0
+    evaluated.clear()
+    now[0] = 0.45
+    loop._request_dynamic_updates()
+    assert evaluated.wait(1)
+    assert received[-1][1].index == 2
+    assert menu.content_panels[0]._runtime.next_dynamic_at == pytest.approx(0.6)
+    loop.close()
+
+
+def test_animated_panel_resume_waits_for_next_active_frame() -> None:
+    now = [0.0]
+    received: list[int] = []
+    evaluated = Event()
+
+    def animate(size: ContentSize, frame: AnimationFrame) -> str:
+        received.append(frame.index)
+        evaluated.set()
+        return str(frame.index)
+
+    menu, loop, _, renderer = make_loop(
+        [None],
+        content=ScreenContent.animated(animate, fps=5),
+        clock=lambda: now[0],
+    )
+    try:
+        renderer._compose_frame(40, 20)
+        assert evaluated.wait(1)
+        loop._drain_source_events()
+        assert received == [0]
+        now[0] = 0.05
+        loop.set_animation_active(False)
+        now[0] = 10.0
+        loop.set_animation_active(True)
+        loop._request_dynamic_updates()
+        assert received == [0]
+        now[0] = 10.16
+        evaluated.clear()
+        loop._request_dynamic_updates()
+        assert evaluated.wait(1)
+        assert received == [0, 1]
+    finally:
+        loop.close()
+
+
+def test_animated_panel_refresh_while_covered_runs_on_resume() -> None:
+    now = [0.0]
+    received: list[int] = []
+    evaluated = Event()
+
+    def animate(size: ContentSize, frame: AnimationFrame) -> str:
+        received.append(frame.index)
+        evaluated.set()
+        return str(len(received))
+
+    menu, loop, _, renderer = make_loop(
+        [None],
+        content=ScreenContent.animated(animate, fps=0.1),
+        clock=lambda: now[0],
+    )
+    try:
+        renderer._compose_frame(40, 20)
+        assert evaluated.wait(1)
+        loop._drain_source_events()
+        evaluated.clear()
+
+        now[0] = 0.1
+        loop.set_animation_active(False)
+        menu.content_panels[0].refresh()
+        assert menu.content_panels[0]._runtime.responsive_refresh_pending
+        now[0] = 2.0
+        loop.set_animation_active(True)
+        loop._request_dynamic_updates()
+
+        assert evaluated.wait(0.2)
+        assert received == [0, 0]
+    finally:
+        loop.close()
+
+
+def test_slow_animated_panel_coalesces_to_latest_due_frame() -> None:
+    now = [0.0]
+    started = Event()
+    release = Event()
+    latest_done = Event()
+    received: list[int] = []
+
+    def animate(size: ContentSize, frame: AnimationFrame) -> str:
+        received.append(frame.index)
+        if frame.index == 0:
+            started.set()
+            assert release.wait(1)
+        else:
+            latest_done.set()
+        return str(frame.index)
+
+    menu, loop, _, renderer = make_loop(
+        [None],
+        content=ScreenContent.animated(animate, fps=5),
+        clock=lambda: now[0],
+    )
+    try:
+        renderer._compose_frame(40, 20)
+        assert started.wait(1)
+        now[0] = 0.21
+        loop._request_dynamic_updates()
+        now[0] = 0.61
+        loop._request_dynamic_updates()
+        release.set()
+        assert latest_done.wait(1)
+        assert received == [0, 3]
+        loop._drain_source_events()
+        assert menu.content_panels[0]._runtime.renderer.rendered_content.lines == ["3"]
+    finally:
+        release.set()
+        loop.close()
+
+
+def test_superseded_animated_panel_error_is_discarded() -> None:
+    now = [0.0]
+    started = Event()
+    release = Event()
+    latest_done = Event()
+
+    def animate(size: ContentSize, frame: AnimationFrame) -> str:
+        if frame.index == 0:
+            started.set()
+            assert release.wait(1)
+            raise ValueError("obsolete frame")
+        latest_done.set()
+        return "current"
+
+    menu, loop, _, renderer = make_loop(
+        [None],
+        content=ScreenContent.animated(animate, fps=5),
+        clock=lambda: now[0],
+    )
+    try:
+        renderer._compose_frame(40, 20)
+        assert started.wait(1)
+        now[0] = 0.21
+        loop._request_dynamic_updates()
+        release.set()
+        assert latest_done.wait(1)
+        loop._drain_source_events()
+        assert menu.content_panels[0]._runtime.renderer.rendered_content.lines == [
+            "current"
+        ]
+    finally:
+        release.set()
+        loop.close()
 
 
 def test_event_loop_stops_draining_input_when_callback_changes_top_menu() -> None:

@@ -6,16 +6,20 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from tuiloom.animation import AnimationFrame, validate_fps
 from tuiloom.configuration import ContentRefreshMode
 
 type ContentValue = str | list[str]
-type ContentKind = Literal["static", "lines", "stream", "dynamic", "responsive"]
+type ContentKind = Literal[
+    "static", "lines", "stream", "dynamic", "responsive", "animated"
+]
 type ContentProducer = (
     str
     | tuple[str, ...]
     | Iterator[str]
     | Callable[[], ContentValue]
     | Callable[[ContentSize], ContentValue]
+    | Callable[[ContentSize, AnimationFrame], ContentValue]
 )
 
 
@@ -47,7 +51,8 @@ class ScreenContent:
 
     Use ``static`` for a string, ``lines`` for fixed rows, ``stream`` for an
     iterator of text chunks, ``dynamic`` for repeated complete snapshots, or
-    ``responsive`` for snapshots depending on virtual panel dimensions. Direct
+    ``responsive`` for snapshots depending on virtual panel dimensions, or
+    ``animated`` for size-aware snapshots tied to the menu timeline. Direct
     construction is rejected. Factories configure a source without consuming
     its iterator or calling its producer; source work begins when its owning
     menu is initialized. A stream is consumed by only one panel per application,
@@ -59,7 +64,9 @@ class ScreenContent:
     nominal sixty-hertz cadence; layout changes and explicit refreshes can add
     requests. Resize-responsive mode requests work for layout changes and
     explicit refreshes. Responsive calls remain serialized and pending requests
-    coalesce to the newest size. Producer failures are reraised from the
+    coalesce to the newest size. Animated calls also remain serialized and
+    coalesce to the newest size and frame at their configured maximum rate.
+    Producer failures are reraised from the
     application loop. Cancellation is cooperative: a running source
     call must finish before its replacement or normal shutdown can finish.
 
@@ -70,10 +77,12 @@ class ScreenContent:
     scrollable rather than automatically wrapped.
 
     Attributes:
-        min_width: Read-only responsive virtual width minimum in terminal display
+        min_width: Read-only responsive or animated virtual width minimum in
+            terminal display
             cells, excluding borders. ``None`` uses the physical viewport width;
             always ``None`` for other source kinds.
-        min_height: Read-only responsive virtual height minimum in content rows,
+        min_height: Read-only responsive or animated virtual height minimum in
+            content rows,
             excluding borders. ``None`` uses the physical viewport height;
             always ``None`` for other source kinds. Independent of a panel's
             visible height bounds.
@@ -81,6 +90,8 @@ class ScreenContent:
             first layout, layout changes, and explicit panel refreshes, or
             ``"continuous"`` for additional periodic updates. ``None`` for other
             source kinds.
+        fps: Read-only maximum animation rate in frames per second for animated
+            content, or ``None`` for other source kinds.
     """
 
     _kind: ContentKind
@@ -88,6 +99,7 @@ class ScreenContent:
     min_width: int | None
     min_height: int | None
     refresh_mode: ContentRefreshMode | None
+    fps: float | None
 
     def __init__(self) -> None:
         """Reject direct construction; select a named source factory instead.
@@ -107,6 +119,7 @@ class ScreenContent:
         min_width: int | None = None,
         min_height: int | None = None,
         refresh_mode: ContentRefreshMode | None = None,
+        fps: float | None = None,
     ) -> ScreenContent:
         content = object.__new__(cls)
         object.__setattr__(content, "_kind", kind)
@@ -114,7 +127,34 @@ class ScreenContent:
         object.__setattr__(content, "min_width", min_width)
         object.__setattr__(content, "min_height", min_height)
         object.__setattr__(content, "refresh_mode", refresh_mode)
+        object.__setattr__(content, "fps", fps)
         return content
+
+    @classmethod
+    def animated(
+        cls,
+        renderer: Callable[[ContentSize, AnimationFrame], ContentValue],
+        *,
+        fps: float = 12,
+        min_width: int | None = None,
+        min_height: int | None = None,
+    ) -> ScreenContent:
+        """Render complete panel snapshots on due frames of the menu timeline.
+
+        Calls run serially on the panel worker. The newest pending size/frame
+        supersedes older requests, and stale results are discarded.
+        """
+        if not callable(renderer):
+            raise TypeError("ScreenContent.animated() requires a callable")
+        cls._validate_minimum("min_width", min_width)
+        cls._validate_minimum("min_height", min_height)
+        return cls._create(
+            "animated",
+            renderer,
+            min_width=min_width,
+            min_height=min_height,
+            fps=validate_fps(fps),
+        )
 
     @classmethod
     def static(cls, text: str) -> ScreenContent:
@@ -358,3 +398,8 @@ class ScreenContent:
 
     def _responsive(self) -> Callable[[ContentSize], ContentValue]:
         return cast(Callable[[ContentSize], ContentValue], self._producer)
+
+    def _animated(self) -> Callable[[ContentSize, AnimationFrame], ContentValue]:
+        return cast(
+            Callable[[ContentSize, AnimationFrame], ContentValue], self._producer
+        )

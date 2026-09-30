@@ -5,11 +5,12 @@ from math import isfinite
 from typing import TYPE_CHECKING
 
 from tuiloom.command import PanelCommandCallback, PanelKeyCommand
-from tuiloom.configuration import AutoScrollMode
+from tuiloom.configuration import AutoScrollMode, SelectionStyle
 from tuiloom.key_binding import KeyBinding
 from tuiloom.panel_runtime import PanelRuntime
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.screen_content import ScreenContent
+from tuiloom.selectable import SelectableItem
 
 if TYPE_CHECKING:
     from tuiloom.terminal_menu import TerminalMenu
@@ -64,6 +65,11 @@ class ContentPanel:
             nonnegative inner padding sizes. Change selected sides with
             ``update_padding()``.
         key_commands: Read-only tuple of shortcuts registered on this panel.
+        selected_index: Read-only zero-based index among selectable items, or
+            ``None`` when the content has no enabled item.
+        selected_item: Read-only currently selected ``SelectableItem`` or ``None``.
+        selection_style: Read-only ``"marker"`` or ``"reverse"`` rendering mode;
+            change it with ``set_selection_style()``.
     """
 
     __slots__ = (
@@ -85,6 +91,8 @@ class ContentPanel:
         "_key_commands",
         "_removed",
         "_runtime",
+        "_selected_index",
+        "_selection_style",
     )
 
     def __init__(
@@ -103,6 +111,7 @@ class ContentPanel:
         padding_bottom: int = 0,
         padding_left: int = 0,
         padding_right: int = 0,
+        selection_style: SelectionStyle = "marker",
     ) -> None:
         """Initialize an unregistered, expanded panel without starting a worker.
 
@@ -142,6 +151,8 @@ class ContentPanel:
             padding_top, padding_bottom, padding_left, padding_right:
                 Nonnegative integer cells reserved inside the frame. Default to
                 zero; booleans are rejected.
+            selection_style: ``"marker"`` (default) or ``"reverse"`` for the
+                selected item row.
 
         Raises:
             TypeError: If ``content`` is not ``ScreenContent``, either sizing
@@ -163,6 +174,9 @@ class ContentPanel:
         ):
             self._validate_padding(name, value)
         self._content = content
+        if selection_style not in ("marker", "reverse"):
+            raise ValueError("selection_style must be 'marker' or 'reverse'")
+        self._selection_style = selection_style
         self._description = description
         self._auto_scroll = auto_scroll
         self._height_weight = height_weight
@@ -181,6 +195,102 @@ class ContentPanel:
             ContentRenderer(content),
             responsive_refresh_pending=content._kind in ("responsive", "animated"),
         )
+        self._selected_index: int | None = None
+        self._restore_selection(content)
+
+    @property
+    def selected_index(self) -> int | None:
+        """Return the selected item's index among selectable items, or None."""
+        return self._selected_index
+
+    @property
+    def selection_style(self) -> SelectionStyle:
+        """Return this panel's independent item selection style."""
+        return self._selection_style
+
+    def set_selection_style(self, style: SelectionStyle) -> None:
+        """Change item selection rendering without replacing content or runtime."""
+        self._menu._require_content_panel(self)
+        if style not in ("marker", "reverse"):
+            raise ValueError("selection_style must be 'marker' or 'reverse'")
+        if self._selection_style != style:
+            self._selection_style = style
+            self._menu._request_menu_render()
+
+    @property
+    def selected_item(self) -> SelectableItem | None:
+        """Return the selected item in mounted content, if any."""
+        items = self._content._selectable_items()
+        index = self._selected_index
+        return items[index] if index is not None and index < len(items) else None
+
+    def select_item(self, index: int) -> None:
+        """Select an enabled item by its zero-based item index without activation."""
+        self._menu._require_content_panel(self)
+        if type(index) is not int:
+            raise TypeError("selected item index must be an int")
+        items = self._content._selectable_items()
+        if not 0 <= index < len(items) or not items[index].enabled:
+            raise ValueError("selected item index must identify an enabled item")
+        self._selected_index = index
+        self._runtime.selection_visibility_pending = True
+        self._runtime.selection_revision += 1
+        self._menu._request_menu_render()
+
+    def _selected_row(self) -> int | None:
+        if self._selected_index is None:
+            return None
+        item_index = 0
+        for row_index, row in enumerate(self._content._selectable_rows()):
+            if isinstance(row, SelectableItem):
+                if item_index == self._selected_index:
+                    return row_index
+                item_index += 1
+        return None
+
+    def _restore_selection(self, content: ScreenContent) -> None:
+        old_item = self.selected_item if hasattr(self, "_selected_index") else None
+        old_index = self._selected_index
+        items = content._selectable_items()
+        enabled = [index for index, item in enumerate(items) if item.enabled]
+        if not enabled:
+            self._selected_index = None
+            self._runtime.selection_visibility_pending = True
+            return
+        if old_item is not None and old_item.key is not None:
+            matching = next(
+                (index for index in enabled if items[index].key == old_item.key), None
+            )
+            if matching is not None:
+                self._selected_index = matching
+                self._runtime.selection_visibility_pending = True
+                return
+        if old_index is None:
+            self._selected_index = enabled[0]
+        else:
+            self._selected_index = min(
+                enabled, key=lambda index: (abs(index - old_index), index)
+            )
+        self._runtime.selection_visibility_pending = True
+
+    def _move_selection(self, delta: int) -> None:
+        enabled = [
+            index
+            for index, item in enumerate(self._content._selectable_items())
+            if item.enabled
+        ]
+        if not enabled:
+            self._selected_index = None
+            return
+        if self._selected_index not in enabled:
+            self._selected_index = enabled[0]
+        else:
+            self._selected_index = enabled[
+                (enabled.index(self._selected_index) + delta) % len(enabled)
+            ]
+        self._runtime.selection_visibility_pending = True
+        self._runtime.selection_revision += 1
+        self._menu._request_menu_render()
 
     @property
     def description(self) -> str:
@@ -360,7 +470,18 @@ class ContentPanel:
             and not shifted_horizontal
         ) or (
             self._menu.app.keymap.action_for(binding)
-            in {"focus", "back", "up", "down", "left", "right"}
+            in {
+                "focus",
+                "back",
+                "up",
+                "down",
+                "left",
+                "right",
+                "scroll_up",
+                "scroll_down",
+                "scroll_left",
+                "scroll_right",
+            }
         ):
             raise ValueError("binding is reserved for a system action")
         if any(command.binding == binding for command in self._key_commands):

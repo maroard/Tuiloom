@@ -1,7 +1,7 @@
 from tuiloom.render.rendered_content import RenderedContent
-from tuiloom.render.terminal_text import clip_display, ljust_display
+from tuiloom.render.terminal_text import clip_display, ljust_display, reverse_display
 
-type ViewportRenderKey = tuple[int, int, int, int, int]
+type ViewportRenderKey = tuple[int, int, int, int, int, int | None, str]
 
 
 class Viewport:
@@ -30,6 +30,8 @@ class Viewport:
         self.height = height
         self.offset_x = 0
         self.offset_y = 0
+        self.selection_row: int | None = None
+        self.selection_style = "marker"
         self._cached_key: ViewportRenderKey | None = None
         self._cached_render: str | None = None
 
@@ -46,6 +48,8 @@ class Viewport:
             self.height,
             self.offset_x,
             self.offset_y,
+            self.selection_row,
+            self.selection_style,
         )
 
         if key == self._cached_key and self._cached_render is not None:
@@ -55,13 +59,19 @@ class Viewport:
 
         rendered_lines = []
 
-        for line in visible_lines:
+        for row_index, line in enumerate(visible_lines, self.offset_y):
+            if row_index == self.selection_row and self.selection_style == "marker":
+                line = "> " + line[2:]
             visible_part = clip_display(
                 line,
                 self.offset_x,
                 self.offset_x + self.width,
             )
-            rendered_lines.append(ljust_display(visible_part, self.width))
+            rendered_lines.append(
+                reverse_display(visible_part, self.width)
+                if row_index == self.selection_row and self.selection_style == "reverse"
+                else ljust_display(visible_part, self.width)
+            )
 
         while len(rendered_lines) < self.height:
             rendered_lines.append(" " * self.width)
@@ -89,6 +99,14 @@ class Viewport:
     def scroll_to_bottom(self) -> None:
         """Move the vertical offset to its current lower boundary."""
         self.offset_y = self._get_max_offset_y()
+
+    def ensure_visible(self, row: int) -> None:
+        """Move vertically only enough to expose a selected logical row."""
+        if row < self.offset_y:
+            self.offset_y = row
+        elif row >= self.offset_y + self.height:
+            self.offset_y = row - self.height + 1
+        self.offset_y = min(max(0, self.offset_y), self._get_max_offset_y())
 
     def _get_max_offset_y(self) -> int:
         """Return the current lower vertical boundary."""

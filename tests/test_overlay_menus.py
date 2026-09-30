@@ -201,7 +201,7 @@ def test_hidden_panels_remain_scrollable_with_a_suspended_alert() -> None:
     menu.show_alert("Blocking")
     menu.hide_menu()
     renderer._compose_frame(40, 20)
-    press(menu, "down")
+    menu._handle_event(InputEvent(KeyBinding("down", ctrl=True)))
     assert panel._runtime.viewport is not None and panel._runtime.viewport.offset_y == 1
     menu.show_menu()
     press(menu, "down")

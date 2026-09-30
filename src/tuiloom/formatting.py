@@ -7,13 +7,90 @@ Attributes:
         are case-sensitive; hexadecimal digits are case-insensitive.
 """
 
+from collections.abc import Sequence
 from re import fullmatch
 
 from tuiloom.render.terminal_text import (
+    center_display,
+    clip_display,
+    display_width,
     is_safe_hyperlink_url,
+    ljust_display,
+    normalize_line,
     sanitize_hyperlink_text,
     sanitize_terminal_text,
 )
+
+
+def _format_width(width: int) -> int:
+    if type(width) is not int:
+        raise TypeError("width must be an int")
+    if width < 0:
+        raise ValueError("width must be nonnegative")
+    return width
+
+
+def line(width: int, char: str = "─") -> str:
+    """Repeat one display-cell grapheme to an exact terminal width."""
+    _format_width(width)
+    if not isinstance(char, str):
+        raise TypeError("char must be a str")
+    safe = normalize_line(char)
+    if display_width(safe) != 1 or "\n" in char:
+        raise ValueError("char must occupy exactly one terminal cell")
+    return safe * width
+
+
+def align_left(text: str, width: int) -> str:
+    """Clip one terminal line on the right, then pad it on the right."""
+    _format_width(width)
+    return ljust_display(clip_display(text, 0, width), width)
+
+
+def align_right(text: str, width: int) -> str:
+    """Clip one terminal line on the right, then pad it on the left."""
+    _format_width(width)
+    clipped = clip_display(text, 0, width)
+    return normalize_line(" " * (width - display_width(clipped)) + clipped)
+
+
+def center(text: str, width: int) -> str:
+    """Clip one terminal line on the right, then center it in display cells."""
+    _format_width(width)
+    return center_display(clip_display(text, 0, width), width)
+
+
+def columns(parts: Sequence[str], width: int) -> str:
+    """Compose two or three terminal strings with evenly distributed gaps.
+
+    When content overflows, each fragment receives an equal cell budget and is
+    clipped independently, retaining one-cell gaps if the width permits.
+    """
+    _format_width(width)
+    if isinstance(parts, (str, bytes)) or not isinstance(parts, Sequence):
+        raise TypeError("parts must be a sequence of strings")
+    if len(parts) not in (2, 3):
+        raise ValueError("columns requires two or three parts")
+    if not all(isinstance(part, str) for part in parts):
+        raise TypeError("columns parts must be strings")
+    normalized = [normalize_line(part) for part in parts]
+    n = len(normalized)
+    used = sum(display_width(part) for part in normalized)
+    if used <= width:
+        free = width - used
+        gaps = [free // (n - 1) + int(index < free % (n - 1)) for index in range(n - 1)]
+        return "".join(
+            part + (" " * gaps[index] if index < n - 1 else "")
+            for index, part in enumerate(normalized)
+        )
+    gap_width = 1 if width >= n - 1 else 0
+    available = width - gap_width * (n - 1)
+    slots = [available // n + int(index < available % n) for index in range(n)]
+    return (" " * gap_width).join(
+        ljust_display(clip_display(part, 0, slot), slot)
+        for part, slot in zip(normalized, slots, strict=True)
+    )
+
 
 type TextColor = str | int | tuple[int, int, int]
 """Terminal color: a supported name, palette index, RGB tuple or #RRGGBB text."""

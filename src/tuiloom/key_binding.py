@@ -1,14 +1,15 @@
 """Define immutable key descriptions and configurable navigation bindings.
 
 ``KeyBinding`` normalizes special-key aliases for equality comparisons.
-``KeyMap`` stores the seven system actions separately from global commands; an
+``KeyMap`` stores eleven system actions separately from global commands; an
 owning ``TerminalApp`` also checks global-command collisions on map mutations.
 
 Attributes:
     KeyAction: Literal action name accepted by ``KeyMap``: ``"focus"``, ``"up"``,
         ``"down"``, ``"left"``, ``"right"``, ``"activate"``, or ``"back"``.
-        Arrow actions navigate commands or choices when the menu is focused and
-        scroll content when a content panel is focused.
+        Plain arrows navigate commands, choices or selectable panel items.
+        ``scroll_up/down/left/right`` move a focused panel viewport and default
+        to Ctrl+Arrow.
 """
 
 from __future__ import annotations
@@ -18,8 +19,20 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
-type KeyAction = Literal["focus", "up", "down", "left", "right", "activate", "back"]
-"""One of the seven focus, navigation, activation, or cancellation action names."""
+type KeyAction = Literal[
+    "focus",
+    "up",
+    "down",
+    "left",
+    "right",
+    "activate",
+    "back",
+    "scroll_up",
+    "scroll_down",
+    "scroll_left",
+    "scroll_right",
+]
+"""One of eleven focus, navigation, activation, scroll or cancellation actions."""
 
 _SPECIAL_ALIASES = {
     "return": "enter",
@@ -91,7 +104,7 @@ class KeyBinding:
 
 
 class KeyMap:
-    """Configure the seven system bindings used for keyboard navigation.
+    """Configure eleven system bindings used for navigation and viewport movement.
 
     Construction creates Tab for focus, arrow keys for directions, Enter for
     activation, and Escape for Back/Quit or mode cancellation. Properties expose
@@ -106,10 +119,12 @@ class KeyMap:
     Attributes:
         bindings: Read-only live mapping from ``KeyAction`` names to bindings.
         focus: Read-only binding for cycling menu and content-panel focus.
-        up: Read-only binding for upward menu selection or panel scrolling.
-        down: Read-only binding for downward menu selection or panel scrolling.
-        left: Read-only binding for leftward option navigation or panel scrolling.
-        right: Read-only binding for rightward option navigation or panel scrolling.
+        up: Read-only binding for upward menu or item selection.
+        down: Read-only binding for downward menu or item selection.
+        left: Read-only binding for leftward choice navigation.
+        right: Read-only binding for rightward choice navigation.
+        scroll_up, scroll_down, scroll_left, scroll_right: Read-only viewport
+            movement bindings, defaulting to Ctrl+Arrow.
         activate: Read-only binding for command activation, option confirmation,
             input submission, or alert confirmation.
         back: Read-only binding for Back/Quit or cancellation of input mode.
@@ -120,7 +135,8 @@ class KeyMap:
 
         Defaults are Tab for ``focus``, the corresponding arrow keys for ``up``,
         ``down``, ``left`` and ``right``, Enter for ``activate``, and Escape for
-        ``back``. A ``TerminalApp`` takes ownership when given this map and adds
+        ``back``. Ctrl+Arrow moves a focused panel viewport. A ``TerminalApp``
+        takes ownership when given this map and adds
         its global-command collision checks to subsequent ``set_binding()`` calls.
         """
         self._bindings: dict[KeyAction, KeyBinding] = {
@@ -131,8 +147,32 @@ class KeyMap:
             "right": KeyBinding("right"),
             "activate": KeyBinding("enter"),
             "back": KeyBinding("escape"),
+            "scroll_up": KeyBinding("up", ctrl=True),
+            "scroll_down": KeyBinding("down", ctrl=True),
+            "scroll_left": KeyBinding("left", ctrl=True),
+            "scroll_right": KeyBinding("right", ctrl=True),
         }
         self._external_validator: Callable[[str, KeyBinding], None] | None = None
+
+    @property
+    def scroll_up(self) -> KeyBinding:
+        """Read the upward viewport binding, initially Ctrl+Up."""
+        return self._bindings["scroll_up"]
+
+    @property
+    def scroll_down(self) -> KeyBinding:
+        """Read the downward viewport binding, initially Ctrl+Down."""
+        return self._bindings["scroll_down"]
+
+    @property
+    def scroll_left(self) -> KeyBinding:
+        """Read the leftward viewport binding, initially Ctrl+Left."""
+        return self._bindings["scroll_left"]
+
+    @property
+    def scroll_right(self) -> KeyBinding:
+        """Read the rightward viewport binding, initially Ctrl+Right."""
+        return self._bindings["scroll_right"]
 
     @property
     def bindings(self) -> Mapping[KeyAction, KeyBinding]:
@@ -156,7 +196,7 @@ class KeyMap:
 
     @property
     def up(self) -> KeyBinding:
-        """Read the binding for upward menu selection or focused-panel scrolling.
+        """Read the binding for upward menu or selectable-item navigation.
 
         Returns:
             The current ``up`` binding, initially ``KeyBinding("up")``.
@@ -165,7 +205,7 @@ class KeyMap:
 
     @property
     def down(self) -> KeyBinding:
-        """Read the binding for downward menu selection or focused-panel scrolling.
+        """Read the binding for downward menu or selectable-item navigation.
 
         Returns:
             The current ``down`` binding, initially ``KeyBinding("down")``.
@@ -174,7 +214,7 @@ class KeyMap:
 
     @property
     def left(self) -> KeyBinding:
-        """Read the binding for leftward choice navigation or panel scrolling.
+        """Read the binding for leftward choice navigation.
 
         Returns:
             The current ``left`` binding, initially ``KeyBinding("left")``.
@@ -183,7 +223,7 @@ class KeyMap:
 
     @property
     def right(self) -> KeyBinding:
-        """Read the binding for rightward choice navigation or panel scrolling.
+        """Read the binding for rightward choice navigation.
 
         Returns:
             The current ``right`` binding, initially ``KeyBinding("right")``.

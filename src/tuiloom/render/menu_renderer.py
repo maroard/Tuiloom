@@ -19,6 +19,7 @@ from tuiloom.render.terminal_text import (
     display_width,
     ljust_display,
     normalize_text_lines,
+    reverse_display,
     wrap_display,
 )
 
@@ -43,6 +44,7 @@ class _MenuState:
     choice_labels: tuple[str, ...] | None
     exit_label: str | None
     selected_index: int
+    selection_style: str
     focus: str
     has_content: bool
     show: bool
@@ -275,6 +277,7 @@ class MenuRenderer:
             choice_labels=choice_labels,
             exit_label=exit_label,
             selected_index=selected_index,
+            selection_style=menu.selection_style,
             focus="menu" if menu._focused_panel is None else "content",
             has_content=bool(menu._visible_content_panels()),
             show=menu._menu_box_visible,
@@ -358,7 +361,13 @@ class MenuRenderer:
                 )
                 suffix = " (disabled)" if not enabled else ""
                 lines.extend(
-                    self._command_rows(f"{label}{suffix}", marker, width, vertical)
+                    self._command_rows(
+                        f"{label}{suffix}",
+                        marker,
+                        width,
+                        vertical,
+                        reverse=state.selection_style == "reverse" and marker == ">",
+                    )
                 )
                 if state.choice is not None and state.choice[0] == index:
                     _, choice, cursor, selected = state.choice
@@ -389,7 +398,14 @@ class MenuRenderer:
                     ">" if state.selected_index == len(state.commands) else " "
                 )
                 lines.extend(
-                    self._command_rows(state.exit_label, exit_marker, width, vertical)
+                    self._command_rows(
+                        state.exit_label,
+                        exit_marker,
+                        width,
+                        vertical,
+                        reverse=state.selection_style == "reverse"
+                        and exit_marker == ">",
+                    )
                 )
             if state.input_prompt is not None:
                 lines.append(f"{vertical}{'':{width}}{vertical}")
@@ -436,20 +452,29 @@ class MenuRenderer:
         ]
 
     @staticmethod
-    def _command_rows(label: str, marker: str, width: int, vertical: str) -> list[str]:
+    def _command_rows(
+        label: str, marker: str, width: int, vertical: str, *, reverse: bool = False
+    ) -> list[str]:
+        if reverse:
+            marker = " "
         if width < 4:
             # Keep wrapping independent of selection: a whitespace marker alone
             # would be dropped, changing the height when selection moves.
             wrapped = MenuRenderer._wrapped_lines(f"> {label}", width)
             wrapped[0] = wrapped[0].replace(">", marker, 1)
-            return [
-                MenuRenderer._content_row(line, width, vertical) for line in wrapped
+            raw_rows = wrapped
+        else:
+            raw_rows = [
+                (f"{marker} " if index == 0 else "  ") + line
+                for index, line in enumerate(
+                    MenuRenderer._wrapped_lines(label, width - 2)
+                )
             ]
         return [
             MenuRenderer._content_row(
-                (f"{marker} " if index == 0 else "  ") + line, width, vertical
+                reverse_display(line, width) if reverse else line, width, vertical
             )
-            for index, line in enumerate(MenuRenderer._wrapped_lines(label, width - 2))
+            for line in raw_rows
         ]
 
     @staticmethod

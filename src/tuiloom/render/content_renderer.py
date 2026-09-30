@@ -268,7 +268,7 @@ class ContentRenderer:
             finished=False,
         )
 
-        if content._kind in ("static", "lines"):
+        if content._kind in ("static", "lines", "selectable"):
             self.state = "static"
             self._handle_static_state()
         elif content._kind == "stream":
@@ -289,7 +289,15 @@ class ContentRenderer:
 
     def _handle_static_state(self) -> RenderedContent:
         """Normalize static content and mark it as finished."""
-        self._normalize_content(self.content._static_value())
+        if self.content._kind == "selectable":
+            self._normalize_content(
+                [
+                    row if isinstance(row, str) else "  " + row.content
+                    for row in self.content._selectable_rows()
+                ]
+            )
+        else:
+            self._normalize_content(self.content._static_value())
 
         self.rendered_content.finished = True
 

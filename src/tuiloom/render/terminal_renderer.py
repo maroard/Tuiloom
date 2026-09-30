@@ -94,6 +94,9 @@ class TerminalRenderer:
                     panel._runtime.renderer,
                     self._menu._visible_panel_description(panel),
                     panel._runtime.renderer.rendered_content.revision,
+                    panel.selected_index,
+                    panel._runtime.selection_revision,
+                    panel.selection_style,
                     panel._runtime.viewport.offset_x
                     if panel._runtime.viewport is not None
                     else 0,
@@ -321,10 +324,24 @@ class TerminalRenderer:
         if panel._runtime.viewport is None:
             panel._runtime.viewport = Viewport(rendered, width, height)
         else:
+            if (
+                panel._runtime.viewport.width != width
+                or panel._runtime.viewport.height != height
+            ):
+                panel._runtime.selection_visibility_pending = True
             panel._runtime.viewport.content = rendered
             panel._runtime.viewport.width = width
             panel._runtime.viewport.height = height
         self._apply_panel_auto_scroll(panel)
+        viewport = panel._runtime.viewport
+        viewport.selection_row = panel._selected_row()
+        viewport.selection_style = panel.selection_style
+        if (
+            panel._runtime.selection_visibility_pending
+            and viewport.selection_row is not None
+        ):
+            viewport.ensure_visible(viewport.selection_row)
+        panel._runtime.selection_visibility_pending = False
 
     @staticmethod
     def _panel_top_border(

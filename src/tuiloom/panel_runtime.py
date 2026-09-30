@@ -38,6 +38,8 @@ class PanelRuntime:
     smart_auto_scroll_active: bool = True
     pending_auto_scroll: AutoScrollMode | None = None
     remove_when_finished: bool = False
+    selection_visibility_pending: bool = True
+    selection_revision: int = 0
 
     @property
     def blocks_exit(self) -> bool:
@@ -73,3 +75,4 @@ class PanelRuntime:
         self.last_animation_index = None
         self.smart_auto_scroll_active = True
         self.pending_auto_scroll = None
+        self.selection_visibility_pending = True

@@ -67,6 +67,26 @@ def test_modifier_special_key_and_synthesized_printable_name() -> None:
     assert printable.text == "a"
 
 
+@pytest.mark.parametrize(
+    ("direction", "final"),
+    [("up", "A"), ("down", "B"), ("right", "C"), ("left", "D")],
+)
+def test_decodes_ctrl_arrows(direction: str, final: str) -> None:
+    terminal = Terminal()
+    sequence = f"\x1b[1;5{final}"
+    from blessed.keyboard import resolve_sequence
+
+    key = resolve_sequence(
+        sequence,
+        terminal._keymap,
+        terminal._keycodes,
+        terminal._keymap_prefixes,
+        final=True,
+        dec_mode_cache=terminal._dec_mode_cache,
+    )
+    assert normalize_keystroke(key).binding == KeyBinding(direction, ctrl=True)
+
+
 @pytest.mark.parametrize("gained", [False, True])
 def test_terminal_focus_notifications_are_not_keyboard_commands(gained: bool) -> None:
     event = normalize_keystroke(

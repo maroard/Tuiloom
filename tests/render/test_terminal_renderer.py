@@ -286,7 +286,7 @@ def test_live_collapse_keeps_focus_scroll_and_viewport(
     assert panel._runtime.viewport is viewport and viewport.height == 1
     assert (viewport.offset_x, viewport.offset_y) == (2, 5)
     assert menu._focused_panel is panel and not panel._runtime.smart_auto_scroll_active
-    menu._handle_event(InputEvent(binding=KeyBinding("down")))
+    menu._handle_event(InputEvent(binding=KeyBinding("down", ctrl=True)))
     assert viewport.offset_y == 6
     assert other._runtime.viewport is not None and other._runtime.viewport.offset_y == 0
     panel.expand()
@@ -322,7 +322,7 @@ def test_live_layout_change_redraws_and_preserves_focus_and_scroll(
     assert viewport.height == 3
     assert (viewport.offset_x, viewport.offset_y) == (2, 5)
     assert menu._focused_panel is first
-    menu._handle_event(InputEvent(binding=KeyBinding("down")))
+    menu._handle_event(InputEvent(binding=KeyBinding("down", ctrl=True)))
     assert viewport.offset_y == 6
     assert (
         second._runtime.viewport is not None and second._runtime.viewport.offset_y == 0
@@ -521,6 +521,28 @@ def test_scrolling_changes_only_the_target_panel_viewport() -> None:
     assert first._runtime.viewport is not None and first._runtime.viewport.offset_y == 1
     assert (
         second._runtime.viewport is not None and second._runtime.viewport.offset_y == 0
+    )
+
+
+def test_plain_panel_scroll_uses_ctrl_arrows_only() -> None:
+    menu, renderer = make_renderer(
+        content=ScreenContent.static("\n".join("long line " * 8 for _ in range(30)))
+    )
+    panel = menu.content_panels[0]
+    renderer._compose_frame(24, 16)
+    menu._focused_panel = panel
+    assert panel._runtime.viewport is not None
+    menu._handle_event(InputEvent(KeyBinding("down")))
+    menu._handle_event(InputEvent(KeyBinding("right")))
+    assert (panel._runtime.viewport.offset_x, panel._runtime.viewport.offset_y) == (
+        0,
+        0,
+    )
+    menu._handle_event(InputEvent(KeyBinding("down", ctrl=True)))
+    menu._handle_event(InputEvent(KeyBinding("right", ctrl=True)))
+    assert (panel._runtime.viewport.offset_x, panel._runtime.viewport.offset_y) == (
+        1,
+        1,
     )
 
 

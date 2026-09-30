@@ -1,7 +1,58 @@
 import pytest
 
-from tuiloom import hyperlink, style
+from tuiloom import align_left, align_right, center, columns, hyperlink, line, style
 from tuiloom.render.terminal_text import display_width, sanitize_terminal_text
+
+
+def test_text_alignment_and_line_use_display_cells() -> None:
+    assert line(4) == "────"
+    assert line(3, char="e\u0301") == "e\u0301" * 3
+    assert align_left("界", 4) == "界  "
+    assert align_right("界", 4) == "  界"
+    assert center("界", 5) == "  界 "
+    assert align_left("abcdef", 3) == "abc"
+    assert align_right("abcdef", 3) == "abc"
+    assert center("abcdef", 3) == "abc"
+    assert all(
+        display_width(value) == 4
+        for value in (line(4), align_left("界", 4), align_right("界", 4))
+    )
+
+
+def test_helpers_keep_ansi_and_wide_graphemes_at_exact_width() -> None:
+    styled = "\x1b[31m👨‍👩‍👧\x1b[0m"
+    for helper in (align_left, align_right, center):
+        result = helper(styled, 6)
+        assert display_width(result) == 6
+        assert "\x1b[31m" in result and "\x1b[0m" in result
+    assert display_width(line(2, char="\x1b[31mx\x1b[0m")) == 2
+
+
+def test_columns_distributes_space_and_clips_overflow() -> None:
+    assert columns(["left", "right"], width=16) == "left       right"
+    assert columns(["A", "B", "C"], width=9) == "A   B   C"
+    assert columns(["abcdefgh", "XYZ"], width=7) == "abc XYZ"
+    assert columns(["界", "\x1b[32mgreen\x1b[0m"], width=12).endswith(
+        "\x1b[32mgreen\x1b[0m"
+    )
+    assert display_width(columns(["界", "green"], width=12)) == 12
+    assert columns(["A", "B"], width=0) == ""
+
+
+@pytest.mark.parametrize("width", [-1, True, 1.5])
+def test_helpers_reject_invalid_width(width: object) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        line(width)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError)):
+        center("x", width)  # type: ignore[arg-type]
+    with pytest.raises((TypeError, ValueError)):
+        columns(["a", "b"], width=width)  # type: ignore[arg-type]
+
+
+def test_line_rejects_wide_or_empty_repeat_character() -> None:
+    for char in ("", "界", "ab"):
+        with pytest.raises(ValueError):
+            line(3, char=char)
 
 
 @pytest.mark.parametrize(

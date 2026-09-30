@@ -39,6 +39,28 @@ def test_default_keymap_and_read_only_view() -> None:
         keymap.bindings["focus"] = KeyBinding("f")  # type: ignore[index]
 
 
+def test_default_viewport_actions_reserve_ctrl_arrows() -> None:
+    app = TerminalApp("App")
+    for direction in ("up", "down", "left", "right"):
+        binding = KeyBinding(direction, ctrl=True)
+        assert app.keymap.action_for(binding) == f"scroll_{direction}"
+        with pytest.raises(ValueError, match="reserved"):
+            app.add_global_command(binding, "Taken", lambda context: None)
+
+
+def test_viewport_actions_can_be_remapped_without_collisions() -> None:
+    app = TerminalApp("App")
+    app.keymap.set_binding("scroll_up", KeyBinding("k", ctrl=True))
+    assert app.keymap.scroll_up == KeyBinding("k", ctrl=True)
+    assert app.keymap.action_for(KeyBinding("up", ctrl=True)) is None
+    command = app.add_global_command(
+        KeyBinding("up", ctrl=True), "Old viewport key", lambda context: None
+    )
+    with pytest.raises(ValueError, match="global command"):
+        app.keymap.set_binding("scroll_up", command.binding)
+    assert app.keymap.scroll_up == KeyBinding("k", ctrl=True)
+
+
 def test_keymap_mutation_is_atomic_on_system_collision() -> None:
     keymap = KeyMap()
     previous = keymap.up

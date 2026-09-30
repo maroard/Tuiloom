@@ -15,8 +15,10 @@ Attributes:
         option or option-level keyboard preview. Returns are ignored.
     InputCallback: Callable accepting the submitted plain-text ``str`` on the
         UI thread. Submission does not itself leave input mode; return ignored.
-    KeyAction: One of ``"focus"``, ``"up"``, ``"down"``, ``"left"``,
-        ``"right"``, ``"activate"`` or ``"back"`` for a ``KeyMap`` action.
+    KeyAction: One of the eleven focus, navigation, activation, viewport scroll
+        or back actions configured in a ``KeyMap``.
+    SelectionStyle: ``"marker"`` for a leading ``>`` or ``"reverse"`` for
+        full-row terminal SGR reverse video.
     AutoScrollMode: ``"smart"`` follows new stream output unless scrolled away
         from the bottom; ``"strict"`` follows each new batch. Panel parameters
         also accept ``None`` for manual scrolling.
@@ -45,14 +47,29 @@ from tuiloom.command import (
     PanelCommandContext,
     PanelKeyCommand,
 )
-from tuiloom.configuration import AutoScrollMode, ContentRefreshMode, MenuPresentation
+from tuiloom.configuration import (
+    AutoScrollMode,
+    ContentRefreshMode,
+    MenuPresentation,
+    SelectionStyle,
+)
 from tuiloom.content_panel import ContentPanel
 from tuiloom.content_row import ContentRow
-from tuiloom.formatting import TextColor, hyperlink, style
+from tuiloom.formatting import (
+    TextColor,
+    align_left,
+    align_right,
+    center,
+    columns,
+    hyperlink,
+    line,
+    style,
+)
 from tuiloom.key_binding import KeyAction, KeyBinding, KeyMap
 from tuiloom.menu_display import MenuDisplay
 from tuiloom.render.terminal_text import display_width
 from tuiloom.screen_content import ContentSize, ScreenContent
+from tuiloom.selectable import SelectableCallback, SelectableContext, SelectableItem
 from tuiloom.status_bar import StatusBar
 from tuiloom.terminal_app import TerminalApp
 from tuiloom.terminal_menu import TerminalMenu
@@ -83,7 +100,16 @@ __all__ = [
     "MenuPresentation",
     "MenuDisplay",
     "hyperlink",
+    "line",
+    "center",
+    "align_left",
+    "align_right",
+    "columns",
     "ScreenContent",
+    "SelectionStyle",
+    "SelectableCallback",
+    "SelectableContext",
+    "SelectableItem",
     "StatusBar",
     "TerminalApp",
     "TerminalMenu",

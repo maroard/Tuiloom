@@ -203,6 +203,18 @@ def center_display(text: str, width: int) -> str:
     return normalize_line(wc_center(sanitize_terminal_text(text), width))
 
 
+def reverse_display(text: str, width: int) -> str:
+    """Reverse every cell of a clipped, padded line despite embedded SGR resets."""
+    padded = ljust_display(clip_display(text, 0, width), width)
+    parts = ["\x1b[7m"]
+    for part, is_sequence in iter_sequences(padded):
+        parts.append(part)
+        if is_sequence and _SGR_PATTERN.fullmatch(part):
+            parts.append("\x1b[7m")
+    parts.append(RESET_SGR)
+    return "".join(parts)
+
+
 def overlay_display(background: str, foreground: str, column: int) -> str:
     """Replace display cells with an opaque line, retaining both styled edges.
 

@@ -18,6 +18,9 @@ Attributes:
         can request additional evaluations; requests coalesce and calls never
         overlap within a panel. Waiting to quit suspends new evaluations for
         either mode while existing work drains.
+    SelectionStyle: ``"marker"`` shows a leading marker; ``"reverse"`` uses
+        SGR 7 across the full selected row. Menus and panels configure it
+        independently.
 """
 
 from typing import Literal
@@ -28,3 +31,5 @@ type MenuPresentation = Literal["inline", "overlay"]
 """Place commands below panels (inline), or draw them over the panels (overlay)."""
 type ContentRefreshMode = Literal["resize", "continuous"]
 """Evaluate responsive content on size/refresh changes, or continuously as well."""
+type SelectionStyle = Literal["marker", "reverse"]
+"""Select an item with a text marker or terminal SGR reverse video."""

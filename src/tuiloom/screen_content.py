@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
 from tuiloom.animation import AnimationFrame, validate_fps
 from tuiloom.configuration import ContentRefreshMode
+from tuiloom.selectable import SelectableItem
 
 type ContentValue = str | list[str]
 type ContentKind = Literal[
-    "static", "lines", "stream", "dynamic", "responsive", "animated"
+    "static", "lines", "selectable", "stream", "dynamic", "responsive", "animated"
 ]
 type ContentProducer = (
     str
     | tuple[str, ...]
+    | tuple[str | SelectableItem, ...]
     | Iterator[str]
     | Callable[[], ContentValue]
     | Callable[[ContentSize], ContentValue]
@@ -49,7 +51,8 @@ class ContentSize:
 class ScreenContent:
     """Describe an immutable fixed, streaming, or generated panel text source.
 
-    Use ``static`` for a string, ``lines`` for fixed rows, ``stream`` for an
+    Use ``static`` for a string, ``lines`` for fixed rows, ``selectable`` for
+    fixed rows mixing text and selectable items, ``stream`` for an
     iterator of text chunks, ``dynamic`` for repeated complete snapshots, or
     ``responsive`` for snapshots depending on virtual panel dimensions, or
     ``animated`` for size-aware snapshots tied to the menu timeline. Direct
@@ -209,6 +212,38 @@ class ScreenContent:
         ):
             raise TypeError("ScreenContent.lines() requires a list[str]")
         return cls._create("lines", tuple(lines))
+
+    @classmethod
+    def selectable(cls, rows: Sequence[str | SelectableItem]) -> ScreenContent:
+        """Create fixed rows where only explicit items can be selected.
+
+        Plain strings remain display-only rows. Item keys must be unique. The
+        sequence is copied; items themselves are immutable value objects.
+        """
+        if (
+            isinstance(rows, (str, bytes))
+            or not isinstance(rows, Sequence)
+            or not all(isinstance(row, (str, SelectableItem)) for row in rows)
+        ):
+            raise TypeError("ScreenContent.selectable() requires a sequence of rows")
+        keys = [
+            row.key
+            for row in rows
+            if isinstance(row, SelectableItem) and row.key is not None
+        ]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Selectable item keys must be unique")
+        return cls._create("selectable", tuple(rows))
+
+    def _selectable_rows(self) -> tuple[str | SelectableItem, ...]:
+        if self._kind != "selectable":
+            return ()
+        return cast(tuple[str | SelectableItem, ...], self._producer)
+
+    def _selectable_items(self) -> tuple[SelectableItem, ...]:
+        return tuple(
+            row for row in self._selectable_rows() if isinstance(row, SelectableItem)
+        )
 
     @classmethod
     def stream(cls, iterator: Iterator[str]) -> ScreenContent:

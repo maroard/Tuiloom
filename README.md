@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.10.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.11.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -23,6 +23,9 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Overlay menus](#overlay-menus)
 - [Commands and submenus](#commands-and-submenus)
 - [Screen content](#screen-content)
+- [Selectable content](#selectable-content)
+- [Selection styles](#selection-styles)
+- [Rendering utilities](#rendering-utilities)
 - [Content layouts](#content-layouts)
 - [Status bar](#status-bar)
 - [Captured task output](#captured-task-output)
@@ -49,7 +52,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.10.0
+python -m pip install tuiloom==0.11.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -139,9 +142,11 @@ The menu has focus initially. The default controls are:
 | Key | Action |
 | --- | --- |
 | Tab | Cycle through the menu and each content panel |
-| Up / Down | Move the selected command, or scroll focused content vertically |
-| Left / Right | Scroll focused content horizontally |
-| Enter | Activate the selected command or confirm an alert |
+| Up / Down | Move the selected command or focused panel item |
+| Left / Right | Navigate menu choices |
+| Ctrl+Up / Ctrl+Down | Scroll the focused panel vertically |
+| Ctrl+Left / Ctrl+Right | Scroll the focused panel horizontally |
+| Enter | Activate the selected command or panel item; confirm an alert |
 | Escape | Leave input mode, go Back, or request Quit |
 
 Command selection loops and skips disabled commands. The automatic `Back` or
@@ -151,7 +156,8 @@ row contains `>`, so it remains visible without ANSI color support.
 Tab changes focus only when the menu has content. It cycles through
 `menu -> panel 1 -> panel 2 -> ... -> menu`, visiting custom layouts in
 row-major order. Focused boxes use solid borders; unfocused boxes use dotted
-borders. Moving upward in a panel with
+borders. Plain arrows have no internal action in an ordinary content panel.
+Ctrl+Up in a panel with
 `auto_scroll="smart"` suspends its automatic following, and reaching the bottom
 enables it again.
 
@@ -523,6 +529,7 @@ The factories behave differently:
 | --- | --- |
 | `static(str)` | Fixed text split into display lines |
 | `lines(list[str])` | An immutable copy of fixed display lines |
+| `selectable(Sequence[str \| SelectableItem])` | Fixed mixed display rows and selectable items |
 | `stream(Iterator[str])` | A worker consumes chunks until exhaustion |
 | `dynamic(Callable[[], str \| list[str]])` | A worker evaluates the latest state up to 60 Hz |
 | `responsive(Callable[[ContentSize], str \| list[str]])` | A worker renders for the panel's effective size |
@@ -633,7 +640,7 @@ The status bar reserves its usual bottom row; an overlay menu is composed over
 the content without changing row or column sizes.
 Resizing and changing layouts reuse panels, workers, content, viewports, scroll
 offsets, auto-scroll state, and focus. The focus key visits menu, then panels
-in row-major order; arrow keys still scroll the focused panel.
+in row-major order; Ctrl+Arrow scrolls the focused panel.
 If the focused panel is removed, focus goes to the next panel in its former
 row-major order. With no next panel, it returns to the visible menu or to the
 first remaining panel when the menu is hidden.
@@ -914,7 +921,133 @@ logs.set_auto_scroll("smart")
 Changing a panel's mode or replacing its content resets its smart-scroll state.
 Invalid modes raise `ValueError`.
 
+## Selectable content
+
+Use `ScreenContent.selectable()` when a panel contains rows that can be explored
+and activated. Plain strings remain display-only; `SelectableItem` rows carry
+an application value and an optional callback. Item indices count items, not
+heading or separator rows.
+
+```python
+from tuiloom import ScreenContent, SelectableContext, SelectableItem
+
+def inspect(context: SelectableContext) -> None:
+    context.menu.set_status_bar(f"Selected: {context.value}")
+
+processes = menu.add_content_panel(
+    ScreenContent.selectable([
+        "Running processes",
+        SelectableItem("worker-1", value="ready", on_activate=inspect),
+        SelectableItem("worker-2", value="running", on_activate=inspect),
+        SelectableItem("worker-3", value="idle", on_activate=inspect),
+    ]),
+    description="Processes",
+)
+processes.select_item(1)  # No callback is invoked.
+```
+
+When this panel has focus, Up/Down move among enabled items and wrap at the
+ends; Enter invokes the selected item's callback. Disabled items stay visible
+but are skipped. With no callback, Enter does nothing. The immutable
+`SelectableContext` exposes `app`, `menu`, `panel`, `item`, `value`, `index`, and
+`binding`. Activation runs on the UI thread and propagates callback errors.
+Tab still cycles the global focus between the menu and its panels.
+
+`panel.selected_item` and `panel.selected_index` expose the current selection.
+`panel.select_item(index)` changes it without activation. Replacing rows with
+`panel.set_content(ScreenContent.selectable(...))` keeps the panel and layout.
+Optional unique `key` values preserve selection across a replacement; if no
+key matches, Tuiloom chooses the enabled item nearest the old index. Empty or
+fully disabled lists have no selection. Selection stays visible when navigating,
+resizing, or expanding a collapsed panel. Ctrl+Arrow still permits manual
+viewport movement; a later selection change scrolls the item into view again.
+
+## Selection styles
+
+Both menus and panels default to `selection_style="marker"`, which reserves
+two prefix cells and displays `> ` on the selected row. Choose ANSI reverse
+video with `selection_style="reverse"`:
+
+```python
+menu = TerminalMenu(app, MenuDisplay("main", "Main"), selection_style="marker")
+panel = menu.add_content_panel(
+    ScreenContent.selectable([SelectableItem("worker-1"), SelectableItem("worker-2")]),
+    selection_style="reverse",
+)
+menu.set_selection_style("reverse")
+panel.set_selection_style("marker")
+```
+
+```text
+marker:                 reverse (selected row fills its inner width):
+> worker-1              █████████worker-1█████████
+  worker-2                worker-2
+```
+
+Reverse uses terminal SGR 7 across the complete visible item row, including
+trailing spaces. It preserves colored text, internal SGR resets, Unicode and
+clipping. Menu commands may wrap over several physical rows; each selected row
+is highlighted. Expanded `MenuChoice` option cursors retain their `>` tokens,
+so horizontal groups remain individually distinguishable. Panel content remains
+horizontally scrollable without wrapping.
+Focus border styling is separate from item selection styling.
+
+## Rendering utilities
+
+Five pure text helpers compose a line without introducing widgets or another
+layout system. Widths are terminal display cells; ANSI sequences and wide
+Unicode graphemes are handled by the existing text pipeline. Alignment clips
+overflowing text on the right before padding.
+
+```python
+from tuiloom import align_left, align_right, center, columns, line, style
+
+line(8)                         # "────────"
+center("ready", 9)              # "  ready  "
+align_left("界", 4)             # "界  "
+align_right("界", 4)            # "  界"
+columns(["worker-2", "running"], width=30)
+```
+
+`line(width, char="─")` requires a one-cell repeat character. `columns()`
+accepts two or three fragments. It spreads spare cells between fragments;
+when they overflow, it splits available space evenly and clips each fragment.
+All five functions accept zero width and produce exactly the requested display
+width when possible.
+
+Together, the primitives can build a generic process panel:
+
+```python
+rows = [
+    style("Running processes", bold=True),
+    line(40),
+    SelectableItem(columns(["worker-1", "ready"], 40), key="worker-1"),
+    SelectableItem(columns(["worker-2", "running"], 40), key="worker-2"),
+    SelectableItem(columns(["worker-3", "idle"], 40), key="worker-3"),
+]
+panel = menu.add_content_panel(
+    ScreenContent.selectable(rows), description="Processes", selection_style="reverse"
+)
+panel.select_item(1)
+```
+
+```text
+╭─ Processes ───────────────────────────────╮
+│ Running processes                         │
+│ ────────────────────────────────────────  │
+│   worker-1                          ready │
+│████worker-2                        running█│
+│   worker-3                           idle │
+╰────────────────────────────────────────────╯
+```
+
 ### Strict API migration
+
+In v0.11.0, focused ordinary panels no longer scroll with unmodified arrows.
+Use Ctrl+Arrow for viewport movement in every panel. The four Ctrl+Arrow
+bindings are now reserved system actions, so an application previously using
+them for global commands must remap those commands or the scroll actions.
+Terminals must transmit modifier-aware arrow sequences for this distinction.
 
 This version uses the names below directly. Removed names have no aliases or
 deprecated wrappers; update imports, keyword arguments, and attribute access
@@ -1247,12 +1380,13 @@ app = TerminalApp("App", keymap=keymap)
 second_app = TerminalApp("Second app", keymap=keymap.copy())
 ```
 
-The seven system actions are `focus`, `up`, `down`, `left`, `right`, `activate`,
-and `back`. `keymap.bindings` is a read-only live mapping, and the same bindings
+The eleven system actions are `focus`, `up`, `down`, `left`, `right`, `activate`,
+`back`, `scroll_up`, `scroll_down`, `scroll_left`, and `scroll_right`. The four
+scroll actions default to Ctrl+Arrow. `keymap.bindings` is a read-only live mapping, and the same bindings
 are available as `keymap.focus`, `keymap.up`, and so on. `action_for(binding)`
-returns the matching `KeyAction` or `None`. These seven properties are explicitly
+returns the matching `KeyAction` or `None`. These properties are explicitly
 typed and read-only, so a type checker can report misspelled attribute names.
-`KeyAction` is a literal union of the seven action strings.
+`KeyAction` is a literal union of the eleven action strings.
 
 A `KeyMap` belongs to one application. Passing the same instance to a second
 application raises `ValueError`. `copy()` copies its bindings into an independent,
@@ -1505,12 +1639,21 @@ from tuiloom import (
     MenuPresentation,
     MessageKey,
     ScreenContent,
+    SelectableCallback,
+    SelectableContext,
+    SelectableItem,
+    SelectionStyle,
     StatusBar,
     TerminalApp,
     TerminalMenu,
     TextColor,
+    align_left,
+    align_right,
+    center,
+    columns,
     display_width,
     hyperlink,
+    line,
     rainbow_color,
     style,
 )
@@ -1524,15 +1667,20 @@ Anything outside this export list is internal and may change without notice.
 from collections.abc import Callable
 from typing import Literal
 
-from tuiloom import ChoiceContext, CommandContext
+from tuiloom import ChoiceContext, CommandContext, SelectableContext
 
 type ContentRefreshMode = Literal["resize", "continuous"]
 type AutoScrollMode = Literal["smart", "strict"]
 type MenuPresentation = Literal["inline", "overlay"]
+type SelectionStyle = Literal["marker", "reverse"]
 type CommandCallback = Callable[[CommandContext], None]
 type ChoiceCallback = Callable[[ChoiceContext], None]
+type SelectableCallback = Callable[[SelectableContext], None]
 type InputCallback = Callable[[str], None]
-type KeyAction = Literal["focus", "up", "down", "left", "right", "activate", "back"]
+type KeyAction = Literal[
+    "focus", "up", "down", "left", "right", "activate", "back",
+    "scroll_up", "scroll_down", "scroll_left", "scroll_right",
+]
 type TextColor = str | int | tuple[int, int, int]
 ```
 
@@ -1571,6 +1719,7 @@ configuration created through named factories:
 ```text
 ScreenContent.static(text: str) -> ScreenContent
 ScreenContent.lines(lines: list[str]) -> ScreenContent
+ScreenContent.selectable(rows: Sequence[str | SelectableItem]) -> ScreenContent
 ScreenContent.stream(iterator: Iterator[str]) -> ScreenContent
 ScreenContent.dynamic(renderer: Callable[[], str | list[str]]) -> ScreenContent
 ScreenContent.responsive(
@@ -1589,8 +1738,8 @@ ScreenContent.animated(
 ) -> ScreenContent
 ```
 
-Direct construction raises `TypeError`. `lines()` copies its list into an
-immutable tuple; `stream()` consumes the supplied iterator, which must yield
+Direct construction raises `TypeError`. `lines()` and `selectable()` copy their
+rows into immutable tuples; `stream()` consumes the supplied iterator, which must yield
 strings. Dynamic/responsive callbacks run in content workers and must return a
 string or list of strings; only one evaluation per panel is in flight. Responsive
 minimums are positive integers or `None` and describe virtual rendering size,
@@ -1673,7 +1822,8 @@ KeyMap()
 ```
 
 - `bindings` → `Mapping[KeyAction, KeyBinding]`: read-only live action mapping.
-- `focus`, `up`, `down`, `left`, `right`, `activate`, `back -> KeyBinding`:
+- `focus`, `up`, `down`, `left`, `right`, `activate`, `back`, `scroll_up`,
+  `scroll_down`, `scroll_left`, `scroll_right -> KeyBinding`:
   current bindings exposed as explicitly typed read-only properties.
 - `set_binding(action: KeyAction, binding: KeyBinding) -> None`: atomically replace a
   system binding. Raises `KeyError` for an unknown action, `TypeError` for a
@@ -1807,11 +1957,16 @@ Read-only properties:
 - `padding_top`, `padding_bottom`, `padding_left`, `padding_right -> int`:
   nonnegative inner padding, default `0`;
 - `key_commands -> tuple[PanelKeyCommand, ...]`: registered shortcuts.
+- `selected_index -> int | None`: selected item index, excluding plain rows;
+- `selected_item -> SelectableItem | None`: currently selected item;
+- `selection_style -> SelectionStyle`: independent marker or reverse style.
 
 Explicit mutation methods:
 
 ```text
 set_content(content: ScreenContent) -> None
+select_item(index: int) -> None
+set_selection_style(style: SelectionStyle) -> None
 refresh() -> None
 set_description(description: str) -> None
 set_auto_scroll(mode: AutoScrollMode | None) -> None
@@ -1993,6 +2148,7 @@ TerminalMenu(
     *,
     content_spacing: bool = True,
     presentation: MenuPresentation | None = None,
+    selection_style: SelectionStyle = "marker",
 )
 ```
 
@@ -2014,6 +2170,7 @@ Properties:
 - `commands -> tuple[MenuCommand, ...]`: immutable ordered handle view;
 - `is_main -> bool`: whether this is the registered root;
 - `presentation -> MenuPresentation`: read-only effective mode;
+- `selection_style -> SelectionStyle`: selected command-row style;
 - `menu_visible -> bool`: read-only requested menu-box visibility;
 - `content_panels -> tuple[ContentPanel, ...]`: immutable flat registered-panel
   view;
@@ -2021,6 +2178,9 @@ Properties:
 - `focused_panel -> ContentPanel | None`: current keyboard target outside modal
   states;
 - `status_bar -> StatusBar | None`: read-only optional status configuration.
+
+`menu.set_selection_style(style: SelectionStyle)` changes command highlighting
+without recreating the menu or its panels.
 
 #### Menu-box visibility methods
 
@@ -2160,6 +2320,7 @@ add_content_panel(
     padding_bottom: int = 0,
     padding_left: int = 0,
     padding_right: int = 0,
+    selection_style: SelectionStyle = "marker",
 ) -> ContentPanel
 ```
 

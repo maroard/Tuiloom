@@ -22,7 +22,7 @@ from tuiloom.command import (
     MenuCommand,
     PanelCommandContext,
 )
-from tuiloom.configuration import AutoScrollMode, MenuPresentation
+from tuiloom.configuration import AutoScrollMode, MenuPresentation, SelectionStyle
 from tuiloom.content_panel import ContentPanel
 from tuiloom.content_row import ContentRow
 from tuiloom.event_loop.event_loop import EventLoop
@@ -79,6 +79,8 @@ class TerminalMenu:
             ``None`` for raw text or no footer. Use ``show_message()``,
             ``toggle_message()`` or ``clear_message()`` to change it; temporary
             option previews leave it unchanged.
+        selection_style: Read-only command selection style, ``"marker"`` by
+            default or ``"reverse"``; independent of each panel's style.
     """
 
     def __init__(
@@ -88,6 +90,7 @@ class TerminalMenu:
         *,
         content_spacing: bool = True,
         presentation: MenuPresentation | None = None,
+        selection_style: SelectionStyle = "marker",
     ) -> None:
         """Create a menu and attach any application-wide initial content.
 
@@ -107,6 +110,8 @@ class TerminalMenu:
             presentation: Fixed ``"inline"``/``"overlay"`` mode, or ``None``
                 (the default) to inherit the parent whenever opened and use
                 inline when opened without a parent.
+            selection_style: ``"marker"`` (default) or ``"reverse"`` for
+                selected command rows.
 
         Raises:
             TypeError: If ``display_state`` or ``content_spacing`` has an invalid
@@ -123,6 +128,9 @@ class TerminalMenu:
         self._app = app
         self._display_state = display_state
         self._content_spacing = content_spacing
+        if selection_style not in ("marker", "reverse"):
+            raise ValueError("selection_style must be 'marker' or 'reverse'")
+        self._selection_style = selection_style
         if presentation not in (None, "inline", "overlay"):
             raise ValueError("presentation must be 'inline', 'overlay', or None")
         self._configured_presentation = presentation
@@ -167,6 +175,19 @@ class TerminalMenu:
             The original application reference; this property is read-only.
         """
         return self._app
+
+    @property
+    def selection_style(self) -> SelectionStyle:
+        """Return the command box's selection style."""
+        return self._selection_style
+
+    def set_selection_style(self, style: SelectionStyle) -> None:
+        """Change command selection rendering on the next frame."""
+        if style not in ("marker", "reverse"):
+            raise ValueError("selection_style must be 'marker' or 'reverse'")
+        if self._selection_style != style:
+            self._selection_style = style
+            self._request_menu_render()
 
     @property
     def display_state(self) -> MenuDisplay:
@@ -442,6 +463,7 @@ class TerminalMenu:
         padding_bottom: int = 0,
         padding_left: int = 0,
         padding_right: int = 0,
+        selection_style: SelectionStyle = "marker",
     ) -> ContentPanel:
         """Register independent content and return its stable panel handle.
 
@@ -451,8 +473,8 @@ class TerminalMenu:
         replace content, change layout, reorder or remove the panel.
 
         Args:
-            content: ``ScreenContent`` created by a static, lines, stream,
-                dynamic or responsive factory. A single stream iterator cannot
+            content: ``ScreenContent`` created by a static, lines, selectable,
+                stream, dynamic or responsive factory. A single stream iterator cannot
                 be mounted concurrently in two panels of this application.
             description: Panel label and text identifying active work during
                 shutdown. Defaults to ``"Content in progress"``.
@@ -475,6 +497,8 @@ class TerminalMenu:
                 collapsed. Defaults to ``1``; the panel is initially expanded.
             padding_top, padding_bottom, padding_left, padding_right:
                 Nonnegative cells kept inside the panel border. Default to zero.
+            selection_style: ``"marker"`` (default) or ``"reverse"`` for the
+                panel's selected item rows.
 
         Returns:
             The registered ``ContentPanel`` handle. Its identity is preserved
@@ -505,6 +529,7 @@ class TerminalMenu:
             padding_bottom=padding_bottom,
             padding_left=padding_left,
             padding_right=padding_right,
+            selection_style=selection_style,
         )
         self.app._claim_stream(content, panel)
         self._content_panels.insert(insert_at, panel)
@@ -534,6 +559,7 @@ class TerminalMenu:
         if self._running and self._event_loop is not None:
             self._event_loop.replace_content_panel(panel, content)
         else:
+            panel._restore_selection(content)
             panel._content = content
             panel._runtime.mount(content)
         self.app._prune_stream_claims(panel)
@@ -1847,15 +1873,16 @@ class TerminalMenu:
                 self._move_choice_horizontal(1, binding)
             elif action == "activate":
                 self._activate_selection(binding)
-        elif action in {"up", "down", "left", "right"}:
-            self._scroll_content(action)
+        elif self._focused_panel is not None and action in {"up", "down"}:
+            self._focused_panel._move_selection(-1 if action == "up" else 1)
+        elif self._focused_panel is not None and action == "activate":
+            self._activate_panel_item(binding)
+        elif action in {"scroll_up", "scroll_down", "scroll_left", "scroll_right"}:
+            self._scroll_content(action.removeprefix("scroll_"))
         self._render_after_menu_event()
 
     def _render_after_menu_event(self) -> None:
-        if self.presentation == "overlay":
-            self._request_menu_render()
-        else:
-            self._invalidate_renderer()
+        self._request_menu_render()
 
     def _handle_hidden_menu_event(self, event: InputEvent) -> None:
         self._normalize_focus()
@@ -1873,8 +1900,12 @@ class TerminalMenu:
             self.stop()
         elif action == "focus":
             self._cycle_focus()
-        elif action in {"up", "down", "left", "right"}:
-            self._scroll_content(action)
+        elif self._focused_panel is not None and action in {"up", "down"}:
+            self._focused_panel._move_selection(-1 if action == "up" else 1)
+        elif self._focused_panel is not None and action == "activate":
+            self._activate_panel_item(binding)
+        elif action in {"scroll_up", "scroll_down", "scroll_left", "scroll_right"}:
+            self._scroll_content(action.removeprefix("scroll_"))
         # Focus and viewport offsets are already in the render key.
 
     def _handle_input_event(self, event: InputEvent) -> None:
@@ -1924,14 +1955,28 @@ class TerminalMenu:
             return
         command.callback(CommandContext(self.app, self, command, binding))
 
-    def _scroll_content(
-        self, direction: Literal["up", "down", "left", "right"]
-    ) -> None:
+    def _activate_panel_item(self, binding: KeyBinding) -> None:
+        panel = self._focused_panel
+        if panel is None:
+            return
+        item = panel.selected_item
+        index = panel.selected_index
+        if item is None or index is None or item.on_activate is None:
+            return
+        from tuiloom.selectable import SelectableContext
+
+        item.on_activate(
+            SelectableContext(self.app, self, panel, item, item.value, index, binding)
+        )
+
+    def _scroll_content(self, direction: str) -> None:
         renderer = self._terminal_renderer
         panel = self._focused_panel
         if renderer is None or panel is None:
             return
-        renderer.scroll_panel(panel, direction)
+        renderer.scroll_panel(
+            panel, cast(Literal["up", "down", "left", "right"], direction)
+        )
 
     def _handle_panel_key_command(self, binding: KeyBinding, *, priority: bool) -> bool:
         panel = self.focused_panel
@@ -1947,7 +1992,18 @@ class TerminalMenu:
             and not shifted_horizontal
         ) or (
             self.app.keymap.action_for(binding)
-            in {"focus", "back", "up", "down", "left", "right"}
+            in {
+                "focus",
+                "back",
+                "up",
+                "down",
+                "left",
+                "right",
+                "scroll_up",
+                "scroll_down",
+                "scroll_left",
+                "scroll_right",
+            }
         ):
             return False
         command = next(
@@ -2037,8 +2093,8 @@ class TerminalMenu:
         elif action == "back":
             self._cancel_task_exit()
         elif self._focused_panel is not None:
-            if action in {"up", "down", "left", "right"}:
-                self._scroll_content(action)
+            if action in {"scroll_up", "scroll_down", "scroll_left", "scroll_right"}:
+                self._scroll_content(action.removeprefix("scroll_"))
         elif action == "up":
             view.move(-1)
         elif action == "down":

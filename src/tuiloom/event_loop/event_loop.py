@@ -384,6 +384,7 @@ class EventLoop:
         panel: ContentPanel,
         content: ScreenContent,
     ) -> None:
+        panel._restore_selection(content)
         panel._content = content
         panel._runtime.mount(content)
         self._install_panel_worker(panel)

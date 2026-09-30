@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.9.2. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.10.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -23,6 +23,7 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Overlay menus](#overlay-menus)
 - [Commands and submenus](#commands-and-submenus)
 - [Screen content](#screen-content)
+- [Content layouts](#content-layouts)
 - [Status bar](#status-bar)
 - [Captured task output](#captured-task-output)
 - [Safe shutdown](#safe-shutdown)
@@ -48,7 +49,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.9.2
+python -m pip install tuiloom==0.10.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -148,8 +149,9 @@ Command selection loops and skips disabled commands. The automatic `Back` or
 row contains `>`, so it remains visible without ANSI color support.
 
 Tab changes focus only when the menu has content. It cycles through
-`menu -> panel 1 -> panel 2 -> ... -> menu`. Focused boxes use solid borders;
-unfocused boxes use dotted borders. Moving upward in a panel with
+`menu -> panel 1 -> panel 2 -> ... -> menu`, visiting custom layouts in
+row-major order. Focused boxes use solid borders; unfocused boxes use dotted
+borders. Moving upward in a panel with
 `auto_scroll="smart"` suspends its automatic following, and reaching the bottom
 enables it again.
 
@@ -276,7 +278,8 @@ not change dimensions passed to responsive content producers.
 
 An overlay uses the existing automatic width, `width`, `strict_width`, wrapping,
 commands, choices, messages, alerts and input. If it cannot fit, the frame shows
-`Terminal window is too small.`; a configured status bar remains at the bottom.
+`Terminal window is too small.`; a configured status bar returns when the
+terminal becomes large enough.
 The current background continues updating behind the menu and is restored when
 it closes. Resizing recomputes both panel layout and centered menu placement.
 On terminals supporting focus reports, returning to a terminal tab also repaints
@@ -561,74 +564,184 @@ metrics = menu.add_content_panel(
 logs.set_content(ScreenContent.stream(new_log_stream))
 logs.set_description("Downloading model")
 logs.set_auto_scroll("smart")
-metrics.move(0)
+metrics.swap_up()
 metrics.remove()
 ```
 
-`menu.content_panels` exposes the handles in display order as an immutable
-tuple. Visible panels are stacked vertically at equal height by default and
-labeled when more than one is present. Each panel owns its source worker,
-viewport, scroll position, and auto-scroll mode. Panels can be added, reordered,
-replaced, or removed while the menu is running.
+Panel padding sits inside the border and reduces the viewport passed to
+responsive or animated content. Configure each side when adding a panel, then
+change selected sides with `panel.update_padding(top=..., bottom=...,
+left=..., right=...)`. All sides default to zero.
+
+`menu.content_panels` exposes the handles in flat registration order as an
+immutable tuple. Visible panels are stacked vertically at equal height by
+default and labeled when more than one is present. Each panel owns its source
+worker, viewport, scroll position, and auto-scroll mode. Panels can be added,
+placed, replaced, or removed while the menu is running.
 
 Every panel has the same capabilities; there is no primary panel. A menu with
 one panel shows an unlabeled content box. Create panels with
 `menu.add_content_panel()` and keep their handles to change content, labels,
 auto-scroll, or layout.
 
+### Content layouts
+
+The outer list is **rows from top to bottom**. Each inner list is **panels from
+left to right** in that row:
+
+```python
+graph = menu.add_content_panel(
+    ScreenContent.static("graph"), description="Graph", width_weight=2
+)
+stats = menu.add_content_panel(ScreenContent.static("stats"), description="Stats")
+logs = menu.add_content_panel(ScreenContent.static("logs"), description="Logs")
+
+menu.set_content_layout([
+    [graph, stats],
+    [logs],
+])
+```
+
+```text
+╭─ Graph ───────────────────╮╭─ Stats ─────╮
+│                           ││             │
+╰───────────────────────────╯╰─────────────╯
+╭─ Logs ───────────────────────────────────╮
+│                                         │
+╰─────────────────────────────────────────╯
+```
+
+`content_panels` still lists which panels belong to the menu. The read-only
+`content_layout` exposes their placement as `ContentRow` handles with a
+read-only `panels` tuple. Without `set_content_layout()`, each panel occupies
+its own row in `content_panels` order, exactly as before. Every explicit layout
+must contain all live panels exactly once. Empty rows, duplicate, foreign,
+removed, or missing panels are rejected without changing the old layout.
+Adding a panel, including captured task output, appends a new singleton row;
+removing a panel removes it from its row and removes an empty row.
+
+Panels in the same row share its physical height. Their `width_weight` values
+divide the complete row width, including borders. The example above gives
+Graph about twice Stats' width. The default `width_weight=1` keeps equal-width
+columns; leftover columns go to the first panel on a rounding tie. For a 3:1
+split, configure `graph` with `width_weight=3` and `stats` with
+`width_weight=1`. Borders touch with
+no wasted horizontal gap; `content_spacing` still controls only the gap above
+an inline menu. Each panel's responsive content receives its own column width
+and row height, subject to its existing virtual `ScreenContent` minimums.
+The status bar reserves its usual bottom row; an overlay menu is composed over
+the content without changing row or column sizes.
+Resizing and changing layouts reuse panels, workers, content, viewports, scroll
+offsets, auto-scroll state, and focus. The focus key visits menu, then panels
+in row-major order; arrow keys still scroll the focused panel.
+If the focused panel is removed, focus goes to the next panel in its former
+row-major order. With no next panel, it returns to the visible menu or to the
+first remaining panel when the menu is hidden.
+
+Rows own vertical collapse in a multi-column layout:
+
+```python
+menu.content_layout[0].collapse()
+menu.content_layout[0].set_collapsed_height(2)
+menu.content_layout[0].expand()
+```
+
+Members of one multi-panel row must agree on `collapsed` and
+`collapsed_height`. Use its `ContentRow` handle for collapse changes; the v0.7
+panel methods continue to work on singleton rows. A row's expanded
+`height_weight` is the mean of its panels' `height_weight` values;
+`min_height` is their largest minimum and
+`max_height` their smallest configured maximum. Incompatible bounds are
+rejected before changing the layout.
+
+Directional mutations can change placement while the menu runs:
+
+```python
+graph.move_right()  # Exchange with the next panel in this row.
+graph.move_down()   # Insert in the next row at its column, or at its end.
+graph.swap_up()     # Exchange with the panel directly above, if present.
+```
+
+`move_left()` and `move_right()` permute adjacent panels within a row.
+`move_up()` and `move_down()` remove the panel from its row and insert it into
+the adjacent row, shifting later panels right and deleting an emptied row.
+`swap_up()` and `swap_down()` exchange panels at the same column in adjacent
+rows. A movement without a target is a no-op. These methods change the layout,
+while `content_panels` and `panel.position` keep their flat registration order.
+The v0.9 `panel.move(position)` method has been removed; use directional moves
+or `set_content_layout()`.
+
 ### Content panel sizing
 
-Each panel can set its share of visible vertical space:
+Each panel can set its share of horizontal and vertical space:
 
 ```python
 logs = menu.add_content_panel(
     ScreenContent.stream(log_stream),
     description="Logs",
-    weight=3,
+    height_weight=3,
+    width_weight=2,
     min_height=4,
     max_height=30,
 )
 metrics = menu.add_content_panel(
     ScreenContent.dynamic(get_metrics),
     description="Metrics",
-    weight=1,
+    height_weight=1,
     min_height=4,
 )
 
 # Configure another panel through its handle.
 status = menu.add_content_panel(ScreenContent.static("Ready"))
-status.set_layout(weight=2, min_height=3, max_height=10)
+status.set_layout(height_weight=2, width_weight=3, min_height=3, max_height=10)
 
 # Replace the complete layout; omitted options use their defaults.
-logs.set_layout(weight=4, min_height=2, max_height=20)
+logs.set_layout(height_weight=4, min_height=2, max_height=20)
 
 # Change only supplied options, retaining the others.
-logs.update_layout(weight=3)  # Keep min_height=2 and max_height=20.
+logs.update_layout(height_weight=3)  # Keep min_height=2 and max_height=20.
 logs.update_layout(max_height=None)  # Remove only the upper bound.
 logs.set_layout()  # Restore equal sharing without an upper limit.
 ```
 
-`weight` defaults to `1` and accepts a finite positive integer or float.
+`height_weight` and `width_weight` each default to `1` and accept finite
+positive integers or floats. `height_weight` controls row height;
+`width_weight` controls a panel's width relative to its neighbors in the same
+row. A singleton panel always receives the complete available width.
+The old `weight` name has been removed: replace it with `height_weight` in
+existing applications.
 `min_height` defaults to `1`; `max_height` defaults to `None` (no upper limit).
 Minimum and maximum heights count visible content rows, excluding borders.
 Supplied heights must be positive integers, and `max_height` must be at least
-`min_height`. Booleans are rejected for all three options. Invalid creation or
+`min_height`. Booleans are rejected for both weights and both height bounds.
+Invalid creation or
 layout updates raise `TypeError` or `ValueError` before changing panel state.
 `set_layout()` replaces the full expanded configuration and resets omitted
 options to their defaults. `update_layout()` retains omitted options and uses
 `max_height=None` to remove an existing upper bound.
 
-Weights target ratios on the **total** available panel height, including each
+Height weights target ratios on the **total** available panel height, including each
 panel's two border rows and excluding the content/menu gap. For 23 rows,
 weights `3` and `1` produce complete frames of `17` and `6` rows, containing
 `15` and `4` visible content rows respectively. Bounds still apply to the inner
 content: with 20 available frame rows, weights `1` and `3` and minimums of `4`
 produce frames of `6` and `14` rows (content heights of `4` and `12`).
 A panel that reaches a minimum or maximum keeps that
-bound while the other panels share the remaining rows by weight. Fractional
+bound while the other panels share the remaining rows by height weight. Fractional
 rows are rounded down, then leftover rows go to the largest fractional
-remainders, with ties resolved in display order. Defaults preserve the original
+remainders, with ties resolved in row order. Defaults preserve the original
 equal sharing, including giving leftover rows to the first panels.
+
+With [Content layouts](#content-layouts), the allocator sizes rows rather than
+individual panels. Each row uses its members' mean height_weight, greatest minimum,
+and smallest configured maximum. Incompatible bounds are rejected.
+
+Width weights target ratios on each row's **complete frame width**, including
+each panel's two border columns. At 80 terminal columns, `width_weight=3` and
+`width_weight=1` give frames 60 and 20 columns wide, with inner viewport widths
+58 and 18. Every frame needs at least three columns; if the row cannot fit,
+Tuiloom displays `Terminal window is too small.` Width changes recompute each
+responsive panel's `ContentSize` without replacing its worker.
 
 If the minimum heights cannot all fit, Tuiloom displays
 `Terminal window is too small.` If every panel reaches its maximum, unused
@@ -652,7 +765,7 @@ keeping its content and runtime mounted:
 logs = menu.add_content_panel(
     ScreenContent.stream(log_stream),
     description="Logs",
-    weight=3,
+    height_weight=3,
     min_height=4,
     max_height=30,
     collapsed_height=2,
@@ -671,7 +784,7 @@ changing panel state. `collapse()` and `expand()` are idempotent;
 `toggle_collapse()` switches the state. All mutation methods return `None`.
 
 A collapsed panel reserves exactly `collapsed_height` content rows, independently
-of its expanded `weight`, `min_height`, and `max_height`. Expanded panels share
+of its expanded `height_weight`, `min_height`, and `max_height`. Expanded panels share
 the remaining frame rows using the usual weighted sizing. If the required
 heights cannot fit, the existing terminal-too-small message is displayed. If
 all panels are collapsed, unused terminal rows remain below the frame.
@@ -688,6 +801,9 @@ viewport grows. Responsive content refreshes when its effective `ContentSize`
 changes, still respecting its virtual rendering minimums and using the same
 worker. No collapse shortcut is installed automatically; applications can bind
 `toggle_collapse()` through their existing commands.
+For a row with multiple panels, use its `ContentRow` handle to change the
+shared collapse state or height; panel collapse methods remain for singleton
+rows.
 
 ### Inherited and local content
 
@@ -701,14 +817,14 @@ shared = menu.content_panels[0]  # Automatically added from global_content.
 logs = menu.add_content_panel(ScreenContent.static("Local status"))
 
 shared.set_description("Shared status")
-shared.set_layout(weight=1, min_height=2)
+shared.set_layout(height_weight=1, min_height=2)
 shared.set_content(ScreenContent.static("Updated status"))
 # shared.remove()  # Remove it like any other panel.
 ```
 
 Each menu captures `app.global_content` at construction. When it is present,
 Tuiloom automatically adds an ordinary panel for that source. Retrieve its
-handle through `menu.content_panels`; it can be changed, reordered, or removed
+handle through `menu.content_panels`; it can be changed, placed, or removed
 like any other panel. Explicitly added local panels are additional panels and
 do not override inherited content.
 
@@ -831,6 +947,12 @@ options. The menu's
 `TerminalApp.global_content` remains supported; access its automatically added
 panel through `menu.content_panels`.
 
+In v0.10.0, `ContentPanel.move(position)` is removed. Use
+`menu.set_content_layout()` for an exact arrangement, `move_left/right/up/down()`
+for insertion or one-column movement, and `swap_up/down()` for vertical exchange.
+`content_panels` and `panel.position` now describe flat registration order;
+`content_layout` describes visual placement.
+
 ## Status bar
 
 A menu can display one persistent status line at the bottom of the terminal,
@@ -853,7 +975,7 @@ def render_status(width: int) -> str:
 
 
 menu.set_status_bar(StatusBar.responsive(render_status))
-menu.refresh_status_bar()  # state changed without a width change
+menu.refresh_status_bar()  # state changed without a width or focus change
 menu.clear_status_bar()
 ```
 
@@ -865,7 +987,7 @@ Tuiloom does not choose shorter labels or introduce application-specific logic.
 | --- | --- |
 | `StatusBar.static(str)` | Fixed text; a plain string passed to `set_status_bar()` is equivalent |
 | `StatusBar.dynamic(Callable[[], str])` | On scheduled visible UI frames, up to 60 Hz |
-| `StatusBar.responsive(Callable[[int], str])` | On first display, replacement, terminal width changes, or `menu.refresh_status_bar()` |
+| `StatusBar.responsive(Callable[[int], str])` | On first display, replacement, terminal width or panel focus changes, or `menu.refresh_status_bar()` |
 | `StatusBar.animated(Callable[[int, AnimationFrame], str], fps=12)` | On its own active-time frame boundaries, up to 60 Hz |
 
 Status producers are lightweight renderers running synchronously in the UI
@@ -876,7 +998,9 @@ created. Callback exceptions propagate through the normal terminal-restoration
 path. Producers are not evaluated while the menu is covered by a submenu;
 hiding the menu box keeps its status bar visible. Responsive output is cached;
 use `refresh_status_bar()` when application
-state changes at the same width. Height changes alone do not reevaluate it.
+state changes at the same width and focus. Height changes alone do not reevaluate
+it. The callback can read `menu.focused_panel`, which is `None` when the menu
+box, input, or an alert has control.
 
 The status line reserves exactly one physical row before panel and menu layout.
 It stays on the final terminal row even with no panels, capped panels, or all
@@ -888,8 +1012,9 @@ Text is sanitized and clipped with the existing Unicode/ANSI utilities, without
 wrapping or splitting graphemes. Tabs are expanded and newline/carriage-return
 controls are removed by single-line normalization. Strings longer than the
 terminal width are clipped; responsive callbacks can select their own shorter
-representation. When the body cannot fit, a clipped terminal-too-small message
-appears above the status; when only one row is available, only the status appears.
+representation. When the body cannot fit with the reserved status row, only a
+clipped terminal-too-small message appears. The status remains installed and
+returns when the terminal grows.
 A terminal reporting zero rows or columns receives an empty frame.
 
 Each menu owns its own status configuration, retained when returning from a
@@ -1150,6 +1275,9 @@ canonical names:
 | `arrow_left` | `left` |
 | `arrow_right` | `right` |
 
+`priority=True` affects dispatch of a focused panel command competing with a
+global command. It does not affect key equality or hashing.
+
 Multi-character names are lowercased. Terminal protocols cannot always report
 every modifier distinctly: Ctrl+letter is commonly case-insensitive, and Shift
 may arrive only as character case.
@@ -1191,6 +1319,26 @@ menu.clear_global_command_callback(refresh_command)
 Global-command handles belong to one application. Foreign handles are rejected.
 Global commands remain available while a menu is hidden or an alert is shown,
 but not during visible free-form input or a root task-exit choice.
+
+### Focused panel commands
+
+```python
+panel = menu.add_content_panel(ScreenContent.static("Logs"))
+command = panel.add_key_command(
+    KeyBinding("r", priority=True),
+    "Refresh logs",
+    lambda context: context.panel.set_content(ScreenContent.static("Updated")),
+)
+panel.remove_key_command(command)
+```
+
+`panel.key_commands` is a read-only tuple of command handles. Callbacks receive
+`PanelCommandContext` with `app`, `menu`, `panel`, `command`, and `binding`.
+Only the focused panel handles its commands; `menu.focused_panel` exposes that
+panel or `None`. Panels may reuse a key. Global commands win a collision unless
+the focused panel binding has `priority=True`. Unmodified Tab, Escape, and arrow
+keys remain system keys; Shift+Left and Shift+Right may be panel shortcuts.
+Input and modal views suspend panel commands.
 
 Input priority is: task-exit choice, hidden-menu-box handling, free-form input,
 global commands, alerts, then focus/navigation. Unknown terminal sequences are
@@ -1343,6 +1491,7 @@ from tuiloom import (
     CommandCallback,
     CommandContext,
     ContentPanel,
+    ContentRow,
     ContentRefreshMode,
     ContentSize,
     GlobalCommand,
@@ -1508,6 +1657,7 @@ KeyBinding(
     ctrl: bool = False,
     alt: bool = False,
     shift: bool = False,
+    priority: bool = False,
 )
 ```
 
@@ -1646,13 +1796,17 @@ Read-only properties:
 
 - `content -> ScreenContent`: current mounted production configuration;
 - `description -> str`: current visible and shutdown label;
-- `position -> int`: current zero-based display position;
+- `position -> int`: current zero-based flat registration position;
 - `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy;
-- `weight -> float`: positive relative share of total panel height, including borders;
+- `height_weight -> float`: positive relative share of total panel height, including borders;
+- `width_weight -> float`: positive relative share of row width, including borders;
 - `min_height -> int`: minimum visible content rows, default `1`;
 - `max_height -> int | None`: maximum expanded visible content rows, default `None`;
 - `collapsed -> bool`: whether the panel uses its fixed collapsed height, default `False`;
 - `collapsed_height -> int`: collapsed visible content rows, default `1`.
+- `padding_top`, `padding_bottom`, `padding_left`, `padding_right -> int`:
+  nonnegative inner padding, default `0`;
+- `key_commands -> tuple[PanelKeyCommand, ...]`: registered shortcuts.
 
 Explicit mutation methods:
 
@@ -1665,23 +1819,35 @@ collapse() -> None
 expand() -> None
 toggle_collapse() -> None
 set_collapsed_height(height: int) -> None
+update_padding(*, top: int | None = None, bottom: int | None = None,
+               left: int | None = None, right: int | None = None) -> None
+add_key_command(binding: KeyBinding, label: str,
+                callback: PanelCommandCallback) -> PanelKeyCommand
+remove_key_command(command: PanelKeyCommand) -> None
 set_layout(
     *,
-    weight: float = 1,
+    height_weight: float = 1,
+    width_weight: float = 1,
     min_height: int = 1,
     max_height: int | None = None,
 ) -> None
 update_layout(
     *,
-    weight: float = <unchanged>,
+    height_weight: float = <unchanged>,
+    width_weight: float = <unchanged>,
     min_height: int = <unchanged>,
     max_height: int | None = <unchanged>,
 ) -> None
-move(position: int) -> None
+move_left() -> None
+move_right() -> None
+move_up() -> None
+move_down() -> None
+swap_up() -> None
+swap_down() -> None
 remove() -> None
 ```
 
-The handle keeps its identity across content, label, mode, layout and position
+The handle keeps its identity across content, label, mode, layout and placement
 changes.
 `set_layout()` replaces the expanded sizing configuration; omitted arguments
 reset to their defaults. `update_layout()` changes only supplied options and
@@ -1689,7 +1855,9 @@ retains omitted ones; `max_height=None` removes the upper bound. Both validate
 the resulting layout before mutation and leave `collapsed` and
 `collapsed_height` unchanged. `<unchanged>` denotes the private omission
 sentinel, not a value callers need to import.
-`collapse()` and `expand()` are idempotent; `toggle_collapse()` switches the state.
+`collapse()` and `expand()` are idempotent on singleton rows;
+`toggle_collapse()` switches the state. On multi-panel rows, use the row's
+methods instead; panel collapse methods raise `ValueError`.
 `set_collapsed_height()` sets a positive integer content height independently of
 the expanded bounds. See [Collapsible content panels](#collapsible-content-panels)
 for allocation and runtime behavior. These methods can be called before or
@@ -1697,6 +1865,15 @@ during application execution.
 `refresh()` forces a responsive or animated evaluation and raises `RuntimeError`
 for other content variants. Calling a mutation method after removal raises
 `ValueError`.
+
+### `ContentRow`
+
+Rows are obtained from `menu.content_layout`. Their read-only `panels` tuple
+lists members left to right. `collapsed` and `collapsed_height` describe their
+shared vertical state. Use `collapse()`, `expand()`, `toggle_collapse()`, and
+`set_collapsed_height(height)` for row-level vertical changes. A row handle
+replaced by a new layout or directional movement cannot be mutated; obtain the
+current handle from `menu.content_layout`.
 
 ### `TerminalApp`
 
@@ -1838,8 +2015,11 @@ Properties:
 - `is_main -> bool`: whether this is the registered root;
 - `presentation -> MenuPresentation`: read-only effective mode;
 - `menu_visible -> bool`: read-only requested menu-box visibility;
-- `content_panels -> tuple[ContentPanel, ...]`: immutable ordered panel-handle
+- `content_panels -> tuple[ContentPanel, ...]`: immutable flat registered-panel
   view;
+- `content_layout -> tuple[ContentRow, ...]`: immutable row-handle view;
+- `focused_panel -> ContentPanel | None`: current keyboard target outside modal
+  states;
 - `status_bar -> StatusBar | None`: read-only optional status configuration.
 
 #### Menu-box visibility methods
@@ -1964,25 +2144,34 @@ only. Foreign handles raise `ValueError`.
 #### Content and task methods
 
 ```text
+set_content_layout(layout: Sequence[Sequence[ContentPanel]]) -> None
 add_content_panel(
     content: ScreenContent,
     *,
     description: str = "Content in progress",
     auto_scroll: AutoScrollMode | None = None,
     position: int | None = None,
-    weight: float = 1,
+    height_weight: float = 1,
+    width_weight: float = 1,
     min_height: int = 1,
     max_height: int | None = None,
     collapsed_height: int = 1,
+    padding_top: int = 0,
+    padding_bottom: int = 0,
+    padding_left: int = 0,
+    padding_right: int = 0,
 ) -> ContentPanel
 ```
 
 Add an independently rendered panel and return its stable handle. `position`
-is zero-based; invalid positions or auto-scroll modes raise `TypeError` or
-`ValueError`. Sizing options are validated before insertion; see
+is a zero-based index in `content_panels`; invalid positions or auto-scroll
+modes raise `TypeError` or `ValueError`. Sizing options are validated before
+insertion; see
 [Content panel sizing](#content-panel-sizing) for allocation and bounds.
 `collapsed_height` sets the fixed content row count used after `collapse()`;
 panels start expanded. See [Collapsible content panels](#collapsible-content-panels).
+`set_content_layout()` atomically validates and installs complete nested rows;
+see [Content layouts](#content-layouts).
 
 Change a panel through its `ContentPanel` handle. See
 [Replacing active content](#replacing-active-content) for source replacement

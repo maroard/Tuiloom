@@ -33,8 +33,8 @@ class StatusBar:
     Dynamic providers are evaluated on every UI render. The active menu schedules
     periodic status frames at a nominal 60 Hz; immediate UI or explicit render
     requests can cause additional evaluations. Responsive providers cache output
-    until installation, terminal width change, or ``menu.refresh_status_bar()``
-    requests reevaluation.
+    until installation, terminal width or panel focus change, or
+    ``menu.refresh_status_bar()`` requests reevaluation.
     Animated providers receive a width and an ``AnimationFrame`` on the menu's
     active-time timeline at their configured maximum rate. Covered menus pause
     that timeline; sources added later join its current phase.

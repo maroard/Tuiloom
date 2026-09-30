@@ -834,7 +834,7 @@ def test_panel_sizing_reflows_responsive_content_without_restarting_workers() ->
         assert (first._runtime.worker, second._runtime.worker) == workers
 
         first_rendered.clear()
-        first.set_layout(weight=4)
+        first.set_layout(height_weight=4)
         renderer._compose_frame(30, 30)
         assert first_rendered.wait(1)
         loop._drain_source_events()

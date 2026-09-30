@@ -71,9 +71,9 @@ def test_overlay_has_no_effect_on_panel_geometry(
     menu, renderer = make_renderer()
     renderer._content_spacing = spacing
     first = menu.add_content_panel(
-        ScreenContent.responsive(lambda size: "graph"), weight=3
+        ScreenContent.responsive(lambda size: "graph"), height_weight=3
     )
-    second = menu.add_content_panel(ScreenContent.static("logs"), weight=1)
+    second = menu.add_content_panel(ScreenContent.static("logs"), height_weight=1)
     if collapsed:
         second.collapse()
     if status:
@@ -192,8 +192,7 @@ def test_too_small_and_hidden_overlay_with_a_large_alert() -> None:
     menu.show_menu()
     menu.set_status_bar("READY")
     frame = renderer._compose_frame(40, 24)
-    assert frame[0] == "Terminal window is too small." and frame[-1] == "READY"
-    assert len(frame) == 24
+    assert frame == ["Terminal window is too small."]
 
 
 def test_all_collapsed_panels_still_center_in_full_body() -> None:
@@ -226,7 +225,8 @@ def test_overlay_and_panels_use_existing_focus_borders() -> None:
     assert menu._focused_panel is panel
     menu.show_alert("Alert")
     menu.hide_menu()
-    assert renderer._compose_frame(40, 24)[0].startswith("╭─")
+    assert menu.focused_panel is None
+    assert renderer._compose_frame(40, 24)[0].startswith("╭┄")
 
 
 def test_menu_visibility_preserves_overlay_content_and_status() -> None:

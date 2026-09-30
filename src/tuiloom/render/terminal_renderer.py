@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal
 from tuiloom.animation import AnimationFrame
 from tuiloom.configuration import AutoScrollMode
 from tuiloom.render.menu_renderer import MenuRenderer
-from tuiloom.render.panel_layout import allocate_panel_heights
+from tuiloom.render.panel_layout import allocate_panel_heights, allocate_panel_widths
 from tuiloom.render.rendered_content import RenderResult
 from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
 from tuiloom.render.terminal_text import (
@@ -87,6 +87,7 @@ class TerminalRenderer:
     def _get_render_key(self, current_size: terminal_size) -> tuple[object, ...]:
         return (
             current_size,
+            tuple(self._menu._visible_content_rows()),
             tuple(
                 (
                     panel,
@@ -99,6 +100,10 @@ class TerminalRenderer:
                     panel._runtime.viewport.offset_y
                     if panel._runtime.viewport is not None
                     else 0,
+                    panel.padding_top,
+                    panel.padding_bottom,
+                    panel.padding_left,
+                    panel.padding_right,
                 )
                 for panel in self._menu._visible_content_panels()
             ),
@@ -119,7 +124,13 @@ class TerminalRenderer:
             if status._kind == "animated" and status.fps is not None
             else None
         )
-        key = (status, width, self._menu._status_bar_revision, index)
+        key = (
+            status,
+            width,
+            self._menu._status_bar_revision,
+            index,
+            self._menu.focused_panel,
+        )
         if key != self._status_key or status._kind == "dynamic":
             if status._kind == "animated":
                 animated = status._animated_renderer
@@ -160,11 +171,11 @@ class TerminalRenderer:
         if status_line is None:
             return self._compose_body(terminal_width, terminal_height)
         available = terminal_height - 1
-        body = (
-            self._compose_body(terminal_width, available)
-            if available
-            else RenderResult([])
-        )
+        body = self._compose_body(terminal_width, available)
+        if body.too_small:
+            return body
+        if available == 0 and body.lines == [""]:
+            return RenderResult([status_line])
         return RenderResult(
             body.lines + [""] * (available - len(body.lines)) + [status_line],
             body.cursor,
@@ -175,10 +186,13 @@ class TerminalRenderer:
         menu_lines = menu.lines
         menu_height = len(menu_lines)
         menu_width = max((display_width(line) for line in menu_lines), default=0)
-        panels = self._menu._visible_content_panels()
+        rows = self._menu._visible_content_rows()
+        panels = tuple(panel for row in rows for panel in row)
         overlay = self._menu.presentation == "overlay"
         if menu_width > terminal_width or menu_height > terminal_height:
-            return RenderResult(self._render_terminal_too_small(terminal_width))
+            return RenderResult(
+                self._render_terminal_too_small(terminal_width), too_small=True
+            )
         if not panels:
             if overlay:
                 return self._compose_overlay([], menu, terminal_width, terminal_height)
@@ -187,38 +201,69 @@ class TerminalRenderer:
             )
 
         spacing = int(self._content_spacing and bool(menu_lines) and not overlay)
-        viewport_width = terminal_width - 2
         panel_total = terminal_height - (0 if overlay else menu_height) - spacing
-        if viewport_width <= 0:
-            return RenderResult(self._render_terminal_too_small(terminal_width))
-        heights = allocate_panel_heights(panels, panel_total)
+        widths = [allocate_panel_widths(row, terminal_width) for row in rows]
+        if any(row_widths is None for row_widths in widths):
+            return RenderResult(
+                self._render_terminal_too_small(terminal_width), too_small=True
+            )
+        heights = allocate_panel_heights(rows, panel_total)
         if heights is None:
-            return RenderResult(self._render_terminal_too_small(terminal_width))
+            return RenderResult(
+                self._render_terminal_too_small(terminal_width), too_small=True
+            )
+        if any(
+            viewport_width <= panel.padding_left + panel.padding_right
+            or height <= panel.padding_top + panel.padding_bottom
+            for row, height, row_widths in zip(rows, heights, widths, strict=True)
+            for panel, viewport_width in zip(row, row_widths or (), strict=True)
+        ):
+            return RenderResult(
+                self._render_terminal_too_small(terminal_width), too_small=True
+            )
         show_labels = len(panels) > 1 or self._menu._task_exit is not None
         content_lines: list[str] = []
-        for panel, height in zip(panels, heights, strict=True):
-            self._update_viewport(panel, viewport_width, height)
-            focused = self._menu._focused_panel is panel and (
-                self._menu._alert is None or not self._menu._menu_box_visible
-            )
-            horizontal = "─" if focused else "┄"
-            vertical = "│" if focused else "┊"
-            content_lines.append(
-                self._panel_top_border(
+        for row, height, row_widths in zip(rows, heights, widths, strict=True):
+            if row_widths is None:
+                raise RuntimeError("Panel widths were not allocated")
+            fragments: list[list[str]] = []
+            for panel, viewport_width in zip(row, row_widths, strict=True):
+                self._update_viewport(
+                    panel,
+                    viewport_width - panel.padding_left - panel.padding_right,
+                    height - panel.padding_top - panel.padding_bottom,
+                )
+                focused = self._menu.focused_panel is panel
+                horizontal = "─" if focused else "┄"
+                vertical = "│" if focused else "┊"
+                top = self._panel_top_border(
                     viewport_width,
                     horizontal,
                     self._menu._visible_panel_description(panel)
                     if show_labels
                     else None,
                 )
-            )
-            viewport = panel._runtime.viewport
-            if viewport is None:
-                raise RuntimeError("Content panel viewport was not initialized")
+                viewport = panel._runtime.viewport
+                if viewport is None:
+                    raise RuntimeError("Content panel viewport was not initialized")
+                fragments.append(
+                    [top]
+                    + [f"{vertical}{' ' * viewport_width}{vertical}"]
+                    * panel.padding_top
+                    + [
+                        normalize_line(
+                            f"{vertical}{' ' * panel.padding_left}"
+                            f"{line}{' ' * panel.padding_right}{vertical}"
+                        )
+                        for line in viewport.render().split("\n")
+                    ]
+                    + [f"{vertical}{' ' * viewport_width}{vertical}"]
+                    * panel.padding_bottom
+                    + [f"╰{horizontal * viewport_width}╯"]
+                )
             content_lines.extend(
-                f"{vertical}{line}{vertical}" for line in viewport.render().split("\n")
+                "".join(parts) for parts in zip(*fragments, strict=True)
             )
-            content_lines.append(f"╰{horizontal * viewport_width}╯")
         if overlay:
             return self._compose_overlay(
                 content_lines, menu, terminal_width, terminal_height

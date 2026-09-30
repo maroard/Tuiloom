@@ -120,20 +120,20 @@ def test_keymap_copy_preserves_bindings_without_sharing_owner_or_mutations() -> 
 def test_update_layout_keeps_omitted_values_and_can_clear_maximum() -> None:
     menu = make_menu()
     panel = menu.add_content_panel(
-        ScreenContent.static("Content"), weight=3, min_height=4, max_height=9
+        ScreenContent.static("Content"), height_weight=3, min_height=4, max_height=9
     )
-    panel.update_layout(weight=2)
-    assert (panel.weight, panel.min_height, panel.max_height) == (2, 4, 9)
+    panel.update_layout(height_weight=2)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (2, 4, 9)
     panel.update_layout(max_height=None)
-    assert (panel.weight, panel.min_height, panel.max_height) == (2, 4, None)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (2, 4, None)
 
 
 def test_invalid_partial_layout_update_is_atomic() -> None:
     menu = make_menu()
     panel = menu.add_content_panel(ScreenContent.static("Content"), min_height=4)
     with pytest.raises(ValueError):
-        panel.update_layout(weight=2, max_height=3)
-    assert (panel.weight, panel.min_height, panel.max_height) == (1, 4, None)
+        panel.update_layout(height_weight=2, max_height=3)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (1, 4, None)
 
 
 def test_foreground_background_apply_separate_sgr_categories() -> None:

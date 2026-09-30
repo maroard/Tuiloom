@@ -29,6 +29,7 @@ from tuiloom.animation import TextSource
 from tuiloom.key_binding import KeyBinding
 
 if TYPE_CHECKING:
+    from tuiloom.content_panel import ContentPanel
     from tuiloom.terminal_app import TerminalApp
     from tuiloom.terminal_menu import TerminalMenu
 
@@ -61,6 +62,51 @@ class CommandContext:
 
 type CommandCallback = Callable[[CommandContext], None]
 """Callable taking one CommandContext; UI dispatch ignores its return value."""
+
+
+@dataclass(frozen=True, slots=True)
+class PanelCommandContext:
+    """Describe one shortcut invoked on the focused content panel."""
+
+    app: TerminalApp
+    menu: TerminalMenu
+    panel: ContentPanel
+    command: PanelKeyCommand
+    binding: KeyBinding
+
+
+type PanelCommandCallback = Callable[[PanelCommandContext], None]
+
+
+class PanelKeyCommand:
+    """Stable read-only handle for one panel-owned keyboard shortcut."""
+
+    __slots__ = ("_panel", "_binding", "_label", "_callback")
+
+    def __init__(
+        self,
+        panel: ContentPanel,
+        binding: KeyBinding,
+        label: str,
+        callback: PanelCommandCallback,
+    ) -> None:
+        self._panel = panel
+        self._binding = binding
+        self._label = label
+        self._callback = callback
+
+    @property
+    def binding(self) -> KeyBinding:
+        return self._binding
+
+    @property
+    def label(self) -> str:
+        return self._label
+
+    @property
+    def callback(self) -> PanelCommandCallback:
+        return self._callback
+
 
 type InputCallback = Callable[[str], None]
 """Callable taking the submitted Unicode buffer without leaving input mode."""

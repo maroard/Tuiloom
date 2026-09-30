@@ -14,7 +14,7 @@ Attributes:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Literal
 
@@ -38,7 +38,8 @@ class KeyBinding:
     Single-character keys preserve their case. Multi-character key names become
     lowercase, and ``return``, ``esc``, and ``arrow_up/down/left/right`` normalize
     to ``enter``, ``escape``, and the corresponding direction. Key names are not
-    checked against a fixed supported-key list. Equality includes all modifiers.
+    checked against a fixed supported-key list. Equality includes all modifiers
+    but ignores ``priority``.
 
     Terminal protocols do not always report every modifier. In particular,
     Ctrl+letter is commonly case-insensitive and Shift+letter may arrive only as
@@ -53,16 +54,20 @@ class KeyBinding:
             Defaults to ``False``.
         shift: Read-only ``bool`` indicating whether Shift is required.
             Defaults to ``False``.
+        priority: Read-only ``bool`` letting a focused panel command override a
+            global command using the same key. Defaults to ``False`` and does
+            not participate in equality or hashing.
 
     Raises:
         ValueError: If ``key`` is not a string or is empty.
-        TypeError: If any modifier is not a bool.
+        TypeError: If any modifier or ``priority`` is not a bool.
     """
 
     key: str
     ctrl: bool = False
     alt: bool = False
     shift: bool = False
+    priority: bool = field(default=False, compare=False)
 
     def __post_init__(self) -> None:
         """Validate construction and normalize aliases and multi-character names.
@@ -74,7 +79,8 @@ class KeyBinding:
         if not isinstance(self.key, str) or not self.key:
             raise ValueError("A key binding must contain a nonempty string key")
         if not all(
-            isinstance(value, bool) for value in (self.ctrl, self.alt, self.shift)
+            isinstance(value, bool)
+            for value in (self.ctrl, self.alt, self.shift, self.priority)
         ):
             raise TypeError("Key binding modifiers must be bool values")
 

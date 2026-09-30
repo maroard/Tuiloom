@@ -74,11 +74,11 @@ def main() -> None:
     # Settings inherits overlay when pushed. Each menu retains its own panels.
     for screen in (menu, settings):
         screen.content_panels[0].set_description("Graph")
-        screen.content_panels[0].update_layout(weight=3)
+        screen.content_panels[0].update_layout(height_weight=3)
         screen.add_content_panel(
             ScreenContent.dynamic(simulation.logs),
             description="Simulation",
-            weight=1,
+            height_weight=1,
             max_height=6,
         )
         screen.set_status_bar(StatusBar.dynamic(simulation.status))

@@ -50,12 +50,13 @@ def test_content_panels_are_stable_ordered_handles() -> None:
 
     metrics.set_description("Live metrics")
     metrics.set_auto_scroll("strict")
-    metrics.move(1)
+    metrics.swap_down()
 
     assert metrics.description == "Live metrics"
     current_mode: object = metrics.auto_scroll
     assert current_mode == "strict"
-    assert metrics.position == 1
+    assert metrics.position == 0
+    assert menu.content_layout[1].panels == (metrics,)
 
 
 def test_panel_explicit_methods_mutate_through_the_stable_handle() -> None:
@@ -69,9 +70,9 @@ def test_panel_explicit_methods_mutate_through_the_stable_handle() -> None:
     assert panel._runtime.pending_auto_scroll is None
     panel.set_description("New")
     panel.set_auto_scroll("strict")
-    panel.move(0)
+    panel.swap_up()
 
-    assert panel is menu.content_panels[0]
+    assert panel is menu.content_layout[0].panels[0]
     assert panel.description == "New"
     assert panel.auto_scroll == "strict"
 
@@ -88,12 +89,17 @@ def test_removed_panel_rejects_every_explicit_mutation() -> None:
         panel.refresh,
         lambda: panel.set_description("New"),
         lambda: panel.set_auto_scroll("smart"),
-        lambda: panel.set_layout(weight=2),
+        lambda: panel.set_layout(height_weight=2),
         panel.collapse,
         panel.expand,
         panel.toggle_collapse,
         lambda: panel.set_collapsed_height(2),
-        lambda: panel.move(0),
+        panel.move_left,
+        panel.move_right,
+        panel.move_up,
+        panel.move_down,
+        panel.swap_up,
+        panel.swap_down,
         panel.remove,
     )
     for operation in operations:
@@ -155,35 +161,78 @@ def test_panel_auto_scroll_rejects_invalid_modes(mode: object) -> None:
 def test_panel_layout_defaults_and_explicit_configuration() -> None:
     menu = make_menu()
     first = menu.content_panels[0]
-    assert (first.weight, first.min_height, first.max_height) == (1, 1, None)
+    assert (first.height_weight, first.min_height, first.max_height) == (1, 1, None)
 
     panel = menu.add_content_panel(
-        ScreenContent.static("extra"), weight=2.5, min_height=3, max_height=8
+        ScreenContent.static("extra"), height_weight=2.5, min_height=3, max_height=8
     )
-    assert (panel.weight, panel.min_height, panel.max_height) == (2.5, 3, 8)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (2.5, 3, 8)
 
-    first.set_layout(weight=3, min_height=2, max_height=9)
-    assert (first.weight, first.min_height, first.max_height) == (3, 2, 9)
+    first.set_layout(height_weight=3, min_height=2, max_height=9)
+    assert (first.height_weight, first.min_height, first.max_height) == (3, 2, 9)
 
     first.set_content(ScreenContent.static("replacement"))
-    first.move(1)
-    assert (first.weight, first.min_height, first.max_height) == (3, 2, 9)
+    first.swap_down()
+    assert (first.height_weight, first.min_height, first.max_height) == (3, 2, 9)
 
     first.set_layout()
-    assert (first.weight, first.min_height, first.max_height) == (1, 1, None)
+    assert (first.height_weight, first.min_height, first.max_height) == (1, 1, None)
+
+
+def test_independent_width_and_height_weights_can_be_updated_and_reset() -> None:
+    menu = make_menu()
+    panel = menu.add_content_panel(
+        ScreenContent.static("extra"), height_weight=3, width_weight=4
+    )
+    assert (panel.height_weight, panel.width_weight) == (3, 4)
+
+    panel.update_layout(width_weight=2)
+    assert (panel.height_weight, panel.width_weight) == (3, 2)
+    panel.set_layout(height_weight=5)
+    assert (panel.height_weight, panel.width_weight) == (5, 1)
+    panel.set_layout()
+    assert (panel.height_weight, panel.width_weight) == (1, 1)
+
+
+@pytest.mark.parametrize("name", ["height_weight", "width_weight"])
+@pytest.mark.parametrize("value", [True, None, "2", 0, -1, float("nan"), float("inf")])
+def test_invalid_weight_update_keeps_both_weights(name: str, value: object) -> None:
+    menu = make_menu()
+    panel = menu.content_panels[0]
+    panel.set_layout(height_weight=3, width_weight=4)
+    with pytest.raises((TypeError, ValueError), match=name):
+        panel.update_layout(**{name: value})  # type: ignore[arg-type]
+    assert (panel.height_weight, panel.width_weight) == (3, 4)
+
+
+def test_old_weight_name_is_removed_from_public_sizing_api() -> None:
+    menu = make_menu()
+    panel = menu.content_panels[0]
+    assert not hasattr(panel, "weight")
+    with pytest.raises(TypeError, match="weight"):
+        menu.add_content_panel(ScreenContent.static("extra"), weight=2)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="weight"):
+        panel.set_layout(weight=2)  # type: ignore[call-arg]
 
 
 @pytest.mark.parametrize(
     ("options", "error", "match"),
     [
-        ({"weight": True}, TypeError, "weight"),
-        ({"weight": "2"}, TypeError, "weight"),
-        ({"weight": None}, TypeError, "weight"),
-        ({"weight": 0}, ValueError, "weight"),
-        ({"weight": -1}, ValueError, "weight"),
-        ({"weight": float("nan")}, ValueError, "weight"),
-        ({"weight": float("inf")}, ValueError, "weight"),
-        ({"weight": float("-inf")}, ValueError, "weight"),
+        ({"height_weight": True}, TypeError, "height_weight"),
+        ({"height_weight": "2"}, TypeError, "height_weight"),
+        ({"height_weight": None}, TypeError, "height_weight"),
+        ({"height_weight": 0}, ValueError, "height_weight"),
+        ({"height_weight": -1}, ValueError, "height_weight"),
+        ({"height_weight": float("nan")}, ValueError, "height_weight"),
+        ({"height_weight": float("inf")}, ValueError, "height_weight"),
+        ({"height_weight": float("-inf")}, ValueError, "height_weight"),
+        ({"width_weight": True}, TypeError, "width_weight"),
+        ({"width_weight": "2"}, TypeError, "width_weight"),
+        ({"width_weight": None}, TypeError, "width_weight"),
+        ({"width_weight": 0}, ValueError, "width_weight"),
+        ({"width_weight": -1}, ValueError, "width_weight"),
+        ({"width_weight": float("nan")}, ValueError, "width_weight"),
+        ({"width_weight": float("inf")}, ValueError, "width_weight"),
         ({"min_height": True}, TypeError, "min_height"),
         ({"min_height": 1.5}, TypeError, "min_height"),
         ({"min_height": None}, TypeError, "min_height"),
@@ -206,17 +255,17 @@ def test_panel_layout_validation_is_atomic(
     assert menu.content_panels == original
 
     panel = original[0]
-    panel.set_layout(weight=2, min_height=3, max_height=6)
+    panel.set_layout(height_weight=2, min_height=3, max_height=6)
     with pytest.raises(error, match=match):
         panel.set_layout(**options)  # type: ignore[arg-type]
-    assert (panel.weight, panel.min_height, panel.max_height) == (2, 3, 6)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (2, 3, 6)
 
 
 def test_layout_mutation_rejects_unowned_panels() -> None:
     menu = make_menu()
     rogue = ContentPanel(menu, ScreenContent.static("rogue"), "Rogue", None)
     with pytest.raises(ValueError, match="belong"):
-        rogue.set_layout(weight=2)
+        rogue.set_layout(height_weight=2)
 
 
 def test_collapse_transitions_preserve_panel_configuration() -> None:
@@ -246,18 +295,18 @@ def test_collapsed_height_is_separate_from_expanded_layout() -> None:
         ScreenContent.static("extra"), min_height=4, max_height=8, collapsed_height=2
     )
     panel.collapse()
-    panel.set_layout(weight=3, min_height=5, max_height=10)
+    panel.set_layout(height_weight=3, min_height=5, max_height=10)
     assert panel.collapsed and panel.collapsed_height == 2
     panel.set_collapsed_height(3)
     assert panel.collapsed_height == 3
-    assert (panel.weight, panel.min_height, panel.max_height) == (3, 5, 10)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (3, 5, 10)
     panel.set_layout()
     assert panel.collapsed and panel.collapsed_height == 3
     panel.set_content(ScreenContent.static("replacement"))
-    panel.move(0)
+    panel.swap_up()
     assert panel.collapsed and panel.collapsed_height == 3
     panel.expand()
-    assert (panel.weight, panel.min_height, panel.max_height) == (1, 1, None)
+    assert (panel.height_weight, panel.min_height, panel.max_height) == (1, 1, None)
 
 
 @pytest.mark.parametrize(

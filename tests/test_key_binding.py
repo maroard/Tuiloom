@@ -23,6 +23,12 @@ def test_key_binding_rejects_non_boolean_modifiers() -> None:
         KeyBinding("x", ctrl=1)  # type: ignore[arg-type]
 
 
+def test_priority_is_boolean_and_does_not_change_key_identity() -> None:
+    with pytest.raises(TypeError):
+        KeyBinding("x", priority=1)  # type: ignore[arg-type]
+    assert len({KeyBinding("x"), KeyBinding("x", priority=True)}) == 1
+
+
 def test_default_keymap_and_read_only_view() -> None:
     keymap = KeyMap()
     assert keymap.focus == KeyBinding("tab")

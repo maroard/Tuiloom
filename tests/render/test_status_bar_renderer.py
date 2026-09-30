@@ -51,8 +51,8 @@ def test_status_row_is_reserved_before_panel_allocation(
 ) -> None:
     menu, renderer = make_renderer()
     renderer._content_spacing = spacing
-    first = menu.add_content_panel(ScreenContent.static("one"), weight=3)
-    second = menu.add_content_panel(ScreenContent.static("two"), weight=1)
+    first = menu.add_content_panel(ScreenContent.static("one"), height_weight=3)
+    second = menu.add_content_panel(ScreenContent.static("two"), height_weight=1)
     if collapsed:
         first.collapse()
         second.collapse()
@@ -90,16 +90,63 @@ def test_status_bar_uses_unicode_ansi_clipping_without_wrapping(text: str) -> No
 
 
 @pytest.mark.parametrize("width,height", [(1, 1), (8, 2), (30, 3), (0, 0)])
-def test_too_small_terminal_keeps_status_visible_within_physical_bounds(
+def test_too_small_terminal_hides_status_within_physical_bounds(
     width: int, height: int
 ) -> None:
     menu, renderer = make_renderer()
     menu.add_content_panel(ScreenContent.static("content"))
     menu.set_status_bar("RUNNING")
     frame = renderer._compose_frame(width, height)
-    assert len(frame) == max(1, height)
-    assert frame[-1] == "RUNNING"[:width]
+    assert frame == (
+        ["Terminal window is too small."[:width]] if width and height else [""]
+    )
     assert all(display_width(line) <= width for line in frame)
+
+
+def test_status_bar_returns_when_terminal_grows_after_too_small_view() -> None:
+    menu, renderer = make_renderer()
+    menu.add_content_panel(ScreenContent.static("content"))
+    menu.set_status_bar("RUNNING")
+    assert renderer._compose_frame(30, 3) == ["Terminal window is too small."]
+    assert renderer._compose_frame(30, 20)[-1] == "RUNNING"
+
+
+def test_status_row_is_not_reclaimed_to_avoid_too_small_view() -> None:
+    menu, renderer = make_renderer()
+    menu.add_content_panel(ScreenContent.static("content"))
+    height = next(
+        height
+        for height in range(1, 20)
+        if renderer._compose_frame(30, height) != ["Terminal window is too small."]
+    )
+    menu.set_status_bar("READY")
+    assert renderer._compose_frame(30, height) == ["Terminal window is too small."]
+    assert renderer._compose_frame(30, height + 1)[-1] == "READY"
+
+
+def test_responsive_status_recomputes_when_focus_changes() -> None:
+    from tuiloom import KeyBinding, StatusBar
+    from tuiloom.input_handler.input_event import InputEvent
+
+    menu, renderer = make_renderer()
+    first = menu.add_content_panel(ScreenContent.static("first"))
+    second = menu.add_content_panel(ScreenContent.static("second"))
+    calls: list[object] = []
+
+    def status(width: int) -> str:
+        calls.append(menu.focused_panel)
+        return menu.focused_panel.description if menu.focused_panel else "Menu"
+
+    menu.set_status_bar(StatusBar.responsive(status))
+    assert renderer._compose_frame(40, 20)[-1] == "Menu"
+    assert renderer._compose_frame(40, 20)[-1] == "Menu"
+    for expected in (first, second, None):
+        menu._handle_event(InputEvent(KeyBinding("tab")))
+        assert menu.focused_panel is expected
+        assert renderer._compose_frame(40, 20)[-1] == (
+            expected.description if expected else "Menu"
+        )
+    assert calls == [None, first, second, None]
 
 
 def test_hidden_menu_preserves_status() -> None:
@@ -374,5 +421,5 @@ def test_input_cursor_is_hidden_when_only_status_fits(
     writes: list[str] = []
     monkeypatch.setattr("tuiloom.render.terminal_renderer.stdout.write", writes.append)
     renderer._restore_cursor(frame)
-    assert frame == ["READY"]
+    assert frame == ["Terminal window is too small."]
     assert writes == ["\033[?25l"]

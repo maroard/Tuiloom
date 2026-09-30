@@ -80,10 +80,11 @@ def test_global_content_creates_an_ordinary_panel_without_a_primary_role() -> No
     local = menu.add_content_panel(ScreenContent.static("local"), auto_scroll="strict")
     assert inherited.content is content
     assert not hasattr(menu, "_primary_content_panel")
-    inherited.move(1)
+    inherited.swap_down()
     inherited.set_content(ScreenContent.static("updated"))
     inherited.set_auto_scroll("smart")
-    assert list(menu.content_panels) == [local, inherited]
+    assert list(menu.content_panels) == [inherited, local]
+    assert tuple(row.panels for row in menu.content_layout) == ((local,), (inherited,))
     assert local.content == ScreenContent.static("local")
     assert local.auto_scroll == "strict"
     inherited.remove()

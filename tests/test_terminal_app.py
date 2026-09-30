@@ -27,8 +27,12 @@ def test_global_content_creates_an_ordinary_panel_for_every_menu() -> None:
     assert local_panel.content is local_content
     assert inherited_panel is not global_panel
 
-    global_panel.move(1)
-    assert list(local.content_panels) == [local_panel, global_panel]
+    global_panel.swap_down()
+    assert list(local.content_panels) == [global_panel, local_panel]
+    assert tuple(row.panels for row in local.content_layout) == (
+        (local_panel,),
+        (global_panel,),
+    )
     global_panel.set_content(ScreenContent.static("replacement"))
     assert inherited_panel.content is global_content
     assert global_panel.content == ScreenContent.static("replacement")

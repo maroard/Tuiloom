@@ -7,6 +7,7 @@ class RenderResult:
 
     lines: list[str]
     cursor: tuple[int, int] | None = None
+    too_small: bool = False
 
 
 @dataclass

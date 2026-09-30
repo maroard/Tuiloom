@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from shutil import get_terminal_size
 from time import monotonic
 from typing import TYPE_CHECKING, Literal, cast
@@ -20,9 +20,11 @@ from tuiloom.command import (
     InputCallback,
     MenuChoice,
     MenuCommand,
+    PanelCommandContext,
 )
 from tuiloom.configuration import AutoScrollMode, MenuPresentation
 from tuiloom.content_panel import ContentPanel
+from tuiloom.content_row import ContentRow
 from tuiloom.event_loop.event_loop import EventLoop
 from tuiloom.input_handler.input_event import InputEvent
 from tuiloom.key_binding import KeyBinding
@@ -60,11 +62,13 @@ class TerminalMenu:
         commands: Read-only tuple snapshot of live user command and choice
             handles in display order, excluding Back/Quit. Use this menu's
             methods to add, remove, move or update commands.
-        content_panels: Read-only tuple snapshot of live panel handles in display
-            order. Add panels with ``add_content_panel()`` and mutate their
-            handles to change, move or remove them.
+        content_panels: Read-only tuple of registered panels in flat order.
+        content_layout: Read-only tuple of row handles in visual top-to-bottom
+            order. Set their membership with ``set_content_layout()``.
         status_bar: Read-only reference to the installed ``StatusBar``, or
             ``None``. Use ``set_status_bar()`` or ``clear_status_bar()`` to change it.
+        focused_panel: Read-only panel receiving keyboard input, or ``None``
+            while the menu box, input, or a modal view owns it.
         is_main: Read-only registration state changed by ``app.set_main_menu()``;
             it does not identify the currently visible menu.
         presentation: Read-only effective inline or overlay mode; an inherited
@@ -149,6 +153,8 @@ class TerminalMenu:
         self._status_bar: StatusBar | None = None
         self._status_bar_revision = 0
         self._content_panels: list[ContentPanel] = []
+        self._content_rows: list[ContentRow] = []
+        self._explicit_content_layout = False
         inherited_content = app._create_global_content()
         if inherited_content is not None:
             self.add_content_panel(inherited_content)
@@ -187,13 +193,72 @@ class TerminalMenu:
 
     @property
     def content_panels(self) -> tuple[ContentPanel, ...]:
-        """Inspect the currently registered content panels in display order.
+        """Inspect currently registered panels in flat collection order.
 
         Returns:
             A tuple snapshot of live panel handles, including any temporary
             output-task panel and excluding panels already removed.
         """
         return tuple(self._content_panels)
+
+    @property
+    def content_layout(self) -> tuple[ContentRow, ...]:
+        """Inspect rows from top to bottom; each row exposes its panels."""
+        return tuple(self._content_rows)
+
+    def set_content_layout(self, layout: Sequence[Sequence[ContentPanel]]) -> None:
+        """Atomically place every registered panel in nonempty visual rows.
+
+        The outer sequence runs top to bottom; each inner sequence runs left to
+        right. Duplicate, foreign, removed, missing, and incompatible panels
+        are rejected before changing the current layout. Source workers and
+        panel identities remain mounted during a successful change.
+        """
+        if (
+            not isinstance(layout, Sequence)
+            or isinstance(layout, (str, bytes, bytearray))
+            or not layout
+        ):
+            raise ValueError("content layout must contain at least one row")
+        rows: list[tuple[ContentPanel, ...]] = []
+        seen: set[ContentPanel] = set()
+        for raw_row in layout:
+            if (
+                not isinstance(raw_row, Sequence)
+                or isinstance(raw_row, (str, bytes, bytearray))
+                or not raw_row
+            ):
+                raise ValueError("content layout rows must be nonempty sequences")
+            panels: list[ContentPanel] = []
+            for panel in raw_row:
+                if not isinstance(panel, ContentPanel):
+                    raise TypeError("content layout entries must be ContentPanel")
+                self._require_content_panel(panel)
+                if panel in seen:
+                    raise ValueError("content layout contains a duplicate panel")
+                seen.add(panel)
+                panels.append(panel)
+            row = tuple(panels)
+            self._validate_content_row(row)
+            rows.append(row)
+        if seen != set(self._content_panels):
+            raise ValueError("content layout must contain every panel exactly once")
+        self._install_content_rows(rows)
+
+    @staticmethod
+    def _validate_content_row(panels: tuple[ContentPanel, ...]) -> None:
+        if len(panels) < 2:
+            return
+        minimum = max(panel.min_height for panel in panels)
+        maximums = [
+            panel.max_height for panel in panels if panel.max_height is not None
+        ]
+        if maximums and min(maximums) < minimum:
+            raise ValueError("content row height bounds do not intersect")
+        if len({panel.collapsed for panel in panels}) != 1:
+            raise ValueError("content row collapsed states must match")
+        if len({panel.collapsed_height for panel in panels}) != 1:
+            raise ValueError("content row collapsed heights must match")
 
     @property
     def status_bar(self) -> StatusBar | None:
@@ -205,6 +270,19 @@ class TerminalMenu:
             ``clear_status_bar()``.
         """
         return self._status_bar
+
+    @property
+    def focused_panel(self) -> ContentPanel | None:
+        """Return the panel receiving keys, or None while another mode owns input."""
+        if (
+            self._input is not None
+            or self._alert is not None
+            or self._task_exit is not None
+            or self.app._menu_stack
+            and self.app._menu_stack[-1] is not self
+        ):
+            return None
+        return self._focused_panel
 
     def set_status_bar(self, content: str | StatusBar) -> None:
         """Install or replace the status line and request a new frame.
@@ -355,10 +433,15 @@ class TerminalMenu:
         description: str = "Content in progress",
         auto_scroll: AutoScrollMode | None = None,
         position: int | None = None,
-        weight: float = 1,
+        height_weight: float = 1,
+        width_weight: float = 1,
         min_height: int = 1,
         max_height: int | None = None,
         collapsed_height: int = 1,
+        padding_top: int = 0,
+        padding_bottom: int = 0,
+        padding_left: int = 0,
+        padding_right: int = 0,
     ) -> ContentPanel:
         """Register independent content and return its stable panel handle.
 
@@ -376,10 +459,13 @@ class TerminalMenu:
             auto_scroll: ``None`` for manual scrolling (default), ``"smart"``
                 to follow new stream batches until the user scrolls upward, or
                 ``"strict"`` to follow every new batch despite manual scrolling.
-            position: Zero-based insertion index among panels; ``None`` appends.
-                The current panel count is a valid insertion index.
-            weight: Positive finite relative share of available total panel rows,
+            position: Zero-based insertion index in the flat panel collection;
+                ``None`` appends. An explicit layout always gains a new
+                singleton row at the bottom regardless of this flat index.
+            height_weight: Positive finite relative share of available total panel rows,
                 including borders. Defaults to ``1``.
+            width_weight: Positive finite relative share of complete frame width
+                within the panel's row. Defaults to ``1``.
             min_height: Minimum desired content rows, excluding borders. Must
                 be a positive integer; defaults to ``1``. If panel minimums
                 cannot fit, a terminal-too-small view replaces the normal layout.
@@ -387,6 +473,8 @@ class TerminalMenu:
                 the height uncapped. Otherwise an integer at least ``min_height``.
             collapsed_height: Positive number of content rows displayed when
                 collapsed. Defaults to ``1``; the panel is initially expanded.
+            padding_top, padding_bottom, padding_left, padding_right:
+                Nonnegative cells kept inside the panel border. Default to zero.
 
         Returns:
             The registered ``ContentPanel`` handle. Its identity is preserved
@@ -408,13 +496,23 @@ class TerminalMenu:
             content,
             description,
             auto_scroll,
-            weight=weight,
+            height_weight=height_weight,
+            width_weight=width_weight,
             min_height=min_height,
             max_height=max_height,
             collapsed_height=collapsed_height,
+            padding_top=padding_top,
+            padding_bottom=padding_bottom,
+            padding_left=padding_left,
+            padding_right=padding_right,
         )
         self.app._claim_stream(content, panel)
         self._content_panels.insert(insert_at, panel)
+        row = ContentRow(self, (panel,))
+        self._content_rows.insert(
+            len(self._content_rows) if self._explicit_content_layout else insert_at,
+            row,
+        )
         self._normalize_focus()
         if self._running and self._event_loop is not None:
             self._event_loop.add_content_panel(panel)
@@ -478,14 +576,28 @@ class TerminalMenu:
     def _set_content_panel_layout(
         self,
         panel: ContentPanel,
-        weight: float,
+        height_weight: float,
+        width_weight: float,
         min_height: int,
         max_height: int | None,
     ) -> None:
         """Validate and atomically replace an owned panel's sizing options."""
         self._require_content_panel(panel)
-        panel._validate_layout(weight, min_height, max_height)
-        panel._weight = weight
+        panel._validate_layout(height_weight, width_weight, min_height, max_height)
+        row = self._row_of_content_panel(panel)
+        minimum = max(
+            min_height if member is panel else member.min_height
+            for member in row.panels
+        )
+        maximums = [
+            max_height if member is panel else member.max_height
+            for member in row.panels
+        ]
+        configured = [maximum for maximum in maximums if maximum is not None]
+        if configured and min(configured) < minimum:
+            raise ValueError("content row height bounds do not intersect")
+        panel._height_weight = height_weight
+        panel._width_weight = width_weight
         panel._min_height = min_height
         panel._max_height = max_height
         self._invalidate_renderer()
@@ -497,6 +609,8 @@ class TerminalMenu:
     ) -> None:
         """Change an owned panel's display state without touching its runtime."""
         self._require_content_panel(panel)
+        if len(self._row_of_content_panel(panel).panels) > 1:
+            raise ValueError("Collapse the content row, not an individual panel")
         if panel._collapsed == collapsed:
             return
         panel._collapsed = collapsed
@@ -509,36 +623,116 @@ class TerminalMenu:
     ) -> None:
         """Validate and replace an owned panel's fixed collapsed height."""
         self._require_content_panel(panel)
+        if len(self._row_of_content_panel(panel).panels) > 1:
+            raise ValueError("Set collapsed height on the content row")
         panel._validate_collapsed_height(height)
         panel._collapsed_height = height
         self._invalidate_renderer()
         if self._running and self._event_loop is not None:
             self._event_loop.request_render(immediate=True)
 
-    def _move_content_panel(self, panel: ContentPanel, position: int) -> None:
-        """Move one owned panel to a zero-based position."""
-        self._require_content_panel(panel)
-        target = self._validate_content_position(position, allow_end=False)
-        self._content_panels.remove(panel)
-        self._content_panels.insert(target, panel)
+    def _row_of_content_panel(self, panel: ContentPanel) -> ContentRow:
+        return next(row for row in self._content_rows if panel in row.panels)
+
+    def _require_content_row(self, row: ContentRow) -> None:
+        if row._menu is not self or not row._active or row not in self._content_rows:
+            raise ValueError("Content row no longer belongs to this layout")
+
+    def _set_content_row_collapsed(self, row: ContentRow, collapsed: bool) -> None:
+        self._require_content_row(row)
+        if row.collapsed == collapsed:
+            return
+        for panel in row.panels:
+            panel._collapsed = collapsed
         self._invalidate_renderer()
+        if self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
+
+    def _set_content_row_collapsed_height(self, row: ContentRow, height: int) -> None:
+        self._require_content_row(row)
+        ContentPanel._validate_collapsed_height(height)
+        for panel in row.panels:
+            panel._collapsed_height = height
+        self._invalidate_renderer()
+        if self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
+
+    def _move_content_panel_direction(
+        self,
+        panel: ContentPanel,
+        direction: Literal["left", "right", "up", "down"],
+        *,
+        swap: bool = False,
+    ) -> None:
+        """Validate and apply one directional row-major layout mutation."""
+        self._require_content_panel(panel)
+        rows = [list(row.panels) for row in self._content_rows]
+        row_index = next(i for i, row in enumerate(rows) if panel in row)
+        column = rows[row_index].index(panel)
+        if direction in ("left", "right"):
+            target_column = column + (-1 if direction == "left" else 1)
+            if target_column < 0 or target_column >= len(rows[row_index]):
+                return
+            rows[row_index][column], rows[row_index][target_column] = (
+                rows[row_index][target_column],
+                panel,
+            )
+        else:
+            target_row = row_index + (-1 if direction == "up" else 1)
+            if target_row < 0 or target_row >= len(rows):
+                return
+            if swap:
+                if column >= len(rows[target_row]):
+                    return
+                rows[row_index][column], rows[target_row][column] = (
+                    rows[target_row][column],
+                    panel,
+                )
+            else:
+                rows[row_index].pop(column)
+                rows[target_row].insert(min(column, len(rows[target_row])), panel)
+                rows = [row for row in rows if row]
+        candidates = [tuple(row) for row in rows]
+        for row in candidates:
+            self._validate_content_row(row)
+        self._install_content_rows(candidates)
+
+    def _install_content_rows(self, rows: list[tuple[ContentPanel, ...]]) -> None:
+        for old_row in self._content_rows:
+            old_row._active = False
+        self._content_rows = [ContentRow(self, row) for row in rows]
+        self._explicit_content_layout = True
+        if self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
 
     def _remove_content_panel(self, panel: ContentPanel) -> None:
         """Remove one owned panel and cooperatively retire its worker."""
         self._require_content_panel(panel)
-        removed_position = self._content_panels.index(panel)
+        old_visible = self._visible_content_panels()
+        old_focus_index = old_visible.index(panel) if panel in old_visible else -1
         was_focused = panel is self._focused_panel
         self._content_panels.remove(panel)
+        row = next(row for row in self._content_rows if panel in row.panels)
+        remaining = tuple(member for member in row.panels if member is not panel)
+        if remaining:
+            row._panels = remaining
+        else:
+            row._active = False
+            self._content_rows.remove(row)
         panel._removed = True
         if self._running and self._event_loop is not None:
             self._event_loop.retire_content_panel(panel)
         else:
             self.app._release_stream_claims(panel)
         if was_focused:
-            self._focused_panel = (
-                self._content_panels[removed_position]
-                if removed_position < len(self._content_panels)
-                else None
+            remaining_visible = self._visible_content_panels()
+            self._focused_panel = next(
+                (
+                    candidate
+                    for candidate in old_visible[old_focus_index + 1 :]
+                    if candidate in remaining_visible
+                ),
+                None,
             )
         self._normalize_focus()
         self._invalidate_renderer()
@@ -1552,7 +1746,13 @@ class TerminalMenu:
         """Return panels currently projected into the terminal frame."""
         if self._task_exit is not None:
             return self._current_exit_panels()
-        return self.content_panels
+        return tuple(panel for row in self._content_rows for panel in row.panels)
+
+    def _visible_content_rows(self) -> tuple[tuple[ContentPanel, ...], ...]:
+        """Project normal rows or special exit panels into frame geometry."""
+        if self._task_exit is not None:
+            return tuple((panel,) for panel in self._current_exit_panels())
+        return tuple(row.panels for row in self._content_rows)
 
     def _visible_panel_description(self, panel: ContentPanel) -> str:
         view = self._task_exit
@@ -1611,7 +1811,13 @@ class TerminalMenu:
                     MessageKey.UNKNOWN_COMMAND, command=event.text
                 )
             return
+        if self._handle_panel_key_command(binding, priority=True):
+            self._render_after_menu_event()
+            return
         if self.app._handle_global_command(binding, self):
+            self._render_after_menu_event()
+            return
+        if self._handle_panel_key_command(binding, priority=False):
             self._render_after_menu_event()
             return
         action = self.app.keymap.action_for(binding)
@@ -1656,7 +1862,11 @@ class TerminalMenu:
         binding = event.binding
         if binding is None:
             return
+        if self._handle_panel_key_command(binding, priority=True):
+            return
         if self.app._handle_global_command(binding, self):
+            return
+        if self._handle_panel_key_command(binding, priority=False):
             return
         action = self.app.keymap.action_for(binding)
         if action == "back":
@@ -1722,6 +1932,37 @@ class TerminalMenu:
         if renderer is None or panel is None:
             return
         renderer.scroll_panel(panel, direction)
+
+    def _handle_panel_key_command(self, binding: KeyBinding, *, priority: bool) -> bool:
+        panel = self.focused_panel
+        if panel is None:
+            return False
+        shifted_horizontal = (
+            binding.key in {"left", "right"}
+            and binding.shift
+            and not (binding.ctrl or binding.alt)
+        )
+        if (
+            binding.key in {"tab", "escape", "up", "down", "left", "right"}
+            and not shifted_horizontal
+        ) or (
+            self.app.keymap.action_for(binding)
+            in {"focus", "back", "up", "down", "left", "right"}
+        ):
+            return False
+        command = next(
+            (
+                candidate
+                for candidate in panel.key_commands
+                if candidate.binding == binding
+                and candidate.binding.priority == priority
+            ),
+            None,
+        )
+        if command is None:
+            return False
+        command.callback(PanelCommandContext(self.app, self, panel, command, binding))
+        return True
 
     def _display_input_buffer(self) -> str:
         state = self._input

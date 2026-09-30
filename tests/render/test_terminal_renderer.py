@@ -126,11 +126,11 @@ def test_panel_rows_follow_weight_ratios_with_minimum_and_maximum_bounds(
 ) -> None:
     menu, renderer = make_renderer(content=None)
     panels: list[ContentPanel] = []
-    for weight, minimum, maximum in layouts:
+    for height_weight, minimum, maximum in layouts:
         panels.append(
             menu.add_content_panel(
                 ScreenContent.static("content"),
-                weight=weight,
+                height_weight=height_weight,
                 min_height=minimum,
                 max_height=maximum,
             )
@@ -149,12 +149,12 @@ def test_panel_rows_follow_weight_ratios_with_minimum_and_maximum_bounds(
 @pytest.mark.parametrize("reverse", [False, True])
 def test_weights_allocate_complete_panel_frames(spacing: bool, reverse: bool) -> None:
     menu, renderer = make_renderer(content=None, spacing=spacing)
-    graph = menu.add_content_panel(ScreenContent.static("graph"), weight=3)
+    graph = menu.add_content_panel(ScreenContent.static("graph"), height_weight=3)
     simulation = menu.add_content_panel(
-        ScreenContent.static("simulation"), weight=1, max_height=8
+        ScreenContent.static("simulation"), height_weight=1, max_height=8
     )
     if reverse:
-        simulation.move(0)
+        menu.set_content_layout([[simulation], [graph]])
     menu_height = len(renderer._menu_renderer.render(max_width=28).splitlines())
 
     frame = renderer._compose_frame(30, menu_height + int(spacing) + 23)
@@ -204,11 +204,11 @@ def test_collapsed_panels_reserve_fixed_rows_before_weighted_sharing(
     panels = [
         menu.add_content_panel(
             ScreenContent.static("content"),
-            weight=weight,
+            height_weight=height_weight,
             min_height=4,
             collapsed_height=2,
         )
-        for weight in (3, 1, 2)
+        for height_weight in (3, 1, 2)
     ]
     for panel, state in zip(panels, collapsed, strict=True):
         if state:
@@ -234,7 +234,7 @@ def test_expand_uses_current_terminal_size_and_updated_layout() -> None:
     compose_with_panel_rows(menu, renderer, 10)
     viewport = panel._runtime.viewport
     assert viewport is not None and viewport.height == 5
-    panel.set_layout(weight=2, min_height=4, max_height=8)
+    panel.set_layout(height_weight=2, min_height=4, max_height=8)
     compose_with_panel_rows(menu, renderer, 20)
     assert viewport.height == 5
     panel.expand()

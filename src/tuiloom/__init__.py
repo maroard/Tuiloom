@@ -32,7 +32,7 @@ Attributes:
 """
 
 from tuiloom._message_registry import MessageKey
-from tuiloom.animation import AnimatedText, AnimationFrame, rainbow_color
+from tuiloom.animation import AnimatedText, AnimationFrame, TickHandle, rainbow_color
 from tuiloom.command import (
     ChoiceCallback,
     ChoiceContext,
@@ -69,7 +69,12 @@ from tuiloom.key_binding import KeyAction, KeyBinding, KeyMap
 from tuiloom.menu_display import MenuDisplay
 from tuiloom.render.terminal_text import display_width
 from tuiloom.screen_content import ContentSize, ScreenContent
-from tuiloom.selectable import SelectableCallback, SelectableContext, SelectableItem
+from tuiloom.selectable import (
+    SelectableCallback,
+    SelectableContext,
+    SelectableItem,
+    SelectionChangeContext,
+)
 from tuiloom.status_bar import StatusBar
 from tuiloom.terminal_app import TerminalApp
 from tuiloom.terminal_menu import TerminalMenu
@@ -110,6 +115,8 @@ __all__ = [
     "SelectableCallback",
     "SelectableContext",
     "SelectableItem",
+    "SelectionChangeContext",
+    "TickHandle",
     "StatusBar",
     "TerminalApp",
     "TerminalMenu",

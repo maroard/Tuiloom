@@ -15,6 +15,7 @@ from tuiloom import (
     KeyBinding,
     MenuDisplay,
     ScreenContent,
+    SelectableItem,
     StatusBar,
     TerminalApp,
     TerminalMenu,
@@ -164,6 +165,112 @@ def test_menu_animation_uses_elapsed_time_and_skips_late_frames() -> None:
     loop._render_if_due()
     assert [frame.index for frame in calls] == [0, 3, 4]
     loop.close()
+
+
+def test_menu_tick_callback_uses_active_time_and_can_be_cancelled() -> None:
+    now = [0.0]
+    menu, loop, _, _ = make_loop([None], clock=lambda: now[0])
+    frames: list[AnimationFrame] = []
+    handle = menu.add_tick_callback(frames.append, fps=5)
+    try:
+        loop.run_once(process_input=False, render=False, block=False)
+        assert [frame.index for frame in frames] == [0]
+        now[0] = 0.61
+        loop.run_once(process_input=False, render=False, block=False)
+        assert [frame.index for frame in frames] == [0, 3]
+        loop.set_animation_active(False)
+        now[0] = 5.0
+        loop.run_once(process_input=False, render=False, block=False)
+        assert len(frames) == 2
+        loop.set_animation_active(True)
+        now[0] = 5.2
+        loop.run_once(process_input=False, render=False, block=False)
+        assert [frame.index for frame in frames] == [0, 3, 4]
+        handle.cancel()
+        handle.cancel()
+        now[0] = 6.0
+        loop.run_once(process_input=False, render=False, block=False)
+        assert len(frames) == 3
+    finally:
+        loop.close()
+
+
+def test_menu_tick_callbacks_stop_when_loop_closes() -> None:
+    menu, loop, _, _ = make_loop([None])
+    frames: list[AnimationFrame] = []
+    handle = menu.add_tick_callback(frames.append)
+    loop.close()
+    assert handle.cancelled
+    assert menu._tick_callbacks == []
+    handle.cancel()
+
+
+def test_menu_tick_does_not_run_on_later_loop_after_menu_stops() -> None:
+    menu, loop, _, _ = make_loop([InputEvent(KeyBinding("enter")), None])
+    frames: list[AnimationFrame] = []
+    menu.add_tick_callback(frames.append)
+    try:
+        loop.run_once(block=False)
+        assert not menu._running
+        assert len(frames) == 1
+        loop.run_once(process_input=False, render=False, block=False)
+        assert len(frames) == 1
+    finally:
+        loop.close()
+
+
+def test_due_menu_tick_runs_before_input_callback() -> None:
+    menu, loop, _, _ = make_loop([InputEvent(KeyBinding("enter")), None])
+    order: list[str] = []
+    menu.add_tick_callback(lambda frame: order.append("tick"))
+    menu.set_command_callback(menu.commands[0], lambda context: order.append("input"))
+    try:
+        loop.run_once(block=False)
+        assert order == ["tick", "input"]
+    finally:
+        loop.close()
+
+
+def test_tick_stopping_menu_skips_later_ticks_and_input() -> None:
+    menu, loop, _, _ = make_loop([InputEvent(KeyBinding("enter")), None])
+    calls: list[str] = []
+    menu.add_tick_callback(lambda frame: menu._stop_immediately())
+    menu.add_tick_callback(lambda frame: calls.append("later tick"))
+    menu.set_command_callback(menu.commands[0], lambda context: calls.append("input"))
+    try:
+        loop.run_once(block=False)
+        assert calls == []
+    finally:
+        loop.close()
+
+
+def test_selection_callback_removing_panel_tracks_its_new_worker() -> None:
+    menu, loop, _, _ = make_loop(
+        [None], content=ScreenContent.selectable([SelectableItem("A")])
+    )
+    panel = menu.content_panels[0]
+    panel.set_selection_callback(lambda context: panel.remove())
+    try:
+        panel.set_content(ScreenContent.dynamic(lambda: "updated"))
+        assert panel not in menu.content_panels
+        worker = panel._runtime.worker
+        assert worker is None or panel in loop.retiring_panels
+    finally:
+        loop.close()
+        worker = panel._runtime.worker
+        if worker is not None and worker.is_alive():
+            worker.cancel()
+            worker.join()
+
+
+@pytest.mark.parametrize("fps", [0, -1, 61, float("inf")])
+def test_menu_tick_callback_rejects_invalid_rate(fps: float) -> None:
+    menu, loop, _, _ = make_loop([None])
+    try:
+        with pytest.raises(ValueError):
+            menu.add_tick_callback(lambda frame: None, fps=fps)
+    finally:
+        loop.close()
 
 
 def test_menu_and_status_animations_keep_independent_rates() -> None:

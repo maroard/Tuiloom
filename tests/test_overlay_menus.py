@@ -112,6 +112,52 @@ def test_hide_show_toggle_focus_and_selection_without_stopping() -> None:
     assert not menu.menu_visible and menu._focused_panel is first
 
 
+@pytest.mark.parametrize("presentation", ["inline", "overlay"])
+def test_hiding_menu_restores_panel_focused_before_show(presentation: str) -> None:
+    menu = TerminalMenu(
+        TerminalApp("App"),
+        MenuDisplay("main", "Main"),
+        presentation=presentation,  # type: ignore[arg-type]
+    )
+    graph = menu.add_content_panel(ScreenContent.static("graph"))
+    output = menu.add_content_panel(ScreenContent.static("output"))
+    info = menu.add_content_panel(ScreenContent.static("info"))
+    menu.set_content_layout([[graph, output], [graph, info]])
+    menu.hide_menu()
+    press(menu, "tab")
+    press(menu, "tab")
+    assert menu.focused_panel is info
+
+    menu.show_menu()
+    assert menu.focused_panel is None
+    menu.hide_menu()
+    assert menu.focused_panel is info
+
+    menu.toggle_menu()
+    menu.toggle_menu()
+    assert menu.focused_panel is info
+
+
+def test_hiding_menu_uses_current_panel_or_fallback_if_previous_was_removed() -> None:
+    menu = make_menu()
+    first = menu.add_content_panel(ScreenContent.static("first"))
+    second = menu.add_content_panel(ScreenContent.static("second"))
+    menu.hide_menu()
+    press(menu, "tab")
+    assert menu.focused_panel is second
+    menu.show_menu()
+    press(menu, "tab")
+    assert menu.focused_panel is first
+    menu.hide_menu()
+    assert menu.focused_panel is first
+
+    press(menu, "tab")
+    menu.show_menu()
+    second.remove()
+    menu.hide_menu()
+    assert menu.focused_panel is first
+
+
 def test_hidden_focus_normalizes_after_panel_add_and_remove() -> None:
     menu = make_menu()
     menu.hide_menu()

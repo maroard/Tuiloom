@@ -63,4 +63,18 @@ class SelectableContext:
     binding: KeyBinding | None
 
 
+@dataclass(frozen=True, slots=True)
+class SelectionChangeContext:
+    """Describe a committed panel selection change on the UI thread."""
+
+    app: TerminalApp
+    menu: TerminalMenu
+    panel: ContentPanel
+    previous_item: SelectableItem | None
+    previous_index: int | None
+    item: SelectableItem | None
+    index: int | None
+    binding: KeyBinding | None
+
+
 type SelectableCallback = Callable[[SelectableContext], None]

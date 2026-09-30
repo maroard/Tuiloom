@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
@@ -9,8 +11,26 @@ if TYPE_CHECKING:
     from tuiloom.content_panel import ContentPanel
 
 
+@dataclass(frozen=True, slots=True)
+class HeightTrack:
+    """Aggregate height constraints for one spanning block."""
+
+    height_weight: float
+    min_height: int
+    max_height: int | None
+    collapsed: bool = False
+    collapsed_height: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class WidthTrack:
+    """Aggregate one shared column's width weight."""
+
+    width_weight: float
+
+
 def allocate_panel_heights(
-    rows: tuple[tuple[ContentPanel, ...], ...], available: int
+    rows: Sequence[Sequence[ContentPanel | HeightTrack]], available: int
 ) -> list[int] | None:
     """Share rows including borders by mean height weight and shared bounds.
 
@@ -92,7 +112,7 @@ def allocate_panel_heights(
 
 
 def allocate_panel_widths(
-    row: tuple[ContentPanel, ...], available: int
+    row: Sequence[ContentPanel | WidthTrack], available: int
 ) -> list[int] | None:
     """Share complete frame widths by panel width weight, keeping one inner column."""
     if available < 3 * len(row):

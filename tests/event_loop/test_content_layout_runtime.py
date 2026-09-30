@@ -84,3 +84,47 @@ def test_relayout_keeps_independent_viewports_scroll_and_content() -> None:
         ]
     finally:
         loop.close()
+
+
+def test_vertical_span_updates_responsive_size_and_keeps_worker() -> None:
+    sizes: Queue[ContentSize] = Queue()
+
+    def graph_content(size: ContentSize) -> str:
+        sizes.put(size)
+        return "graph"
+
+    def wait_for_size(expected: ContentSize) -> None:
+        for _ in range(5):
+            if sizes.get(timeout=1) == expected:
+                return
+        pytest.fail(f"responsive worker did not receive {expected}")
+
+    menu, loop, _, renderer = make_loop(
+        [], content=ScreenContent.responsive(graph_content)
+    )
+    graph = menu.content_panels[0]
+    output = menu.add_content_panel(ScreenContent.static("output"))
+    info = menu.add_content_panel(ScreenContent.static("info"))
+    try:
+        renderer._compose_frame(40, 20)
+        sizes.get(timeout=1)
+        worker = graph._runtime.worker
+        viewport = graph._runtime.viewport
+        menu.set_content_layout([[graph, output], [graph, info]])
+        renderer._compose_frame(40, 20)
+        assert viewport is not None
+        assert output._runtime.viewport is not None
+        assert info._runtime.viewport is not None
+        assert viewport.height == (
+            output._runtime.viewport.height + info._runtime.viewport.height + 2
+        )
+        wait_for_size(ContentSize(viewport.width, viewport.height))
+        assert graph._runtime.worker is worker
+        assert graph._runtime.viewport is viewport
+
+        renderer._compose_frame(50, 24)
+        wait_for_size(ContentSize(viewport.width, viewport.height))
+        assert graph._runtime.worker is worker
+        assert graph._runtime.viewport is viewport
+    finally:
+        loop.close()

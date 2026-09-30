@@ -6,6 +6,7 @@ following, or ``"strict"`` when every new batch follows the bottom.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from math import floor
 from os import terminal_size
 from shutil import get_terminal_size
@@ -14,8 +15,18 @@ from typing import TYPE_CHECKING, Literal
 
 from tuiloom.animation import AnimationFrame
 from tuiloom.configuration import AutoScrollMode
+from tuiloom.content_layout import (
+    VerticalSpan,
+    find_vertical_spans,
+    span_block_sizing,
+)
 from tuiloom.render.menu_renderer import MenuRenderer
-from tuiloom.render.panel_layout import allocate_panel_heights, allocate_panel_widths
+from tuiloom.render.panel_layout import (
+    HeightTrack,
+    WidthTrack,
+    allocate_panel_heights,
+    allocate_panel_widths,
+)
 from tuiloom.render.rendered_content import RenderResult
 from tuiloom.render.segment_diff import SegmentChange, get_segment_changes
 from tuiloom.render.terminal_text import (
@@ -32,6 +43,14 @@ if TYPE_CHECKING:
     from tuiloom.terminal_menu import TerminalMenu
 
 type ScrollDirection = Literal["up", "down", "left", "right"]
+
+
+@dataclass(frozen=True, slots=True)
+class _LayoutBlock:
+    rows: tuple[tuple[ContentPanel, ...], ...]
+    span: VerticalSpan | None
+    widths: tuple[int, ...]
+    heights: tuple[int, ...]
 
 
 class TerminalRenderer:
@@ -190,7 +209,7 @@ class TerminalRenderer:
         menu_height = len(menu_lines)
         menu_width = max((display_width(line) for line in menu_lines), default=0)
         rows = self._menu._visible_content_rows()
-        panels = tuple(panel for row in rows for panel in row)
+        panels = tuple(dict.fromkeys(panel for row in rows for panel in row))
         overlay = self._menu.presentation == "overlay"
         if menu_width > terminal_width or menu_height > terminal_height:
             return RenderResult(
@@ -205,65 +224,35 @@ class TerminalRenderer:
 
         spacing = int(self._content_spacing and bool(menu_lines) and not overlay)
         panel_total = terminal_height - (0 if overlay else menu_height) - spacing
-        widths = [allocate_panel_widths(row, terminal_width) for row in rows]
-        if any(row_widths is None for row_widths in widths):
-            return RenderResult(
-                self._render_terminal_too_small(terminal_width), too_small=True
-            )
-        heights = allocate_panel_heights(rows, panel_total)
-        if heights is None:
-            return RenderResult(
-                self._render_terminal_too_small(terminal_width), too_small=True
-            )
-        if any(
-            viewport_width <= panel.padding_left + panel.padding_right
-            or height <= panel.padding_top + panel.padding_bottom
-            for row, height, row_widths in zip(rows, heights, widths, strict=True)
-            for panel, viewport_width in zip(row, row_widths or (), strict=True)
-        ):
+        blocks = self._allocate_layout_blocks(rows, terminal_width, panel_total)
+        if blocks is None:
             return RenderResult(
                 self._render_terminal_too_small(terminal_width), too_small=True
             )
         show_labels = len(panels) > 1 or self._menu._task_exit is not None
         content_lines: list[str] = []
-        for row, height, row_widths in zip(rows, heights, widths, strict=True):
-            if row_widths is None:
-                raise RuntimeError("Panel widths were not allocated")
+        for block in blocks:
             fragments: list[list[str]] = []
-            for panel, viewport_width in zip(row, row_widths, strict=True):
-                self._update_viewport(
-                    panel,
-                    viewport_width - panel.padding_left - panel.padding_right,
-                    height - panel.padding_top - panel.padding_bottom,
-                )
-                focused = self._menu.focused_panel is panel
-                horizontal = "─" if focused else "┄"
-                vertical = "│" if focused else "┊"
-                top = self._panel_top_border(
-                    viewport_width,
-                    horizontal,
-                    self._menu._visible_panel_description(panel)
-                    if show_labels
-                    else None,
-                )
-                viewport = panel._runtime.viewport
-                if viewport is None:
-                    raise RuntimeError("Content panel viewport was not initialized")
-                fragments.append(
-                    [top]
-                    + [f"{vertical}{' ' * viewport_width}{vertical}"]
-                    * panel.padding_top
-                    + [
-                        normalize_line(
-                            f"{vertical}{' ' * panel.padding_left}"
-                            f"{line}{' ' * panel.padding_right}{vertical}"
+            for column, viewport_width in enumerate(block.widths):
+                if block.span is not None and column == block.span.column:
+                    frame_height = sum(height + 2 for height in block.heights)
+                    fragments.append(
+                        self._render_panel_frame(
+                            block.span.panel,
+                            viewport_width,
+                            frame_height - 2,
+                            show_labels,
                         )
-                        for line in viewport.render().split("\n")
-                    ]
-                    + [f"{vertical}{' ' * viewport_width}{vertical}"]
-                    * panel.padding_bottom
-                    + [f"╰{horizontal * viewport_width}╯"]
-                )
+                    )
+                    continue
+                column_lines: list[str] = []
+                for row, height in zip(block.rows, block.heights, strict=True):
+                    column_lines.extend(
+                        self._render_panel_frame(
+                            row[column], viewport_width, height, show_labels
+                        )
+                    )
+                fragments.append(column_lines)
             content_lines.extend(
                 "".join(parts) for parts in zip(*fragments, strict=True)
             )
@@ -280,6 +269,123 @@ class TerminalRenderer:
                 for line in content_lines + ([""] * spacing) + menu_lines
             ],
             cursor,
+        )
+
+    @staticmethod
+    def _allocate_layout_blocks(
+        rows: tuple[tuple[ContentPanel, ...], ...], width: int, available: int
+    ) -> list[_LayoutBlock] | None:
+        spans = {span.start: span for span in find_vertical_spans(rows)}
+        groups: list[
+            tuple[tuple[tuple[ContentPanel, ...], ...], VerticalSpan | None]
+        ] = []
+        height_inputs: list[tuple[ContentPanel | HeightTrack, ...]] = []
+        index = 0
+        while index < len(rows):
+            span = spans.get(index)
+            if span is None:
+                groups.append(((rows[index],), None))
+                height_inputs.append(rows[index])
+                index += 1
+                continue
+            grouped_rows = rows[span.start : span.stop]
+            groups.append((grouped_rows, span))
+            minimum, maximum, weight = span_block_sizing(rows, span)
+            height_inputs.append(
+                (
+                    HeightTrack(
+                        weight, minimum - 2, None if maximum is None else maximum - 2
+                    ),
+                )
+            )
+            index = span.stop
+
+        block_heights = allocate_panel_heights(tuple(height_inputs), available)
+        if block_heights is None:
+            return None
+        blocks: list[_LayoutBlock] = []
+        for (block_rows, span), block_height in zip(groups, block_heights, strict=True):
+            row_heights: tuple[int, ...]
+            if span is None:
+                row_heights = (block_height,)
+                widths = allocate_panel_widths(block_rows[0], width)
+            else:
+                remaining_rows = tuple(
+                    tuple(panel for panel in row if panel is not span.panel)
+                    for row in block_rows
+                )
+                allocated_rows = allocate_panel_heights(
+                    remaining_rows, block_height + 2
+                )
+                if allocated_rows is None:
+                    return None
+                row_heights = tuple(allocated_rows)
+                width_tracks = tuple(
+                    WidthTrack(
+                        sum(
+                            panel.width_weight
+                            for panel in dict.fromkeys(
+                                row[column] for row in block_rows
+                            )
+                        )
+                        / len(set(row[column] for row in block_rows))
+                    )
+                    for column in range(len(block_rows[0]))
+                )
+                widths = allocate_panel_widths(width_tracks, width)
+            if widths is None:
+                return None
+            for column, viewport_width in enumerate(widths):
+                panels_and_heights: tuple[tuple[ContentPanel, int], ...]
+                if span is not None and column == span.column:
+                    panels_and_heights = (
+                        (span.panel, sum(row_heights) + 2 * (len(row_heights) - 1)),
+                    )
+                else:
+                    panels_and_heights = tuple(
+                        (row[column], height)
+                        for row, height in zip(block_rows, row_heights, strict=True)
+                    )
+                if any(
+                    viewport_width <= panel.padding_left + panel.padding_right
+                    or height <= panel.padding_top + panel.padding_bottom
+                    for panel, height in panels_and_heights
+                ):
+                    return None
+            blocks.append(_LayoutBlock(block_rows, span, tuple(widths), row_heights))
+        return blocks
+
+    def _render_panel_frame(
+        self, panel: ContentPanel, width: int, height: int, show_label: bool
+    ) -> list[str]:
+        self._update_viewport(
+            panel,
+            width - panel.padding_left - panel.padding_right,
+            height - panel.padding_top - panel.padding_bottom,
+        )
+        focused = self._menu.focused_panel is panel
+        horizontal = "─" if focused else "┄"
+        vertical = "│" if focused else "┊"
+        top = self._panel_top_border(
+            width,
+            horizontal,
+            self._menu._visible_panel_description(panel) if show_label else None,
+        )
+        viewport = panel._runtime.viewport
+        if viewport is None:
+            raise RuntimeError("Content panel viewport was not initialized")
+        return (
+            [top]
+            + [f"{vertical}{' ' * width}{vertical}"] * panel.padding_top
+            + [
+                normalize_line(
+                    f"{vertical}{' ' * panel.padding_left}"
+                    f"{line}{' ' * panel.padding_right}{vertical}"
+                )
+                for line in viewport.render().split("\n")
+            ]
+            + [f"{vertical}{' ' * width}{vertical}"] * panel.padding_bottom
+            + [f"╰{horizontal * width}╯"]
         )
 
     def _compose_overlay(

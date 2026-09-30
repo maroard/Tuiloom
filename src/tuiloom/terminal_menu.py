@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from wcwidth import iter_graphemes
 
 from tuiloom._message_registry import MessageKey
-from tuiloom.animation import TextSource
+from tuiloom.animation import AnimationFrame, TextSource, TickHandle, validate_fps
 from tuiloom.choice_layout import ChoiceLine, choice_lines
 from tuiloom.command import (
     ChoiceCallback,
@@ -23,6 +23,11 @@ from tuiloom.command import (
     PanelCommandContext,
 )
 from tuiloom.configuration import AutoScrollMode, MenuPresentation, SelectionStyle
+from tuiloom.content_layout import (
+    dissolve_invalid_spans,
+    find_vertical_spans,
+    validate_spanned_bounds,
+)
 from tuiloom.content_panel import ContentPanel
 from tuiloom.content_row import ContentRow
 from tuiloom.event_loop.event_loop import EventLoop
@@ -142,6 +147,7 @@ class TerminalMenu:
         self._selected_index = 0
         self._choice_index: int | None = None
         self._focused_panel: ContentPanel | None = None
+        self._focus_before_menu: ContentPanel | None = None
         self._running = False
         self._hard_exit_requested = False
 
@@ -158,6 +164,7 @@ class TerminalMenu:
         self._menu_renderer: MenuRenderer | None = None
         self._terminal_renderer: TerminalRenderer | None = None
         self._event_loop: EventLoop | None = None
+        self._tick_callbacks: list[TickHandle] = []
         self._status_bar: StatusBar | None = None
         self._status_bar_revision = 0
         self._content_panels: list[ContentPanel] = []
@@ -231,8 +238,9 @@ class TerminalMenu:
         """Atomically place every registered panel in nonempty visual rows.
 
         The outer sequence runs top to bottom; each inner sequence runs left to
-        right. Duplicate, foreign, removed, missing, and incompatible panels
-        are rejected before changing the current layout. Source workers and
+        right. Repeating a panel in the same column of adjacent rows makes one
+        vertical span. Foreign, removed, missing, and incompatible panels or
+        malformed repetitions are rejected atomically. Source workers and
         panel identities remain mounted during a successful change.
         """
         if (
@@ -255,16 +263,35 @@ class TerminalMenu:
                 if not isinstance(panel, ContentPanel):
                     raise TypeError("content layout entries must be ContentPanel")
                 self._require_content_panel(panel)
-                if panel in seen:
-                    raise ValueError("content layout contains a duplicate panel")
                 seen.add(panel)
                 panels.append(panel)
             row = tuple(panels)
-            self._validate_content_row(row)
             rows.append(row)
         if seen != set(self._content_panels):
-            raise ValueError("content layout must contain every panel exactly once")
+            raise ValueError("content layout must contain every panel")
+        self._validate_layout_rows(tuple(rows))
         self._install_content_rows(rows)
+
+    @classmethod
+    def _validate_layout_rows(cls, rows: tuple[tuple[ContentPanel, ...], ...]) -> None:
+        spans = find_vertical_spans(rows)
+        spanning_rows = {
+            index: span for span in spans for index in range(span.start, span.stop)
+        }
+        for index, row in enumerate(rows):
+            span = spanning_rows.get(index)
+            cls._validate_content_row(
+                row if span is None else tuple(p for p in row if p is not span.panel)
+            )
+        validate_spanned_bounds(rows, spans)
+
+    def _spanned_row_indexes(self) -> set[int]:
+        rows = tuple(row.panels for row in self._content_rows)
+        return {
+            index
+            for span in find_vertical_spans(rows)
+            for index in range(span.start, span.stop)
+        }
 
     @staticmethod
     def _validate_content_row(panels: tuple[ContentPanel, ...]) -> None:
@@ -358,6 +385,24 @@ class TerminalMenu:
         if self._event_loop is not None:
             self._event_loop.request_render(immediate=True)
 
+    def add_tick_callback(
+        self, callback: Callable[[AnimationFrame], None], *, fps: float = 12
+    ) -> TickHandle:
+        """Call ``callback`` on due menu frames while this menu is active.
+
+        Callbacks run on the UI thread, skip elapsed frames, and pause while
+        another menu covers this one. Cancel the returned handle to stop them.
+        Closing the menu also cancels registered handles.
+        """
+        if not callable(callback):
+            raise TypeError("tick callback must be callable")
+        rate = validate_fps(fps)
+        handle = TickHandle(callback, rate, self._tick_callbacks.remove)
+        self._tick_callbacks.append(handle)
+        if self._event_loop is not None:
+            self._event_loop.request_render(immediate=True)
+        return handle
+
     @property
     def is_main(self) -> bool:
         """Check whether this menu is the application's configured main menu.
@@ -407,12 +452,13 @@ class TerminalMenu:
     def show_menu(self) -> None:
         """Reveal a hidden command box, focus it and request a new frame.
 
-        Existing command selection, choice preview, alert and input buffer are
-        preserved. Calling this on an already visible box has no effect and
-        does not change focus.
+        Remember the previously focused panel so hiding the box can return to
+        it. Existing command selection, choice preview, alert and input buffer
+        are preserved. Calling this on an already visible box has no effect.
         """
         if self._menu_visible:
             return
+        self._focus_before_menu = self._focused_panel
         self._menu_visible = True
         self._focused_panel = None
         self._request_menu_render()
@@ -421,21 +467,27 @@ class TerminalMenu:
         """Hide the command box while leaving panels and status available.
 
         Alerts and input buffers are preserved but cannot be interacted with
-        through the hidden box. Focus moves to a content panel when available;
-        workers continue running. Global bindings remain available. Calling
-        this on an already hidden box has no effect.
+        through the hidden box. Focus returns to the panel active before the
+        box was shown, if it is still available; a panel focused since then
+        keeps focus. Otherwise the first available panel receives focus.
+        Workers and global bindings remain available. Calling this on an
+        already hidden box has no effect.
         """
         if not self._menu_visible:
             return
         self._menu_visible = False
+        if self._focused_panel is None:
+            self._focused_panel = self._focus_before_menu
+        self._focus_before_menu = None
         self._normalize_focus()
         self._request_menu_render()
 
     def toggle_menu(self) -> None:
         """Switch command-box visibility while preserving interaction state.
 
-        Hiding keeps panels, status and workers active. Revealing the box gives
-        it focus. The change is rendered by the application on a later frame.
+        Hiding keeps panels, status and workers active and restores prior panel
+        focus when possible. Revealing the box gives it focus. The change is
+        rendered by the application on a later frame.
         """
         if self._menu_visible:
             self.hide_menu()
@@ -559,9 +611,12 @@ class TerminalMenu:
         if self._running and self._event_loop is not None:
             self._event_loop.replace_content_panel(panel, content)
         else:
+            previous_item = panel.selected_item
+            previous_index = panel.selected_index
             panel._restore_selection(content)
             panel._content = content
             panel._runtime.mount(content)
+            panel._notify_selection_change(previous_item, previous_index)
         self.app._prune_stream_claims(panel)
         self._invalidate_renderer()
 
@@ -610,22 +665,26 @@ class TerminalMenu:
         """Validate and atomically replace an owned panel's sizing options."""
         self._require_content_panel(panel)
         panel._validate_layout(height_weight, width_weight, min_height, max_height)
-        row = self._row_of_content_panel(panel)
-        minimum = max(
-            min_height if member is panel else member.min_height
-            for member in row.panels
+        old = (
+            panel._height_weight,
+            panel._width_weight,
+            panel._min_height,
+            panel._max_height,
         )
-        maximums = [
-            max_height if member is panel else member.max_height
-            for member in row.panels
-        ]
-        configured = [maximum for maximum in maximums if maximum is not None]
-        if configured and min(configured) < minimum:
-            raise ValueError("content row height bounds do not intersect")
         panel._height_weight = height_weight
         panel._width_weight = width_weight
         panel._min_height = min_height
         panel._max_height = max_height
+        try:
+            self._validate_layout_rows(tuple(row.panels for row in self._content_rows))
+        except (TypeError, ValueError):
+            (
+                panel._height_weight,
+                panel._width_weight,
+                panel._min_height,
+                panel._max_height,
+            ) = old
+            raise
         self._invalidate_renderer()
         if self._running and self._event_loop is not None:
             self._event_loop.request_render(immediate=True)
@@ -635,6 +694,10 @@ class TerminalMenu:
     ) -> None:
         """Change an owned panel's display state without touching its runtime."""
         self._require_content_panel(panel)
+        if any(
+            panel in self._content_rows[i].panels for i in self._spanned_row_indexes()
+        ):
+            raise ValueError("Cannot collapse a panel in a vertical span")
         if len(self._row_of_content_panel(panel).panels) > 1:
             raise ValueError("Collapse the content row, not an individual panel")
         if panel._collapsed == collapsed:
@@ -649,6 +712,10 @@ class TerminalMenu:
     ) -> None:
         """Validate and replace an owned panel's fixed collapsed height."""
         self._require_content_panel(panel)
+        if any(
+            panel in self._content_rows[i].panels for i in self._spanned_row_indexes()
+        ):
+            raise ValueError("Cannot change collapse height in a vertical span")
         if len(self._row_of_content_panel(panel).panels) > 1:
             raise ValueError("Set collapsed height on the content row")
         panel._validate_collapsed_height(height)
@@ -666,6 +733,8 @@ class TerminalMenu:
 
     def _set_content_row_collapsed(self, row: ContentRow, collapsed: bool) -> None:
         self._require_content_row(row)
+        if self._content_rows.index(row) in self._spanned_row_indexes():
+            raise ValueError("Cannot collapse a row crossed by a vertical span")
         if row.collapsed == collapsed:
             return
         for panel in row.panels:
@@ -676,6 +745,8 @@ class TerminalMenu:
 
     def _set_content_row_collapsed_height(self, row: ContentRow, height: int) -> None:
         self._require_content_row(row)
+        if self._content_rows.index(row) in self._spanned_row_indexes():
+            raise ValueError("Cannot change collapse height across a vertical span")
         ContentPanel._validate_collapsed_height(height)
         for panel in row.panels:
             panel._collapsed_height = height
@@ -694,6 +765,12 @@ class TerminalMenu:
         self._require_content_panel(panel)
         rows = [list(row.panels) for row in self._content_rows]
         row_index = next(i for i, row in enumerate(rows) if panel in row)
+        target_row = row_index + (-1 if direction == "up" else 1)
+        spanned = self._spanned_row_indexes()
+        if row_index in spanned or (
+            direction in ("up", "down") and target_row in spanned
+        ):
+            raise ValueError("Cannot move panels across a vertical span")
         column = rows[row_index].index(panel)
         if direction in ("left", "right"):
             target_column = column + (-1 if direction == "left" else 1)
@@ -704,7 +781,6 @@ class TerminalMenu:
                 panel,
             )
         else:
-            target_row = row_index + (-1 if direction == "up" else 1)
             if target_row < 0 or target_row >= len(rows):
                 return
             if swap:
@@ -723,10 +799,23 @@ class TerminalMenu:
             self._validate_content_row(row)
         self._install_content_rows(candidates)
 
-    def _install_content_rows(self, rows: list[tuple[ContentPanel, ...]]) -> None:
+    def _install_content_rows(
+        self,
+        rows: list[tuple[ContentPanel, ...]],
+        *,
+        preserve_matching: bool = False,
+    ) -> None:
+        existing = (
+            {row.panels: row for row in self._content_rows} if preserve_matching else {}
+        )
+        replacement = [
+            existing.pop(panels) if panels in existing else ContentRow(self, panels)
+            for panels in rows
+        ]
         for old_row in self._content_rows:
-            old_row._active = False
-        self._content_rows = [ContentRow(self, row) for row in rows]
+            if old_row not in replacement:
+                old_row._active = False
+        self._content_rows = replacement
         self._explicit_content_layout = True
         if self._event_loop is not None:
             self._event_loop.request_render(immediate=True)
@@ -737,15 +826,30 @@ class TerminalMenu:
         old_visible = self._visible_content_panels()
         old_focus_index = old_visible.index(panel) if panel in old_visible else -1
         was_focused = panel is self._focused_panel
-        self._content_panels.remove(panel)
-        row = next(row for row in self._content_rows if panel in row.panels)
-        remaining = tuple(member for member in row.panels if member is not panel)
-        if remaining:
-            row._panels = remaining
+        if self._spanned_row_indexes():
+            candidates = [
+                tuple(member for member in row.panels if member is not panel)
+                for row in self._content_rows
+            ]
+            candidates = [row for row in candidates if row]
+            repaired = dissolve_invalid_spans(tuple(candidates))
+            self._validate_layout_rows(repaired)
+            self._content_panels.remove(panel)
+            self._install_content_rows(list(repaired), preserve_matching=True)
         else:
-            row._active = False
-            self._content_rows.remove(row)
+            self._content_panels.remove(panel)
+            content_row = next(row for row in self._content_rows if panel in row.panels)
+            remaining = tuple(
+                member for member in content_row.panels if member is not panel
+            )
+            if remaining:
+                content_row._panels = remaining
+            else:
+                content_row._active = False
+                self._content_rows.remove(content_row)
         panel._removed = True
+        if self._focus_before_menu is panel:
+            self._focus_before_menu = None
         if self._running and self._event_loop is not None:
             self._event_loop.retire_content_panel(panel)
         else:
@@ -1554,6 +1658,7 @@ class TerminalMenu:
         if self._input is not None:
             self._input.buffer = ""
         self._focused_panel = None
+        self._focus_before_menu = None
         self._selected_index = 0
         self._choice_index = None
         self._normalize_selection()
@@ -1772,7 +1877,9 @@ class TerminalMenu:
         """Return panels currently projected into the terminal frame."""
         if self._task_exit is not None:
             return self._current_exit_panels()
-        return tuple(panel for row in self._content_rows for panel in row.panels)
+        return tuple(
+            dict.fromkeys(panel for row in self._content_rows for panel in row.panels)
+        )
 
     def _visible_content_rows(self) -> tuple[tuple[ContentPanel, ...], ...]:
         """Project normal rows or special exit panels into frame geometry."""
@@ -1874,7 +1981,7 @@ class TerminalMenu:
             elif action == "activate":
                 self._activate_selection(binding)
         elif self._focused_panel is not None and action in {"up", "down"}:
-            self._focused_panel._move_selection(-1 if action == "up" else 1)
+            self._focused_panel._move_selection(-1 if action == "up" else 1, binding)
         elif self._focused_panel is not None and action == "activate":
             self._activate_panel_item(binding)
         elif action in {"scroll_up", "scroll_down", "scroll_left", "scroll_right"}:
@@ -1901,7 +2008,7 @@ class TerminalMenu:
         elif action == "focus":
             self._cycle_focus()
         elif self._focused_panel is not None and action in {"up", "down"}:
-            self._focused_panel._move_selection(-1 if action == "up" else 1)
+            self._focused_panel._move_selection(-1 if action == "up" else 1, binding)
         elif self._focused_panel is not None and action == "activate":
             self._activate_panel_item(binding)
         elif action in {"scroll_up", "scroll_down", "scroll_left", "scroll_right"}:

@@ -56,6 +56,8 @@ def test_public_api_contains_only_intentional_symbols() -> None:
         "SelectableContext",
         "SelectableCallback",
         "SelectionStyle",
+        "SelectionChangeContext",
+        "TickHandle",
         "line",
         "center",
         "align_left",

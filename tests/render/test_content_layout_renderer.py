@@ -215,3 +215,101 @@ def test_layout_change_uses_segment_diff_at_unchanged_terminal_size(
     assert "\033[H\033[J" not in "".join(writes)
     assert renderer._previous_lines is not None
     assert renderer._previous_lines[0].count("╭") == 2
+
+
+def test_vertical_span_draws_one_tall_frame_beside_two_stacked_frames() -> None:
+    menu, renderer = make_renderer(overlay=True)
+    graph = menu.add_content_panel(
+        ScreenContent.static("graph"),
+        description="Graph",
+        width_weight=3,
+        height_weight=100,
+    )
+    output = menu.add_content_panel(
+        ScreenContent.static("output"), description="Output", height_weight=3
+    )
+    info = menu.add_content_panel(
+        ScreenContent.static("info"), description="Info", height_weight=1
+    )
+    menu.set_content_layout([[graph, output], [graph, info]])
+    menu.hide_menu()
+
+    frame = renderer._compose_frame(40, 20)
+
+    assert len(frame) == 20
+    assert all(display_width(row) == 40 for row in frame)
+    assert sum(row.count("╭") for row in frame) == 3
+    assert sum(row.count("╰") for row in frame) == 3
+    assert graph._runtime.viewport is not None
+    assert output._runtime.viewport is not None
+    assert info._runtime.viewport is not None
+    assert graph._runtime.viewport.width == 28
+    assert output._runtime.viewport.width == info._runtime.viewport.width == 8
+    assert graph._runtime.viewport.height == 18
+    assert output._runtime.viewport.height > info._runtime.viewport.height
+    info_top = next(index for index, row in enumerate(frame) if "Info" in row)
+    assert frame[0].index("╭", 1) == frame[info_top].index("╭")
+    assert frame[info_top].startswith("│")
+
+
+def test_vertical_span_keeps_viewport_and_selection_on_resize() -> None:
+    from tuiloom import SelectableItem
+
+    menu, renderer = make_renderer(overlay=True)
+    graph = menu.add_content_panel(
+        ScreenContent.selectable([SelectableItem(str(i), key=i) for i in range(40)]),
+        selection_style="reverse",
+    )
+    output = menu.add_content_panel(ScreenContent.static("output"))
+    info = menu.add_content_panel(ScreenContent.static("info"))
+    menu.set_content_layout([[graph, output], [graph, info]])
+    menu.hide_menu()
+
+    renderer._compose_frame(40, 12)
+    viewport = graph._runtime.viewport
+    assert viewport is not None
+    graph.select_item(30)
+    renderer._compose_frame(40, 12)
+    assert graph.selected_index == 30
+    assert viewport.offset_y > 0
+    old_offset = viewport.offset_y
+
+    renderer._compose_frame(50, 15)
+    assert graph._runtime.viewport is viewport
+    assert graph.selected_index == 30
+    assert viewport.offset_y <= old_offset
+    assert viewport.offset_y <= 30 < viewport.offset_y + viewport.height
+    renderer.scroll_panel(graph, "right")
+    assert viewport.offset_x == 0  # short selectable rows need no horizontal scroll
+
+
+def test_vertical_span_too_small_terminal_does_not_create_viewports() -> None:
+    menu, renderer = make_renderer(overlay=True)
+    graph = menu.add_content_panel(ScreenContent.static("graph"))
+    output = menu.add_content_panel(ScreenContent.static("output"))
+    info = menu.add_content_panel(ScreenContent.static("info"))
+    menu.set_content_layout([[graph, output], [graph, info]])
+    menu.hide_menu()
+
+    assert renderer._compose_frame(5, 5) == ["Termi"]
+    assert all(panel._runtime.viewport is None for panel in (graph, output, info))
+
+
+def test_spanning_panel_height_weight_controls_block_share() -> None:
+    menu, renderer = make_renderer(overlay=True)
+    graph = menu.add_content_panel(ScreenContent.static("graph"))
+    output = menu.add_content_panel(ScreenContent.static("output"))
+    info = menu.add_content_panel(ScreenContent.static("info"))
+    footer = menu.add_content_panel(ScreenContent.static("footer"))
+    menu.set_content_layout([[graph, output], [graph, info], [footer]])
+    menu.hide_menu()
+    renderer._compose_frame(40, 30)
+    assert graph._runtime.viewport is not None
+    first_height = graph._runtime.viewport.height
+
+    graph.update_layout(height_weight=100)
+    renderer._compose_frame(40, 30)
+
+    assert graph._runtime.viewport.height > first_height
+    assert footer._runtime.viewport is not None
+    assert footer._runtime.viewport.height >= footer.min_height

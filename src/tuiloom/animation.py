@@ -22,6 +22,27 @@ class AnimationFrame:
     index: int
 
 
+class TickHandle:
+    """Cancel a periodic menu callback. Cancellation is idempotent."""
+
+    def __init__(
+        self,
+        callback: Callable[[AnimationFrame], None],
+        fps: float,
+        remove: Callable[[TickHandle], None],
+    ) -> None:
+        self.callback = callback
+        self.fps = fps
+        self.last_index: int | None = None
+        self.cancelled = False
+        self._remove = remove
+
+    def cancel(self) -> None:
+        if not self.cancelled:
+            self.cancelled = True
+            self._remove(self)
+
+
 def validate_fps(fps: float) -> float:
     """Validate a requested animation rate and return it as a float."""
     if isinstance(fps, bool) or not isinstance(fps, Real):

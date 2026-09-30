@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.11.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.12.0. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -25,6 +25,7 @@ Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 - [Screen content](#screen-content)
 - [Selectable content](#selectable-content)
 - [Selection styles](#selection-styles)
+- [Menu tick callbacks](#menu-tick-callbacks)
 - [Rendering utilities](#rendering-utilities)
 - [Content layouts](#content-layouts)
 - [Status bar](#status-bar)
@@ -52,7 +53,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.11.0
+python -m pip install tuiloom==0.12.0
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -312,7 +313,9 @@ height and spacing. These operations preserve sources, workers, the navigation
 stack, selection, alerts and input state. Showing/hiding an already
 shown/hidden box is a no-op. The frame stays visible throughout.
 
-Hiding keeps an already focused panel, or focuses the first available panel.
+Hiding keeps an already focused panel. If `show_menu()` took focus from a panel,
+hiding returns focus to that panel when it still exists; otherwise it focuses
+the first available panel.
 Tab cycles only through panels while the box is hidden; local menu commands,
 alerts and input do not consume keys. Global commands remain available, including
 an application-defined toggle shortcut. With no panels, there is no local focus
@@ -618,14 +621,36 @@ menu.set_content_layout([
 ╰─────────────────────────────────────────╯
 ```
 
+Repeat a panel in the same column of adjacent rows to make it span their full
+height. This keeps one panel, worker, viewport and focus stop:
+
+```python
+menu.set_content_layout([
+    [application.graph_panel, application.output_panel],
+    [application.graph_panel, application.info_panel],
+])
+```
+
+```text
+╭─ Graph ─────────────╮╭─ Output ──────╮
+│                     ││                │
+│                     │╰────────────────╯
+│                     │╭─ Info ────────╮
+│                     ││                │
+╰─────────────────────╯╰────────────────╯
+```
+
 `content_panels` still lists which panels belong to the menu. The read-only
 `content_layout` exposes their placement as `ContentRow` handles with a
 read-only `panels` tuple. Without `set_content_layout()`, each panel occupies
 its own row in `content_panels` order, exactly as before. Every explicit layout
-must contain all live panels exactly once. Empty rows, duplicate, foreign,
-removed, or missing panels are rejected without changing the old layout.
+must contain all live panels. Repetitions must be consecutive, in one column,
+with the same number of columns in every crossed row; overlapping spans are
+rejected. Empty rows, malformed repetitions, foreign, removed, or missing
+panels are rejected without changing the old layout.
 Adding a panel, including captured task output, appends a new singleton row;
-removing a panel removes it from its row and removes an empty row.
+removing a panel removes all its cells. If removal leaves an invalid span, its
+remaining panels return to ordinary rows in their existing order.
 
 Panels in the same row share its physical height. Their `width_weight` values
 divide the complete row width, including borders. The example above gives
@@ -636,6 +661,12 @@ split, configure `graph` with `width_weight=3` and `stats` with
 no wasted horizontal gap; `content_spacing` still controls only the gap above
 an inline menu. Each panel's responsive content receives its own column width
 and row height, subject to its existing virtual `ScreenContent` minimums.
+Within a spanned region, columns remain aligned across rows. Each column uses
+the mean `width_weight` of its distinct panels. The unspanned panels' row
+`height_weight` values divide the region vertically; the spanning panel's
+`min_height` and `max_height` apply to its full height. Its `height_weight` does
+not affect the split between the rows it crosses, but scales the region's share
+against other rows outside it.
 The status bar reserves its usual bottom row; an overlay menu is composed over
 the content without changing row or column sizes.
 Resizing and changing layouts reuse panels, workers, content, viewports, scroll
@@ -660,6 +691,8 @@ panel methods continue to work on singleton rows. A row's expanded
 `min_height` is their largest minimum and
 `max_height` their smallest configured maximum. Incompatible bounds are
 rejected before changing the layout.
+Rows crossed by a vertical span cannot be collapsed or given a collapsed
+height; panel collapse is also unavailable there.
 
 Directional mutations can change placement while the menu runs:
 
@@ -677,6 +710,8 @@ rows. A movement without a target is a no-op. These methods change the layout,
 while `content_panels` and `panel.position` keep their flat registration order.
 The v0.9 `panel.move(position)` method has been removed; use directional moves
 or `set_content_layout()`.
+Directional moves and swaps involving a spanned region raise `ValueError`;
+call `set_content_layout()` with the desired new arrangement instead.
 
 ### Content panel sizing
 
@@ -956,6 +991,12 @@ Tab still cycles the global focus between the menu and its panels.
 `panel.selected_item` and `panel.selected_index` expose the current selection.
 `panel.select_item(index)` changes it without activation. Replacing rows with
 `panel.set_content(ScreenContent.selectable(...))` keeps the panel and layout.
+Use `panel.set_selection_callback(callback)` to react immediately to a changed
+selection. The callback receives a `SelectionChangeContext` with the previous
+and current item and index, plus the keyboard binding (or `None` for changes
+made by code). It runs on the UI thread after the new selection is committed.
+It is also called when replacing the panel's content changes its selection;
+selecting the same item again does nothing. Pass `None` to remove the callback.
 Optional unique `key` values preserve selection across a replacement; if no
 key matches, Tuiloom chooses the enabled item nearest the old index. Empty or
 fully disabled lists have no selection. Selection stays visible when navigating,
@@ -991,6 +1032,17 @@ is highlighted. Expanded `MenuChoice` option cursors retain their `>` tokens,
 so horizontal groups remain individually distinguishable. Panel content remains
 horizontally scrollable without wrapping.
 Focus border styling is separate from item selection styling.
+
+## Menu tick callbacks
+
+`menu.add_tick_callback(callback, fps=12)` calls `callback(AnimationFrame)` on
+the UI thread at most once per frame of the menu's active-time timeline. Covered
+menus pause; late frames are skipped. The rate must be greater than zero and no
+more than 60. Due ticks run before terminal input so a completed animation can
+accept the next key immediately. Keep callbacks short and mutate panels here
+rather than from
+an animated content producer, which runs on a worker. The returned `TickHandle`
+has an idempotent `cancel()` method. Closing the menu cancels its handles.
 
 ## Rendering utilities
 
@@ -1642,11 +1694,13 @@ from tuiloom import (
     SelectableCallback,
     SelectableContext,
     SelectableItem,
+    SelectionChangeContext,
     SelectionStyle,
     StatusBar,
     TerminalApp,
     TerminalMenu,
     TextColor,
+    TickHandle,
     align_left,
     align_right,
     center,
@@ -1966,6 +2020,7 @@ Explicit mutation methods:
 ```text
 set_content(content: ScreenContent) -> None
 select_item(index: int) -> None
+set_selection_callback(callback: Callable[[SelectionChangeContext], None] | None) -> None
 set_selection_style(style: SelectionStyle) -> None
 refresh() -> None
 set_description(description: str) -> None
@@ -2200,6 +2255,7 @@ and visibility semantics.
 set_status_bar(content: str | StatusBar) -> None
 clear_status_bar() -> None
 refresh_status_bar() -> None
+add_tick_callback(callback: Callable[[AnimationFrame], None], *, fps: float = 12) -> TickHandle
 ```
 
 Install or replace the status configuration with `set_status_bar()`; a string

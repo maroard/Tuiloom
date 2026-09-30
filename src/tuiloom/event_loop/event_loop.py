@@ -122,7 +122,13 @@ class EventLoop:
                 self._drain_wakeup()
         self._drain_source_events()
 
-        if process_input:
+        self._run_tick_callbacks()
+        stack = self._menu.app._menu_stack
+        if (
+            process_input
+            and self._menu._running
+            and (not stack or stack[-1] is self._menu)
+        ):
             self._drain_input()
         self._request_dynamic_updates()
         completed_menu = self._menu.app._dispatch_output_task_outcome()
@@ -296,6 +302,8 @@ class EventLoop:
             return
 
         self._closed = True
+        for handle in tuple(self._menu._tick_callbacks):
+            handle.cancel()
         panels = tuple(
             dict.fromkeys((*self._menu.content_panels, *self._retiring_panels))
         )
@@ -384,12 +392,15 @@ class EventLoop:
         panel: ContentPanel,
         content: ScreenContent,
     ) -> None:
+        previous_item = panel.selected_item
+        previous_index = panel.selected_index
         panel._restore_selection(content)
         panel._content = content
         panel._runtime.mount(content)
         self._install_panel_worker(panel)
         self._menu.app._prune_stream_claims(panel)
         self.request_render(immediate=True)
+        panel._notify_selection_change(previous_item, previous_index)
 
     def _progress_panel_transitions(self) -> None:
         for panel in tuple(self._retiring_panels):
@@ -565,6 +576,29 @@ class EventLoop:
                     force=panel._runtime.responsive_refresh_pending,
                 )
 
+    def _run_tick_callbacks(self) -> None:
+        """Dispatch due active-time frames on the UI thread."""
+        stack = self._menu.app._menu_stack
+        if (
+            not self._menu._running
+            or (stack and stack[-1] is not self._menu)
+            or not self._animation_active
+            or self._refreshes_suspended()
+        ):
+            return
+        elapsed = self._animation_timeline.elapsed(self._clock())
+        for handle in tuple(self._menu._tick_callbacks):
+            if handle.cancelled:
+                continue
+            index = int(elapsed * handle.fps + 1e-9)
+            if handle.last_index == index:
+                continue
+            handle.last_index = index
+            handle.callback(AnimationFrame(elapsed, index))
+            stack = self._menu.app._menu_stack
+            if not self._menu._running or (stack and stack[-1] is not self._menu):
+                return
+
     def _ui_animation_rates(self) -> tuple[float, ...]:
         """Return the distinct rates of visible text/status animations."""
         if not self._animation_active:
@@ -624,6 +658,17 @@ class EventLoop:
             for rate in rates:
                 next_index = int(elapsed * rate + 1e-9) + 1
                 deadlines.append(now + max(0.0, next_index / rate - elapsed))
+
+        if self._animation_active and not self._refreshes_suspended():
+            elapsed = self._animation_timeline.elapsed(now)
+            for handle in self._menu._tick_callbacks:
+                if handle.cancelled:
+                    continue
+                index = int(elapsed * handle.fps + 1e-9)
+                if handle.last_index != index:
+                    deadlines.append(now)
+                else:
+                    deadlines.append(now + max(0.0, (index + 1) / handle.fps - elapsed))
 
         input_timeout = self._input_handler.get_pending_timeout(now)
 

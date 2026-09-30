@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from enum import Enum
 from math import isfinite
 from typing import TYPE_CHECKING
@@ -10,7 +11,7 @@ from tuiloom.key_binding import KeyBinding
 from tuiloom.panel_runtime import PanelRuntime
 from tuiloom.render.content_renderer import ContentRenderer
 from tuiloom.screen_content import ScreenContent
-from tuiloom.selectable import SelectableItem
+from tuiloom.selectable import SelectableItem, SelectionChangeContext
 
 if TYPE_CHECKING:
     from tuiloom.terminal_menu import TerminalMenu
@@ -93,6 +94,7 @@ class ContentPanel:
         "_runtime",
         "_selected_index",
         "_selection_style",
+        "_selection_callback",
     )
 
     def __init__(
@@ -196,7 +198,41 @@ class ContentPanel:
             responsive_refresh_pending=content._kind in ("responsive", "animated"),
         )
         self._selected_index: int | None = None
+        self._selection_callback: Callable[[SelectionChangeContext], None] | None = None
         self._restore_selection(content)
+
+    def set_selection_callback(
+        self, callback: Callable[[SelectionChangeContext], None] | None
+    ) -> None:
+        """Notify changes to the selected item, after the change is committed."""
+        self._menu._require_content_panel(self)
+        if callback is not None and not callable(callback):
+            raise TypeError("selection callback must be callable or None")
+        self._selection_callback = callback
+
+    def _notify_selection_change(
+        self,
+        previous_item: SelectableItem | None,
+        previous_index: int | None,
+        binding: KeyBinding | None = None,
+    ) -> None:
+        callback = self._selection_callback
+        item = self.selected_item
+        if callback is not None and (
+            previous_index != self._selected_index or previous_item is not item
+        ):
+            callback(
+                SelectionChangeContext(
+                    self._menu.app,
+                    self._menu,
+                    self,
+                    previous_item,
+                    previous_index,
+                    item,
+                    self._selected_index,
+                    binding,
+                )
+            )
 
     @property
     def selected_index(self) -> int | None:
@@ -232,10 +268,13 @@ class ContentPanel:
         items = self._content._selectable_items()
         if not 0 <= index < len(items) or not items[index].enabled:
             raise ValueError("selected item index must identify an enabled item")
+        previous_item = self.selected_item
+        previous_index = self._selected_index
         self._selected_index = index
         self._runtime.selection_visibility_pending = True
         self._runtime.selection_revision += 1
         self._menu._request_menu_render()
+        self._notify_selection_change(previous_item, previous_index)
 
     def _selected_row(self) -> int | None:
         if self._selected_index is None:
@@ -273,7 +312,9 @@ class ContentPanel:
             )
         self._runtime.selection_visibility_pending = True
 
-    def _move_selection(self, delta: int) -> None:
+    def _move_selection(self, delta: int, binding: KeyBinding | None = None) -> None:
+        previous_item = self.selected_item
+        previous_index = self._selected_index
         enabled = [
             index
             for index, item in enumerate(self._content._selectable_items())
@@ -291,6 +332,7 @@ class ContentPanel:
         self._runtime.selection_visibility_pending = True
         self._runtime.selection_revision += 1
         self._menu._request_menu_render()
+        self._notify_selection_change(previous_item, previous_index, binding)
 
     @property
     def description(self) -> str:

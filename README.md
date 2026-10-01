@@ -10,7 +10,7 @@ Unicode-safe rendering, captured task output, alerts, and free-form input. It is
 small enough to learn from one document while still handling the awkward parts
 of terminal state and background-work shutdown.
 
-This README documents the complete public API of Tuiloom 0.12.0. Tuiloom requires
+This README documents the complete public API of Tuiloom 0.12.1. Tuiloom requires
 Python 3.12 or newer and is tested on Linux and macOS with Python 3.12–3.14.
 
 ## Contents
@@ -53,7 +53,7 @@ python -m pip install tuiloom
 To install this version explicitly:
 
 ```bash
-python -m pip install tuiloom==0.12.0
+python -m pip install tuiloom==0.12.1
 ```
 
 Tuiloom ships inline typing information through `py.typed` and has no required
@@ -583,6 +583,12 @@ responsive or animated content. Configure each side when adding a panel, then
 change selected sides with `panel.update_padding(top=..., bottom=...,
 left=..., right=...)`. All sides default to zero.
 
+Use `header=...` to pin a centered title and a full-width divider above a
+panel's scrollable content. `panel.set_header(...)` changes the title without
+resetting selection or scroll position; `None` removes it. The title and divider
+use two inner rows, and a terminal that cannot leave a content row shows the
+terminal-too-small view.
+
 `menu.content_panels` exposes the handles in flat registration order as an
 immutable tuple. Visible panels are stacked vertically at equal height by
 default and labeled when more than one is present. Each panel owns its source
@@ -989,7 +995,9 @@ but are skipped. With no callback, Enter does nothing. The immutable
 Tab still cycles the global focus between the menu and its panels.
 
 `panel.selected_item` and `panel.selected_index` expose the current selection.
-`panel.select_item(index)` changes it without activation. Replacing rows with
+`panel.select_item(index)` changes it without activation. `panel.clear_selection()`
+removes the current selection and notifies the selection callback once; the next
+arrow key selects the first enabled item. Replacing rows with
 `panel.set_content(ScreenContent.selectable(...))` keeps the panel and layout.
 Use `panel.set_selection_callback(callback)` to react immediately to a changed
 selection. The callback receives a `SelectionChangeContext` with the previous
@@ -2000,6 +2008,7 @@ Read-only properties:
 
 - `content -> ScreenContent`: current mounted production configuration;
 - `description -> str`: current visible and shutdown label;
+- `header -> str | None`: fixed centered title above the scrollable content;
 - `position -> int`: current zero-based flat registration position;
 - `auto_scroll -> AutoScrollMode | None`: independent iterator-follow policy;
 - `height_weight -> float`: positive relative share of total panel height, including borders;
@@ -2020,10 +2029,12 @@ Explicit mutation methods:
 ```text
 set_content(content: ScreenContent) -> None
 select_item(index: int) -> None
+clear_selection() -> None
 set_selection_callback(callback: Callable[[SelectionChangeContext], None] | None) -> None
 set_selection_style(style: SelectionStyle) -> None
 refresh() -> None
 set_description(description: str) -> None
+set_header(header: str | None) -> None
 set_auto_scroll(mode: AutoScrollMode | None) -> None
 collapse() -> None
 expand() -> None
@@ -2377,6 +2388,7 @@ add_content_panel(
     padding_left: int = 0,
     padding_right: int = 0,
     selection_style: SelectionStyle = "marker",
+    header: str | None = None,
 ) -> ContentPanel
 ```
 

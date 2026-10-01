@@ -29,6 +29,10 @@ class WidthTrack:
     width_weight: float
 
 
+def _header_height(panel: ContentPanel | HeightTrack) -> int:
+    return 0 if isinstance(panel, HeightTrack) else panel._header_height
+
+
 def allocate_panel_heights(
     rows: Sequence[Sequence[ContentPanel | HeightTrack]], available: int
 ) -> list[int] | None:
@@ -42,9 +46,9 @@ def allocate_panel_heights(
     """
     heights = [
         (
-            row[0].collapsed_height
+            row[0].collapsed_height + _header_height(row[0])
             if row[0].collapsed
-            else max(panel.min_height for panel in row)
+            else max(panel.min_height + _header_height(panel) for panel in row)
         )
         + 2
         for row in rows
@@ -58,11 +62,15 @@ def allocate_panel_heights(
     ]
     minimums = [Fraction(height) for height in heights]
     maximums = [
-        Fraction(row[0].collapsed_height + 2)
+        Fraction(row[0].collapsed_height + _header_height(row[0]) + 2)
         if row[0].collapsed
         else Fraction(
             min(
-                (panel.max_height + 2 for panel in row if panel.max_height is not None),
+                (
+                    panel.max_height + _header_height(panel) + 2
+                    for panel in row
+                    if panel.max_height is not None
+                ),
                 default=available,
             )
         )

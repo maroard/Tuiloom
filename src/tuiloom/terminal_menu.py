@@ -516,6 +516,7 @@ class TerminalMenu:
         padding_left: int = 0,
         padding_right: int = 0,
         selection_style: SelectionStyle = "marker",
+        header: str | None = None,
     ) -> ContentPanel:
         """Register independent content and return its stable panel handle.
 
@@ -551,6 +552,8 @@ class TerminalMenu:
                 Nonnegative cells kept inside the panel border. Default to zero.
             selection_style: ``"marker"`` (default) or ``"reverse"`` for the
                 panel's selected item rows.
+            header: Optional centered title fixed above the scrollable content,
+                with a divider below it. Uses two inner rows.
 
         Returns:
             The registered ``ContentPanel`` handle. Its identity is preserved
@@ -582,6 +585,7 @@ class TerminalMenu:
             padding_left=padding_left,
             padding_right=padding_right,
             selection_style=selection_style,
+            header=header,
         )
         self.app._claim_stream(content, panel)
         self._content_panels.insert(insert_at, panel)

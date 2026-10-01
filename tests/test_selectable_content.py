@@ -95,6 +95,32 @@ def test_selection_change_reports_keyboard_and_programmatic_changes() -> None:
     assert len(changes) == 2
 
 
+def test_clear_selection_notifies_once_and_arrow_selects_first_enabled() -> None:
+    menu, renderer = make_panel(
+        [
+            SelectableItem("Disabled", enabled=False),
+            SelectableItem("A"),
+            SelectableItem("B"),
+        ]
+    )
+    panel = menu.content_panels[0]
+    changes: list[SelectionChangeContext] = []
+    panel.set_selection_callback(changes.append)
+    renderer._compose_frame(30, 18)
+    panel.select_item(2)
+    changes.clear()
+    panel.clear_selection()
+    assert panel.selected_index is None and panel.selected_item is None
+    assert len(changes) == 1
+    assert changes[0].previous_index == 2
+    assert changes[0].index is None and changes[0].item is None
+    panel.clear_selection()
+    assert len(changes) == 1
+    menu._focused_panel = panel
+    menu._handle_event(InputEvent(KeyBinding("up")))
+    assert panel.selected_index == 1
+
+
 def test_selection_change_reports_content_replacement() -> None:
     menu, _ = make_panel([SelectableItem("A", key="a")])
     panel = menu.content_panels[0]

@@ -108,9 +108,13 @@ def span_block_sizing(
     weight = 0.0
     for row in rows[span.start : span.stop]:
         others = [panel for panel in row if panel is not span.panel]
-        minimum = max(panel.min_height for panel in others) + 2
+        minimum = max(panel.min_height + panel._header_height for panel in others) + 2
         maximum = min(
-            (panel.max_height + 2 for panel in others if panel.max_height is not None),
+            (
+                panel.max_height + panel._header_height + 2
+                for panel in others
+                if panel.max_height is not None
+            ),
             default=None,
         )
         if maximum is not None and maximum < minimum:
@@ -118,9 +122,14 @@ def span_block_sizing(
         row_minimums.append(minimum)
         row_maximums.append(maximum)
         weight += sum(panel.height_weight for panel in others) / len(others)
-    minimum = max(span.panel.min_height + 2, sum(row_minimums))
+    minimum = max(
+        span.panel.min_height + span.panel._header_height + 2,
+        sum(row_minimums),
+    )
     maximums = [
-        span.panel.max_height + 2 if span.panel.max_height is not None else None,
+        span.panel.max_height + span.panel._header_height + 2
+        if span.panel.max_height is not None
+        else None,
         sum(value for value in row_maximums if value is not None)
         if all(value is not None for value in row_maximums)
         else None,

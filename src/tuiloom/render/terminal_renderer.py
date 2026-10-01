@@ -20,6 +20,7 @@ from tuiloom.content_layout import (
     find_vertical_spans,
     span_block_sizing,
 )
+from tuiloom.formatting import center
 from tuiloom.render.menu_renderer import MenuRenderer
 from tuiloom.render.panel_layout import (
     HeightTrack,
@@ -126,6 +127,7 @@ class TerminalRenderer:
                     panel.padding_bottom,
                     panel.padding_left,
                     panel.padding_right,
+                    panel.header,
                 )
                 for panel in self._menu._visible_content_panels()
             ),
@@ -348,7 +350,8 @@ class TerminalRenderer:
                     )
                 if any(
                     viewport_width <= panel.padding_left + panel.padding_right
-                    or height <= panel.padding_top + panel.padding_bottom
+                    or height
+                    <= (panel.padding_top + panel.padding_bottom + panel._header_height)
                     for panel, height in panels_and_heights
                 ):
                     return None
@@ -358,10 +361,11 @@ class TerminalRenderer:
     def _render_panel_frame(
         self, panel: ContentPanel, width: int, height: int, show_label: bool
     ) -> list[str]:
+        header = panel.header
         self._update_viewport(
             panel,
             width - panel.padding_left - panel.padding_right,
-            height - panel.padding_top - panel.padding_bottom,
+            height - panel.padding_top - panel.padding_bottom - panel._header_height,
         )
         focused = self._menu.focused_panel is panel
         horizontal = "─" if focused else "┄"
@@ -374,9 +378,18 @@ class TerminalRenderer:
         viewport = panel._runtime.viewport
         if viewport is None:
             raise RuntimeError("Content panel viewport was not initialized")
+        header_lines = (
+            [
+                f"{vertical}{center(header, width)}{vertical}",
+                f"{vertical}{'─' * width}{vertical}",
+            ]
+            if header is not None
+            else []
+        )
         return (
             [top]
             + [f"{vertical}{' ' * width}{vertical}"] * panel.padding_top
+            + header_lines
             + [
                 normalize_line(
                     f"{vertical}{' ' * panel.padding_left}"

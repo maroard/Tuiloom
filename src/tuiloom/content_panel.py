@@ -40,6 +40,8 @@ class ContentPanel:
     Attributes:
         description: Read-only label shown on panel borders when multiple panels
             or a shutdown view are displayed, and used to identify pending work.
+        header: Optional title centered above the scrollable content, with a
+            full-width divider. Change it with ``set_header()``.
         position: Read-only zero-based index in the owning menu's flat panel
             collection. Layout movements do not change it. Lookup raises
             ``ValueError`` after removal or if unregistered.
@@ -67,7 +69,7 @@ class ContentPanel:
             ``update_padding()``.
         key_commands: Read-only tuple of shortcuts registered on this panel.
         selected_index: Read-only zero-based index among selectable items, or
-            ``None`` when the content has no enabled item.
+            ``None`` when no item is selected.
         selected_item: Read-only currently selected ``SelectableItem`` or ``None``.
         selection_style: Read-only ``"marker"`` or ``"reverse"`` rendering mode;
             change it with ``set_selection_style()``.
@@ -78,6 +80,7 @@ class ContentPanel:
         "_menu",
         "_content",
         "_description",
+        "_header",
         "_auto_scroll",
         "_height_weight",
         "_width_weight",
@@ -114,6 +117,7 @@ class ContentPanel:
         padding_left: int = 0,
         padding_right: int = 0,
         selection_style: SelectionStyle = "marker",
+        header: str | None = None,
     ) -> None:
         """Initialize an unregistered, expanded panel without starting a worker.
 
@@ -155,6 +159,8 @@ class ContentPanel:
                 zero; booleans are rejected.
             selection_style: ``"marker"`` (default) or ``"reverse"`` for the
                 selected item row.
+            header: Optional fixed title above the scrolling viewport. It uses
+                two inner rows for the title and divider.
 
         Raises:
             TypeError: If ``content`` is not ``ScreenContent``, either sizing
@@ -180,6 +186,9 @@ class ContentPanel:
             raise ValueError("selection_style must be 'marker' or 'reverse'")
         self._selection_style = selection_style
         self._description = description
+        if header is not None and not isinstance(header, str):
+            raise TypeError("panel header must be a str or None")
+        self._header = header
         self._auto_scroll = auto_scroll
         self._height_weight = height_weight
         self._width_weight = width_weight
@@ -236,7 +245,7 @@ class ContentPanel:
 
     @property
     def selected_index(self) -> int | None:
-        """Return the selected item's index among selectable items, or None."""
+        """Return the selected item's index, or None when no item is selected."""
         return self._selected_index
 
     @property
@@ -272,6 +281,22 @@ class ContentPanel:
         previous_index = self._selected_index
         self._selected_index = index
         self._runtime.selection_visibility_pending = True
+        self._runtime.selection_revision += 1
+        self._menu._request_menu_render()
+        self._notify_selection_change(previous_item, previous_index)
+
+    def clear_selection(self) -> None:
+        """Clear the current item selection without changing panel content.
+
+        A later arrow key selects the first enabled item. Notify the selection
+        callback only when a selected item was actually cleared.
+        """
+        self._menu._require_content_panel(self)
+        if self._selected_index is None:
+            return
+        previous_item = self.selected_item
+        previous_index = self._selected_index
+        self._selected_index = None
         self._runtime.selection_revision += 1
         self._menu._request_menu_render()
         self._notify_selection_change(previous_item, previous_index)
@@ -346,6 +371,24 @@ class ContentPanel:
             The last configured description string.
         """
         return self._description
+
+    @property
+    def header(self) -> str | None:
+        """Return the fixed title above the panel's scrollable content."""
+        return self._header
+
+    @property
+    def _header_height(self) -> int:
+        return 2 if self._header is not None else 0
+
+    def set_header(self, header: str | None) -> None:
+        """Set a centered title and divider, or remove both with None."""
+        self._menu._require_content_panel(self)
+        if header is not None and not isinstance(header, str):
+            raise TypeError("panel header must be a str or None")
+        if self._header != header:
+            self._header = header
+            self._menu._invalidate_renderer()
 
     @property
     def position(self) -> int:
